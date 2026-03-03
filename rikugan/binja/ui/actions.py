@@ -117,6 +117,15 @@ def handle_xref_analysis(ctx: Dict[str, Any]) -> str:
     )
 
 
+def handle_smart_patch(ctx: Dict[str, Any]) -> str:
+    name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
+    ea = ctx["func_ea"] or ctx["ea"]
+    return (
+        f"/smart-patch Patch function {name} at 0x{ea:x}.\n"
+        f"Desired behavior: "
+    )
+
+
 ACTION_DEFS: Tuple[Tuple[str, str, Callable[[Dict[str, Any]], str], bool], ...] = (
     ("Send to Rikugan", "Send selection or address to Rikugan input", handle_send_to, False),
     ("Explain this", "Explain the current function with Rikugan", handle_explain, True),
@@ -127,4 +136,5 @@ ACTION_DEFS: Tuple[Tuple[str, str, Callable[[Dict[str, Any]], str], bool], ...] 
     ("Annotate function", "Add comments to the current function", handle_annotate, True),
     ("Clean IL", "Clean IR IL for the current function", handle_clean_mcode, True),
     ("Xref analysis", "Deep cross-reference analysis on the current function", handle_xref_analysis, True),
+    ("Smart Patch", "Modify function behavior with natural language and apply binary patches", handle_smart_patch, False),
 )
