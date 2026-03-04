@@ -25,24 +25,3 @@ def is_pyside6() -> bool:
     return True
 
 
-class CopyableLabel(QLabel):
-    """QLabel that supports Ctrl+C / Cmd+C for selected text.
-
-    QLabel with ``TextSelectableByMouse`` allows mouse selection but ignores
-    keyboard copy shortcuts.  This subclass intercepts ``keyPressEvent`` to
-    copy the selected text to the clipboard.  No app-level event filter needed
-    — avoids the Shiboken dangling-pointer crash under IDA.
-    """
-
-    def keyPressEvent(self, event) -> None:
-        if event.matches(Qt.StandardKey.Copy):
-            try:
-                sel = self.selectedText()
-            except RuntimeError:
-                return
-            if sel:
-                # QLabel.selectedText() uses U+2029 paragraph separator
-                # instead of newlines — normalize before copying.
-                QApplication.clipboard().setText(sel.replace("\u2029", "\n"))
-                return
-        super().keyPressEvent(event)
