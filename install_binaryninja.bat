@@ -33,7 +33,7 @@ if not defined BN_USER_DIR (
         echo [*] Auto-detected Binary Ninja directory: !BN_USER_DIR!
     ) else (
         set "BN_USER_DIR=%USERPROFILE%\.binaryninja"
-        echo [!] No Binary Ninja directory found, defaulting to !BN_USER_DIR!
+        echo [*] No Binary Ninja directory found, defaulting to !BN_USER_DIR!
     )
 )
 
@@ -55,48 +55,6 @@ if exist "%OLD_LINK%\" (
     echo [+] Old 'iris' installation removed
 )
 
-echo [*] Installing Python dependencies...
-if defined BN_PYTHON (
-    set "PIP_CMD=""%BN_PYTHON%"" -m pip"
-    call :try_install_requirements
-    if !errorlevel! equ 0 goto deps_ok
-)
-if exist "%ProgramFiles%\Binary Ninja\python.exe" (
-    set "PIP_CMD=""%ProgramFiles%\Binary Ninja\python.exe"" -m pip"
-    call :try_install_requirements
-    if !errorlevel! equ 0 goto deps_ok
-)
-if exist "%ProgramFiles%\Binary Ninja\python310\python.exe" (
-    set "PIP_CMD=""%ProgramFiles%\Binary Ninja\python310\python.exe"" -m pip"
-    call :try_install_requirements
-    if !errorlevel! equ 0 goto deps_ok
-)
-if exist "%LocalAppData%\Programs\Binary Ninja\python.exe" (
-    set "PIP_CMD=""%LocalAppData%\Programs\Binary Ninja\python.exe"" -m pip"
-    call :try_install_requirements
-    if !errorlevel! equ 0 goto deps_ok
-)
-
-set "PIP_CMD=py -3 -m pip"
-call :try_install_requirements
-if !errorlevel! equ 0 goto deps_ok
-set "PIP_CMD=python3 -m pip"
-call :try_install_requirements
-if !errorlevel! equ 0 goto deps_ok
-set "PIP_CMD=python -m pip"
-call :try_install_requirements
-if !errorlevel! equ 0 goto deps_ok
-set "PIP_CMD=pip3"
-call :try_install_requirements
-if !errorlevel! equ 0 goto deps_ok
-set "PIP_CMD=pip"
-call :try_install_requirements
-if !errorlevel! equ 0 goto deps_ok
-
-echo [-] Failed to install Python dependencies from requirements.txt
-exit /b 1
-
-:deps_ok
 
 if not exist "%PLUGINS_DIR%\" mkdir "%PLUGINS_DIR%"
 if not exist "%SKILLS_DIR%\" mkdir "%SKILLS_DIR%"
@@ -147,14 +105,3 @@ echo [*] Restart Binary Ninja and open Tools ^> Rikugan ^> Open Panel.
 endlocal
 exit /b 0
 
-:try_install_requirements
-cmd /c "%PIP_CMD% --version" >nul 2>&1
-if errorlevel 1 exit /b 1
-echo [*] Installing dependencies with %PIP_CMD%
-cmd /c "%PIP_CMD% install --break-system-packages -r \"%SCRIPT_DIR%\requirements.txt\""
-if errorlevel 1 (
-    echo [!] Dependency install failed with %PIP_CMD%
-    exit /b 1
-)
-echo [+] Dependencies installed successfully
-exit /b 0

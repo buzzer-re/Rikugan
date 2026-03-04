@@ -43,7 +43,7 @@ if not defined IDA_USER_DIR (
     ) else if exist "%USERPROFILE%\.idapro\" (
         set "IDA_USER_DIR=%USERPROFILE%\.idapro"
         echo [*] Auto-detected IDA directory: !IDA_USER_DIR!
-    ) else if exist "%IDAUSR%\" (
+    ) else if defined IDAUSR (
         set "IDA_USER_DIR=%IDAUSR%"
         echo [*] Auto-detected IDA directory via IDAUSR: !IDA_USER_DIR!
     ) else (
@@ -74,9 +74,54 @@ if exist "%OLD_IRIS%\" (
     echo [+] Old 'iris' installation removed
 )
 
+:: ── Find IDA installation directory ──────────────────────────────────
+
+set "IDA_INSTALL_DIR="
+for /f "tokens=2*" %%A in ('reg query "HKCU\Software\Hex-Rays\IDA" /v "Location" 2^>nul') do set "IDA_INSTALL_DIR=%%B"
+if not defined IDA_INSTALL_DIR (
+    for /f "tokens=2*" %%A in ('reg query "HKLM\SOFTWARE\Hex-Rays\IDA" /v "Location" 2^>nul') do set "IDA_INSTALL_DIR=%%B"
+)
+
+:: ── Find IDA's Python ─────────────────────────────────────────────────
+
+set "IDA_PYTHON="
+if defined IDA_INSTALL_DIR (
+    echo [*] IDA install dir: !IDA_INSTALL_DIR!
+    :: Bundled Python: <IDA>\python3.XX\python.exe  (IDA 7.5+)
+    for /d %%D in ("!IDA_INSTALL_DIR!\python3*") do (
+        if exist "%%D\python.exe" set "IDA_PYTHON=%%D\python.exe"
+    )
+    :: Older bundled layout: <IDA>\python\python.exe
+    if not defined IDA_PYTHON (
+        if exist "!IDA_INSTALL_DIR!\python\python.exe" (
+            set "IDA_PYTHON=!IDA_INSTALL_DIR!\python\python.exe"
+        )
+    )
+    :: idapyswitch: asks IDA which system Python it was switched to
+    if not defined IDA_PYTHON (
+        if exist "!IDA_INSTALL_DIR!\idapyswitch.exe" (
+            for /f "usebackq tokens=* delims=" %%L in (`"!IDA_INSTALL_DIR!\idapyswitch.exe" --show-current 2^>nul`) do (
+                :: Output is typically a bare path or "Path: C:\..."
+                set "_line=%%L"
+                set "_line=!_line:Path: =!"
+                if exist "!_line!" set "IDA_PYTHON=!_line!"
+            )
+        )
+    )
+)
+
 :: ── Install dependencies ─────────────────────────────────────────────
 
 echo [*] Installing Python dependencies...
+
+if defined IDA_PYTHON (
+    echo [*] Using IDA's Python: !IDA_PYTHON!
+    set "PIP_CMD=!IDA_PYTHON! -m pip"
+    call :try_install_requirements
+    if !errorlevel! equ 0 goto deps_ok
+    echo [!] IDA Python pip failed, trying system Python fallbacks...
+)
+
 set "PIP_CMD=py -3 -m pip"
 call :try_install_requirements
 if !errorlevel! equ 0 goto deps_ok
@@ -156,13 +201,13 @@ if exist "%PLUGINS_DIR%\rikugan\" (
 
 mklink /J "%PLUGINS_DIR%\rikugan" "%SCRIPT_DIR%\rikugan" >nul 2>&1
 if !errorlevel! equ 0 (
-    echo [+] rikugan\ -^> %PLUGINS_DIR%\rikugan  (junction)
+    echo [+] rikugan\ -^> %PLUGINS_DIR%\rikugan  (junction^)
 ) else (
     :: Junction failed (rare), fall back to xcopy
-    echo [!] Junction failed, falling back to copy...
+    echo [*] Junction failed, falling back to copy...
     xcopy "%SCRIPT_DIR%\rikugan" "%PLUGINS_DIR%\rikugan\" /E /I /Y /Q >nul
     if !errorlevel! equ 0 (
-        echo [+] rikugan\ -^> %PLUGINS_DIR%\rikugan  (copied)
+        echo [+] rikugan\ -^> %PLUGINS_DIR%\rikugan  (copied^)
     ) else (
         echo [-] Failed to copy rikugan\ package
         exit /b 1
@@ -186,10 +231,10 @@ endlocal
 exit /b 0
 
 :try_install_requirements
-cmd /c "%PIP_CMD% --version" >nul 2>&1
+%PIP_CMD% --version >nul 2>&1
 if errorlevel 1 exit /b 1
 echo [*] Installing dependencies with %PIP_CMD%
-cmd /c "%PIP_CMD% install --break-system-packages -r \"%SCRIPT_DIR%\requirements.txt\""
+%PIP_CMD% install -r "%SCRIPT_DIR%\requirements.txt"
 if errorlevel 1 (
     echo [!] Dependency install failed with %PIP_CMD%
     exit /b 1
