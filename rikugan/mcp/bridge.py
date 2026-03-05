@@ -8,8 +8,7 @@ from ..constants import MCP_TOOL_PREFIX
 from ..core.logging import log_debug, log_info
 from ..tools.base import ParameterSchema, ToolDefinition
 from ..tools.registry import ToolRegistry
-from .client import MCPClient
-from .protocol import MCPToolSchema
+from .client import MCPClient, MCPToolSchema
 
 
 def _mcp_schema_to_parameters(input_schema: Dict[str, Any]) -> List[ParameterSchema]:

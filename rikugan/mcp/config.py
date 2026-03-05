@@ -21,6 +21,7 @@ class MCPServerConfig:
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+    timeout: float = 30.0
 
 
 def load_mcp_config(path: str = "") -> List[MCPServerConfig]:
@@ -57,6 +58,7 @@ def load_mcp_config(path: str = "") -> List[MCPServerConfig]:
             args=cfg.get("args", []),
             env=cfg.get("env", {}),
             enabled=cfg.get("enabled", True),
+            timeout=float(cfg.get("timeout", 30.0)),
         )
         if server.command:
             servers.append(server)

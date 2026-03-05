@@ -62,7 +62,7 @@ class MCPManager:
         """Start a single MCP server (runs in background thread)."""
         client = MCPClient(config)
         try:
-            client.start()
+            client.start(timeout=config.timeout)
             with self._lock:
                 self._clients[config.name] = client
             count = register_mcp_tools(client, registry)

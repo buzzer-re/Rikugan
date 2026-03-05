@@ -1,160 +1,125 @@
-"""MCP client: manages a single MCP server subprocess."""
+"""MCP client: manages a single MCP server subprocess using the official mcp SDK."""
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
+import asyncio
 import threading
-import time
-import queue
 from typing import Any, Dict, List, Optional
 
 from ..constants import MCP_DEFAULT_TIMEOUT
 from ..core.errors import MCPConnectionError, MCPError, MCPTimeoutError
-from ..core.logging import log_debug, log_error, log_info, log_trace
+from ..core.logging import log_debug, log_error, log_info
 from .config import MCPServerConfig
-from .protocol import (
-    MCPToolSchema,
-    encode_jsonrpc_request,
-    decode_jsonrpc_response,
-    parse_content_length_frame,
-)
+
+try:
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    _HAS_MCP = True
+except ImportError:
+    _HAS_MCP = False
 
 
-_HEARTBEAT_INTERVAL = 30.0  # seconds between heartbeat pings
+class MCPToolSchema:
+    """Schema for a tool exposed by an MCP server."""
+
+    __slots__ = ("name", "description", "input_schema")
+
+    def __init__(self, name: str = "", description: str = "", input_schema: Optional[Dict[str, Any]] = None):
+        self.name = name
+        self.description = description
+        self.input_schema = input_schema or {}
 
 
 class MCPClient:
     """Client for a single MCP server process.
 
-    Communicates via stdio with JSON-RPC 2.0 + Content-Length framing.
-    No asyncio — pure threading + subprocess + queue.
+    Uses the official ``mcp`` Python SDK (``ClientSession`` + ``stdio_client``)
+    running in a dedicated background thread with its own asyncio event loop.
+    All public methods are synchronous — they dispatch to the async loop and
+    block until the result is ready.
     """
 
     def __init__(self, config: MCPServerConfig):
+        if not _HAS_MCP:
+            raise MCPError(
+                "The 'mcp' package is required for MCP support. "
+                "Install it with: pip install mcp"
+            )
+
         self.config = config
         self.name = config.name
-        self._process: Optional[subprocess.Popen] = None
-        self._reader_thread: Optional[threading.Thread] = None
-        self._heartbeat_thread: Optional[threading.Thread] = None
-        self._pending: Dict[int, queue.Queue] = {}
-        self._next_id = 1
-        self._lock = threading.Lock()
         self._tools: List[MCPToolSchema] = []
+        self._started = False
+        self._healthy = True
         self._running = False
-        self._started = False  # True only after successful handshake
-        self._healthy = True  # False if heartbeat fails
+
+        # Async internals — set up in start()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._session: Optional[ClientSession] = None
+        self._shutdown_event: Optional[asyncio.Event] = None
+        self._ready = threading.Event()
+        self._start_error: Optional[str] = None
 
     @property
     def is_running(self) -> bool:
-        return (
-            self._started
-            and self._running
-            and self._process is not None
-            and self._process.poll() is None
-        )
+        return self._started and self._running and self._thread is not None and self._thread.is_alive()
 
     @property
     def is_healthy(self) -> bool:
-        """True if the server is running and the last heartbeat succeeded."""
         return self.is_running and self._healthy
 
-    def start(self, timeout: float = 10.0) -> None:
-        """Spawn the MCP server process, perform initialize handshake, and list tools."""
+    def start(self, timeout: float = 30.0) -> None:
+        """Spawn the MCP server process, perform handshake, and discover tools.
+
+        Blocks until the server is ready or the timeout expires.
+        """
         log_info(f"MCP[{self.name}]: starting server: {self.config.command} {self.config.args}")
 
-        env = os.environ.copy()
-        env.update(self.config.env)
-
-        try:
-            self._process = subprocess.Popen(
-                [self.config.command] + self.config.args,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-                start_new_session=True,  # isolate from parent signals
-            )
-        except (OSError, FileNotFoundError) as e:
-            raise MCPConnectionError(f"MCP[{self.name}]: failed to start: {e}")
-
         self._running = True
+        self._ready.clear()
+        self._start_error = None
 
-        # Start reader thread
-        self._reader_thread = threading.Thread(
-            target=self._read_loop, daemon=True, name=f"mcp-reader-{self.name}",
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            daemon=True,
+            name=f"mcp-{self.name}",
         )
-        self._reader_thread.start()
+        self._thread.start()
 
-        # Initialize handshake
-        try:
-            result = self._send_request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "rikugan", "version": "0.1.0"},
-            }, timeout=timeout)
-            log_debug(f"MCP[{self.name}]: initialize response: {json.dumps(result)[:200]}")
+        # Wait for the async loop to finish initialization
+        if not self._ready.wait(timeout=timeout):
+            self._running = False
+            raise MCPConnectionError(
+                f"MCP[{self.name}]: initialize timed out after {timeout}s"
+            )
 
-            # Send initialized notification (no id, no response expected)
-            self._send_notification("notifications/initialized")
-
-        except Exception as e:
-            self.stop()
-            raise MCPConnectionError(f"MCP[{self.name}]: handshake failed: {e}")
-
-        # Discover tools
-        try:
-            tools_result = self._send_request("tools/list", {}, timeout=timeout)
-            raw_tools = tools_result.get("tools", []) if isinstance(tools_result, dict) else []
-            self._tools = []
-            for t in raw_tools:
-                self._tools.append(MCPToolSchema(
-                    name=t.get("name", ""),
-                    description=t.get("description", ""),
-                    input_schema=t.get("inputSchema", {}),
-                ))
-            log_info(f"MCP[{self.name}]: discovered {len(self._tools)} tools")
-        except Exception as e:
-            log_error(f"MCP[{self.name}]: tools/list failed: {e}")
-            # Non-fatal — server may have no tools yet
+        if self._start_error:
+            self._running = False
+            raise MCPConnectionError(
+                f"MCP[{self.name}]: handshake failed: {self._start_error}"
+            )
 
         self._started = True
-
-        # Start heartbeat thread
-        self._heartbeat_thread = threading.Thread(
-            target=self._heartbeat_loop, daemon=True,
-            name=f"mcp-heartbeat-{self.name}",
-        )
-        self._heartbeat_thread.start()
+        log_info(f"MCP[{self.name}]: started OK, {len(self._tools)} tools registered")
 
     def stop(self) -> None:
         """Shut down the MCP server process."""
         log_debug(f"MCP[{self.name}]: stopping")
         self._running = False
+        self._started = False
 
-        if self._process:
-            try:
-                if self._process.stdin:
-                    self._process.stdin.close()
-            except OSError:
-                log_debug(f"MCP[{self.name}]: stdin already closed")
-            try:
-                self._process.terminate()
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                log_debug(f"MCP[{self.name}]: terminate timed out, killing")
-                self._process.kill()
-                self._process.wait(timeout=2)
-            except OSError as e:
-                log_debug(f"MCP[{self.name}]: stop error: {e}")
-            self._process = None
+        # Signal the async loop to exit
+        if self._loop and self._shutdown_event and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._shutdown_event.set)
 
-        # Unblock any pending requests
-        with self._lock:
-            for q in self._pending.values():
-                q.put({"error": {"code": -1, "message": "Server stopped"}})
-            self._pending.clear()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+
+        self._session = None
+        self._loop = None
+        self._thread = None
 
     def get_tools(self) -> List[MCPToolSchema]:
         return list(self._tools)
@@ -162,142 +127,103 @@ class MCPClient:
     def call_tool(self, name: str, arguments: Dict[str, Any], timeout: float = MCP_DEFAULT_TIMEOUT) -> str:
         """Call an MCP tool and return the result as a string."""
         log_debug(f"MCP[{self.name}]: calling tool {name}")
-        result = self._send_request("tools/call", {
-            "name": name,
-            "arguments": arguments,
-        }, timeout=timeout)
 
-        if isinstance(result, dict) and "error" in result:
-            raise MCPError(f"MCP tool {name} error: {result['error']}")
+        try:
+            result = self._run_coro(self._async_call_tool(name, arguments), timeout=timeout)
+        except MCPTimeoutError:
+            raise
+        except MCPError:
+            raise
+        except Exception as e:
+            raise MCPError(f"MCP tool {name} error: {e}")
 
-        # Extract text content from MCP tool result
-        if isinstance(result, dict):
-            content = result.get("content", [])
-            if isinstance(content, list):
-                parts = []
-                for item in content:
-                    if isinstance(item, dict):
-                        if item.get("type") == "text":
-                            parts.append(item.get("text", ""))
-                        else:
-                            parts.append(json.dumps(item, default=str))
-                    else:
-                        parts.append(str(item))
-                return "\n".join(parts) if parts else json.dumps(result, default=str)
-            return json.dumps(result, default=str)
-
-        return str(result)
+        return result
 
     # ------------------------------------------------------------------
-    # Internal
+    # Async internals
     # ------------------------------------------------------------------
 
-    def _send_request(self, method: str, params: Dict[str, Any], timeout: float = MCP_DEFAULT_TIMEOUT) -> Any:
-        """Send a JSON-RPC request and block for the response."""
-        if not self._process or not self._process.stdin:
+    def _run_coro(self, coro, timeout: float = MCP_DEFAULT_TIMEOUT) -> Any:
+        """Submit a coroutine to the background loop and block for the result."""
+        if not self._loop or self._loop.is_closed():
             raise MCPConnectionError(f"MCP[{self.name}]: not connected")
 
-        with self._lock:
-            req_id = self._next_id
-            self._next_id += 1
-            resp_queue: queue.Queue = queue.Queue()
-            self._pending[req_id] = resp_queue
-
-        data = encode_jsonrpc_request(method, params, id=req_id)
-        log_trace(f"MCP[{self.name}]: sending {method} id={req_id}")
-
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
-            self._process.stdin.write(data)
-            self._process.stdin.flush()
-        except (OSError, BrokenPipeError) as e:
-            with self._lock:
-                self._pending.pop(req_id, None)
-            raise MCPConnectionError(f"MCP[{self.name}]: write failed: {e}")
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            future.cancel()
+            raise MCPTimeoutError(f"MCP[{self.name}]: operation timed out after {timeout}s")
 
-        # Wait for response
+    async def _async_call_tool(self, name: str, arguments: Dict[str, Any]) -> str:
+        """Call an MCP tool via the ClientSession."""
+        if not self._session:
+            raise MCPConnectionError(f"MCP[{self.name}]: no active session")
+
+        result = await self._session.call_tool(name, arguments)
+
+        # Extract text content
+        parts = []
+        for item in result.content:
+            if hasattr(item, "text"):
+                parts.append(item.text)
+            else:
+                parts.append(str(item))
+        return "\n".join(parts) if parts else str(result)
+
+    def _run_loop(self) -> None:
+        """Background thread: run the asyncio event loop with the MCP session."""
         try:
-            response = resp_queue.get(timeout=timeout)
-        except queue.Empty:
-            with self._lock:
-                self._pending.pop(req_id, None)
-            raise MCPTimeoutError(f"MCP[{self.name}]: {method} timed out after {timeout}s")
-
-        if "error" in response:
-            err = response["error"]
-            raise MCPError(f"MCP[{self.name}]: {method} error: {err.get('message', err)}")
-
-        return response.get("result", response)
-
-    def _send_notification(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
-        """Send a JSON-RPC notification (no id, no response)."""
-        if not self._process or not self._process.stdin:
-            return
-
-        body: Dict[str, Any] = {
-            "jsonrpc": "2.0",
-            "method": method,
-        }
-        if params is not None:
-            body["params"] = params
-
-        payload = json.dumps(body)
-        frame = f"Content-Length: {len(payload)}\r\n\r\n{payload}"
-
-        try:
-            self._process.stdin.write(frame.encode("utf-8"))
-            self._process.stdin.flush()
-        except OSError as e:
-            log_debug(f"MCP[{self.name}]: notification write failed: {e}")
-
-    def _heartbeat_loop(self) -> None:
-        """Background thread: periodically ping the server to detect dead processes."""
-        while self._running:
-            time.sleep(_HEARTBEAT_INTERVAL)
-            if not self._running:
-                break
-            try:
-                # Use a short timeout for the heartbeat ping
-                self._send_request("ping", {}, timeout=5.0)
-                if not self._healthy:
-                    log_info(f"MCP[{self.name}]: heartbeat recovered")
-                self._healthy = True
-            except MCPTimeoutError:
-                if self._healthy:
-                    log_error(f"MCP[{self.name}]: heartbeat timed out — server may be unresponsive")
-                self._healthy = False
-            except (MCPConnectionError, MCPError):
-                if self._healthy:
-                    log_error(f"MCP[{self.name}]: heartbeat failed — server may be dead")
-                self._healthy = False
-            except Exception:
-                # Don't crash the heartbeat thread on unexpected errors
-                self._healthy = False
-
-    def _read_loop(self) -> None:
-        """Background thread: read JSON-RPC responses from stdout."""
-        log_trace(f"MCP[{self.name}]: reader started")
-        try:
-            while self._running and self._process and self._process.poll() is None:
-                body = parse_content_length_frame(self._process.stdout)
-                if body is None:
-                    break
-
-                response = decode_jsonrpc_response(body)
-                resp_id = response.get("id")
-
-                if resp_id is not None:
-                    with self._lock:
-                        q = self._pending.pop(resp_id, None)
-                    if q:
-                        q.put(response)
-                    else:
-                        log_trace(f"MCP[{self.name}]: no pending for id={resp_id}")
-                else:
-                    # Notification from server — log and ignore
-                    log_trace(f"MCP[{self.name}]: server notification: {body[:200]}")
-
+            asyncio.run(self._async_main())
         except Exception as e:
             if self._running:
-                log_error(f"MCP[{self.name}]: reader error: {e}")
+                log_error(f"MCP[{self.name}]: event loop error: {e}")
+            if not self._ready.is_set():
+                self._start_error = str(e)
+                self._ready.set()
         finally:
-            log_trace(f"MCP[{self.name}]: reader stopped")
+            self._running = False
+
+    async def _async_main(self) -> None:
+        """Async entry point: connect, handshake, discover tools, then keep alive."""
+        self._loop = asyncio.get_running_loop()
+        self._shutdown_event = asyncio.Event()
+
+        server_params = StdioServerParameters(
+            command=self.config.command,
+            args=self.config.args,
+            env=self.config.env if self.config.env else None,
+        )
+
+        try:
+            async with stdio_client(server_params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    self._session = session
+
+                    # Initialize handshake
+                    init_result = await session.initialize()
+                    log_debug(f"MCP[{self.name}]: initialized, server: {init_result.server_info}")
+
+                    # Discover tools
+                    tools_result = await session.list_tools()
+                    self._tools = []
+                    for t in tools_result.tools:
+                        self._tools.append(MCPToolSchema(
+                            name=t.name,
+                            description=t.description or "",
+                            input_schema=t.inputSchema if hasattr(t, "inputSchema") else {},
+                        ))
+                    log_info(f"MCP[{self.name}]: discovered {len(self._tools)} tools")
+
+                    # Signal that initialization is complete
+                    self._ready.set()
+
+                    # Keep the session alive until stop() is called
+                    await self._shutdown_event.wait()
+
+        except Exception as e:
+            if not self._ready.is_set():
+                self._start_error = str(e)
+                self._ready.set()
+            else:
+                log_error(f"MCP[{self.name}]: session error: {e}")
