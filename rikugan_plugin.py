@@ -104,7 +104,23 @@ class RikuganPlugmod(idaapi.plugmod_t):
                     except Exception as e:
                         import sys; sys.stderr.write(f"[Rikugan] Skipping {modname}: {e}\n")
 
-            _load_submodules(rikugan)
+            # Temporarily bypass Shiboken's __import__ hook during bulk
+            # loading.  importlib.import_module() itself avoids __import__,
+            # but *executed* module code (e.g. ``from PySide6 import ...``
+            # in qt_compat.py) emits IMPORT_NAME bytecode that calls
+            # builtins.__import__.  On Python 3.14 this can cause a deep
+            # recursive re-entry into Shiboken that triggers a UAF crash.
+            #
+            # PySide6 modules are already in sys.modules (loaded by IDA's
+            # own UI), so CPython's import machinery just needs a dict
+            # lookup — Shiboken's type-wrapper initialisation is not needed.
+            saved_import = builtins.__import__
+            builtins.__import__ = importlib.__import__
+            try:
+                _load_submodules(rikugan)
+            finally:
+                builtins.__import__ = saved_import
+
             _log("_toggle_panel: all rikugan modules loaded")
             RikuganPanel = importlib.import_module("rikugan.ida.ui.panel").RikuganPanel
 
