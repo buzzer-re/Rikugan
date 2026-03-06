@@ -358,7 +358,9 @@ rikugan/agent/prompts/
 
 IDA tool modules use `importlib.import_module()` for all `ida_*` imports to avoid Shiboken UAF crashes. Key considerations:
 
-- **IDA 9.x** removed `ida_struct` and `ida_enum` — use `ida_typeinf` with `udt_type_data_t`/`udm_t`/`enum_type_data_t`/`edm_t`
+- **IDA 9.x** removed `ida_struct` and `ida_enum` — use `ida_typeinf` with `tinfo_t.add_udm()`/`udm_t`/`edm_t`/`iter_struct()`/`iter_enum()`. Note: `idc` still has enum wrapper functions (`add_enum`, `get_enum`, etc.)
+- **IDA 9.x** `ida_bytes` has both `get_byte()` and `get_wide_byte()`; `idc` only has `get_wide_byte`
+- **IDA 9.x** `modify_user_lvar_info(ea, MLI_TYPE, lsi)` is the preferred way to retype local variables (persists to DB); `lvar_t.set_lvar_type()` is in-memory only
 - **Segment permissions** use raw bit flags on `seg.perm` (4=R, 2=W, 1=X), not named constants
 - **`idautils.Entries()`** yields 4 values: `(index, ordinal, ea, name)`
 - **`ida_hexrays.decompile()`** can raise `DecompilationFailure` — always wrap in try/except
@@ -373,13 +375,17 @@ IDA Pro's Qt/PySide6 binding (Shiboken) has a known Use-After-Free bug triggered
 
 **Python 3.10 is the safest choice for IDA Pro.** Higher versions may still work with the mitigations in place, but can exhibit instability. See [upstream report](https://community.hex-rays.com/t/ida-9-3-b1-macos-arm64-uaf-crash/646).
 
-### Known Broken IDA Tools
+### IDA 9.x Type API Changes
 
-The following tools have confirmed bugs as of the last test pass. Root cause is likely lazy/missing module imports inside the tool handlers:
+The following IDA 9.x API changes are handled by the codebase:
 
-| Tool | Error | Suspected Cause |
-|------|-------|-----------------|
-| `create_struct` | `name 'ida_struct' is not defined` | `ida_struct` removed in IDA 9.x — needs `ida_typeinf` migration |
-| `import_c_header` | `name 'idc' is not defined` | `idc` not imported in handler; use `importlib.import_module("idc")` |
-| `set_function_prototype` | `name 'idc' is not defined` | Same as above |
-| `apply_type_to_variable` | `Hex-Rays not available` | Decompiler guard fires even when Hex-Rays is active — check availability detection |
+| Module Change | Migration |
+|--------------|-----------|
+| `ida_struct` removed | All struct ops use `ida_typeinf` UDT API (`tinfo_t.create_udt()`, `add_udm()`, `find_udm()`, etc.) |
+| `ida_enum` removed | Enum tools use `idc` wrappers (still present in 9.x) + `ida_typeinf` native API (`edm_t`, `iter_enum()`) |
+| UDT offsets are in **bits** | All offset parameters multiply by 8 before passing to `udm_t` / `add_udm()` |
+| `lvar_t.set_user_type()` takes **no args** | Just sets the user-defined flag, doesn't set a type |
+| `apply_type_to_variable` | Uses `modify_user_lvar_info(ea, MLI_TYPE, lsi)` (persistent) with callback fallback |
+| `tinfo_t.parse(decl)` | Convenience method, `til` defaults to `None` (valid — uses default IDB TIL) |
+| `tinfo_t.add_udm(name, type_str, offset_bits)` | Accepts string types directly in IDA 9.x |
+| `tinfo_t.iter_struct()` / `iter_enum()` | Generator-based iteration (preferred over `get_udt_details`) |

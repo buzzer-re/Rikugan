@@ -56,7 +56,14 @@ if exist "%OLD_LINK%\" (
 )
 
 
-if not exist "%PLUGINS_DIR%\" mkdir "%PLUGINS_DIR%"
+:: ── Install Python dependencies ──────────────────────────────────
+call :install_requirements
+if !errorlevel! neq 0 (
+    echo [-] Failed to install Python dependencies from requirements.txt
+    exit /b 1
+)
+
+if not exist "%PLUGINS_DIR%\"  mkdir "%PLUGINS_DIR%"
 if not exist "%SKILLS_DIR%\" mkdir "%SKILLS_DIR%"
 
 set "BUILTINS_SRC=%SCRIPT_DIR%\rikugan\skills\builtins"
@@ -105,3 +112,96 @@ echo [*] Restart Binary Ninja and open Tools ^> Rikugan ^> Open Panel.
 endlocal
 exit /b 0
 
+:: ── Subroutine: install_requirements ─────────────────────────────
+:install_requirements
+set "REQ=%SCRIPT_DIR%\requirements.txt"
+if not exist "%REQ%" (
+    echo [-] requirements.txt not found in %SCRIPT_DIR%
+    exit /b 1
+)
+
+:: 1. Explicit override via BN_PYTHON env var
+if defined BN_PYTHON (
+    echo [*] Using BN_PYTHON override: %BN_PYTHON%
+    "%BN_PYTHON%" -m pip install -r "%REQ%"
+    if !errorlevel! equ 0 (
+        echo [+] Dependencies installed with BN_PYTHON override
+        exit /b 0
+    )
+    echo [!] BN_PYTHON override failed, trying other methods...
+)
+
+:: 2. Try Binary Ninja's bundled Python
+:: Windows: BN ships a bundled Python with python.exe inside the install dir
+set "BN_FOUND_PYTHON="
+set "BN_FOUND_HOME="
+
+if exist "%ProgramFiles%\Vector35\BinaryNinja\bundled-python3\python.exe" (
+    set "BN_FOUND_PYTHON=%ProgramFiles%\Vector35\BinaryNinja\bundled-python3\python.exe"
+    set "BN_FOUND_HOME=%ProgramFiles%\Vector35\BinaryNinja\bundled-python3"
+)
+if not defined BN_FOUND_PYTHON if exist "%LOCALAPPDATA%\Vector35\BinaryNinja\bundled-python3\python.exe" (
+    set "BN_FOUND_PYTHON=%LOCALAPPDATA%\Vector35\BinaryNinja\bundled-python3\python.exe"
+    set "BN_FOUND_HOME=%LOCALAPPDATA%\Vector35\BinaryNinja\bundled-python3"
+)
+if not defined BN_FOUND_PYTHON if exist "%ProgramFiles(x86)%\Vector35\BinaryNinja\bundled-python3\python.exe" (
+    set "BN_FOUND_PYTHON=%ProgramFiles(x86)%\Vector35\BinaryNinja\bundled-python3\python.exe"
+    set "BN_FOUND_HOME=%ProgramFiles(x86)%\Vector35\BinaryNinja\bundled-python3"
+)
+
+if defined BN_FOUND_PYTHON (
+    echo [*] Found Binary Ninja Python: !BN_FOUND_PYTHON!
+    set "PYTHONHOME=!BN_FOUND_HOME!"
+    "!BN_FOUND_PYTHON!" -m pip install -r "%REQ%"
+    if !errorlevel! equ 0 (
+        set "PYTHONHOME="
+        echo [+] Dependencies installed into Binary Ninja's Python
+        exit /b 0
+    )
+    set "PYTHONHOME="
+    echo [!] BN Python pip install failed, trying system Python...
+)
+
+:: 3. Fallback: system Python
+where python3 >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [*] Installing Python dependencies with: python3 -m pip
+    python3 -m pip install -r "%REQ%"
+    if !errorlevel! equ 0 (
+        echo [+] Dependencies installed successfully
+        exit /b 0
+    )
+    python3 -m pip install --user -r "%REQ%"
+    if !errorlevel! equ 0 (
+        echo [+] Dependencies installed successfully --user
+        exit /b 0
+    )
+)
+
+where python >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [*] Installing Python dependencies with: python -m pip
+    python -m pip install -r "%REQ%"
+    if !errorlevel! equ 0 (
+        echo [+] Dependencies installed successfully
+        exit /b 0
+    )
+    python -m pip install --user -r "%REQ%"
+    if !errorlevel! equ 0 (
+        echo [+] Dependencies installed successfully --user
+        exit /b 0
+    )
+)
+
+where pip >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [*] Installing Python dependencies with: pip
+    pip install -r "%REQ%"
+    if !errorlevel! equ 0 (
+        echo [+] Dependencies installed successfully
+        exit /b 0
+    )
+)
+
+echo [-] Could not find a working Python/pip to install dependencies
+exit /b 1

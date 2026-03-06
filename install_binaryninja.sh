@@ -72,30 +72,85 @@ if [[ ! -f "$SCRIPT_DIR/rikugan_binaryninja.py" ]] || [[ ! -f "$SCRIPT_DIR/plugi
     exit 1
 fi
 
+find_bn_install_dir() {
+    # Find Binary Ninja's installation directory
+    local candidates=()
+    if [[ "$(uname)" == "Darwin" ]]; then
+        candidates+=(
+            "/Applications/Binary Ninja.app"
+            "$HOME/Applications/Binary Ninja.app"
+        )
+    else
+        # Linux common install locations
+        candidates+=(
+            "$HOME/binaryninja"
+            "/opt/binaryninja"
+            "/usr/local/binaryninja"
+        )
+    fi
+    for dir in "${candidates[@]}"; do
+        if [[ -d "$dir" ]]; then
+            echo "$dir"
+            return 0
+        fi
+    done
+    return 1
+}
+
+try_bn_python_pip() {
+    # Attempt to run pip using Binary Ninja's bundled Python
+    local bn_install="$1"
+    local req="$2"
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        # macOS: Python binary is in the Framework, stdlib in bundled-python3
+        local bn_python="$bn_install/Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
+        local bn_home="$bn_install/Contents/Resources/bundled-python3"
+        if [[ -x "$bn_python" ]] && [[ -d "$bn_home" ]]; then
+            info "Found Binary Ninja Python: $bn_python"
+            if PYTHONHOME="$bn_home" "$bn_python" -m pip install -r "$req" 2>&1; then
+                return 0
+            fi
+            warn "pip install failed with BN Python"
+        fi
+    else
+        # Linux: BN uses system Python, no bundled interpreter.
+        # Packages are loaded from ~/.binaryninja/python3XX/ at runtime.
+        info "Linux: Binary Ninja uses system Python"
+    fi
+    return 1
+}
+
 install_requirements() {
     local req="$SCRIPT_DIR/requirements.txt"
-    local candidates=()
 
-    # Optional explicit override
+    # 1. Explicit override via BN_PYTHON env var
     if [[ -n "${BN_PYTHON:-}" ]]; then
-        candidates+=("\"$BN_PYTHON\" -m pip")
+        if "$BN_PYTHON" -m pip install -r "$req"; then
+            ok "Dependencies installed with BN_PYTHON override"
+            return 0
+        fi
+        warn "BN_PYTHON override failed, trying other methods..."
     fi
 
-    # Common Binary Ninja bundled Python locations + fallbacks
-    candidates+=(
-        "\"/Applications/Binary Ninja.app/Contents/Resources/bundled-python3/bin/python3\" -m pip"
-        "\"/opt/binaryninja/bundled-python/bin/python3\" -m pip"
-        "\"$HOME/binaryninja/bundled-python/bin/python3\" -m pip"
-        "python3 -m pip"
-        "python -m pip"
-        "pip3"
-        "pip"
-    )
+    # 2. Try Binary Ninja's bundled Python (macOS only; Linux has no bundled Python)
+    local bn_install
+    if bn_install="$(find_bn_install_dir)"; then
+        info "Found Binary Ninja at: $bn_install"
+        if try_bn_python_pip "$bn_install" "$req"; then
+            ok "Dependencies installed into Binary Ninja's Python"
+            return 0
+        fi
+    fi
 
-    for cmd in "${candidates[@]}"; do
+    # 3. Fallback: system Python (needed for Linux, last resort for macOS)
+    local fallbacks=("python3 -m pip" "python -m pip" "pip3" "pip")
+    for cmd in "${fallbacks[@]}"; do
         if eval "$cmd --version" >/dev/null 2>&1; then
             info "Installing Python dependencies with: $cmd"
-            if eval "$cmd install --break-system-packages -r \"$req\""; then
+            if eval "$cmd install --break-system-packages -r \"$req\"" 2>/dev/null \
+               || eval "$cmd install --user -r \"$req\"" 2>/dev/null \
+               || eval "$cmd install -r \"$req\""; then
                 ok "Dependencies installed successfully"
                 return 0
             fi

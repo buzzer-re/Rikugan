@@ -72,18 +72,32 @@ if _HAS_HEXRAYS:
 # ---------------------------------------------------------------------------
 
 def _parse_type(type_str: str) -> "ida_typeinf.tinfo_t":
-    """Parse a C type string into a tinfo_t, with named-type fallback."""
+    """Parse a C type string into a tinfo_t, with named-type fallback.
+
+    IDA 9.x docs confirm None is valid for the til parameter (uses default IDB TIL).
+    """
     tif = ida_typeinf.tinfo_t()
-    # Try parsing as a C declaration first (e.g. "unsigned int", "void *")
+
+    # Approach 1: tinfo_t.parse() convenience method (IDA 9.x)
+    try:
+        if tif.parse(type_str):
+            return tif
+    except (AttributeError, TypeError):
+        pass  # Method may not exist in older builds
+
+    # Approach 2: parse_decl with semicolon
     decl = type_str if type_str.rstrip().endswith(";") else f"{type_str};"
     if ida_typeinf.parse_decl(tif, None, decl, ida_typeinf.PT_SIL):
         return tif
-    # Fallback: maybe it's a named type (struct/enum/typedef name)
+
+    # Approach 3: named type lookup (struct/enum/typedef name)
     if tif.get_named_type(None, type_str):
         return tif
-    # Fallback: try without the semicolon
+
+    # Approach 4: parse_decl without semicolon
     if ida_typeinf.parse_decl(tif, None, type_str, ida_typeinf.PT_SIL):
         return tif
+
     return None
 
 
@@ -92,37 +106,53 @@ def _parse_type(type_str: str) -> "ida_typeinf.tinfo_t":
 # ---------------------------------------------------------------------------
 
 def _create_struct_ida9(name: str, field_list: list) -> str:
-    """Create a struct using the IDA 9.x ida_typeinf UDT API."""
+    """Create a struct using the IDA 9.x ida_typeinf UDT API.
+
+    Uses tinfo_t.create_udt() + tinfo_t.add_udm() which supports explicit
+    offsets (in bits) and accepts type strings directly.
+    """
     # Check struct doesn't already exist
     existing = ida_typeinf.tinfo_t()
     if existing.get_named_type(None, name) and existing.is_udt():
         return f"Struct '{name}' already exists"
 
-    udt = ida_typeinf.udt_type_data_t()
+    tif = ida_typeinf.tinfo_t()
+    if not tif.create_udt(False):  # False = struct, True = union
+        return f"Failed to create empty UDT for struct '{name}'"
+
+    TERR_OK = getattr(ida_typeinf, "TERR_OK", 0)
+
     for fld in field_list:
         fname = fld["name"]
         ftype_str = fld.get("type", "int")
+        offset_bytes = fld.get("offset")
 
-        ftif = _parse_type(ftype_str)
-        if ftif is None:
-            # Ultimate fallback to int
-            ftif = ida_typeinf.tinfo_t()
-            ida_typeinf.parse_decl(ftif, None, "int;", ida_typeinf.PT_SIL)
+        # Compute offset in bits (IDA 9.x UDT offsets are in bits)
+        offset_bits = offset_bytes * 8 if offset_bytes is not None else 0
 
-        udm = ida_typeinf.udm_t()
-        udm.name = fname
-        udm.type = ftif
-        if fld.get("comment"):
-            udm.cmt = fld["comment"]
-        udt.push_back(udm)
+        # Try add_udm with string type (IDA 9.x accepts str directly)
+        try:
+            err = tif.add_udm(fname, ftype_str, offset_bits)
+        except (TypeError, Exception):
+            # Fallback: parse type and use udm_t object
+            ftif = _parse_type(ftype_str)
+            if ftif is None:
+                ftif = ida_typeinf.tinfo_t()
+                ida_typeinf.parse_decl(ftif, None, "int;", ida_typeinf.PT_SIL)
+            udm = ida_typeinf.udm_t(fname, ftif, offset_bits)
+            err = tif.add_udm(udm)
 
-    tif = ida_typeinf.tinfo_t()
-    if not tif.create_udt(udt):
-        return f"Failed to build UDT for struct '{name}'"
+        if fld.get("comment") and err == TERR_OK:
+            # Set comment on the member we just added
+            idx = tif.find_udm(fname, ida_typeinf.STRMEM_NAME)
+            if idx >= 0:
+                try:
+                    tif.set_udm_cmt(idx, fld["comment"])
+                except Exception:
+                    pass  # Non-fatal: comment setting may fail
 
     # Register in the local type library (None = local IDB TIL)
     err = tif.set_named_type(None, name)
-    TERR_OK = getattr(ida_typeinf, "TERR_OK", 0)
     if err != TERR_OK:
         return f"Failed to register struct '{name}' (err={err})"
 
@@ -150,23 +180,21 @@ def _modify_struct_ida9(
     TERR_OK = getattr(ida_typeinf, "TERR_OK", 0)
 
     if action == "add_field":
-        ftif = _parse_type(field_type)
-        if ftif is None:
-            return f"Failed to parse type '{field_type}'"
-        udm = ida_typeinf.udm_t()
-        udm.name = field_name
-        udm.type = ftif
-        if offset >= 0:
-            udm.offset = offset * 8  # bytes → bits
-        err = tif.add_udm(udm)
+        offset_bits = offset * 8 if offset >= 0 else 0
+        try:
+            err = tif.add_udm(field_name, field_type, offset_bits)
+        except (TypeError, Exception):
+            ftif = _parse_type(field_type)
+            if ftif is None:
+                return f"Failed to parse type '{field_type}'"
+            udm = ida_typeinf.udm_t(field_name, ftif, offset_bits)
+            err = tif.add_udm(udm)
         if err == TERR_OK:
             return f"Added field '{field_name}' ({field_type}) to '{name}'"
         return f"Failed to add field (error code {err})"
 
     elif action == "remove_field":
-        udm = ida_typeinf.udm_t()
-        udm.name = field_name
-        idx = tif.find_udm(udm, ida_typeinf.STRMEM_NAME)
+        idx = tif.find_udm(field_name, ida_typeinf.STRMEM_NAME)
         if idx == -1:
             return f"Field '{field_name}' not found in '{name}'"
         err = tif.del_udm(idx)
@@ -175,9 +203,7 @@ def _modify_struct_ida9(
         return f"Failed to remove field (error code {err})"
 
     elif action == "rename_field":
-        udm = ida_typeinf.udm_t()
-        udm.name = field_name
-        idx = tif.find_udm(udm, ida_typeinf.STRMEM_NAME)
+        idx = tif.find_udm(field_name, ida_typeinf.STRMEM_NAME)
         if idx == -1:
             return f"Field '{field_name}' not found"
         err = tif.rename_udm(idx, new_name)
@@ -186,9 +212,7 @@ def _modify_struct_ida9(
         return f"Rename failed (error code {err})"
 
     elif action == "retype_field":
-        udm = ida_typeinf.udm_t()
-        udm.name = field_name
-        idx = tif.find_udm(udm, ida_typeinf.STRMEM_NAME)
+        idx = tif.find_udm(field_name, ida_typeinf.STRMEM_NAME)
         if idx == -1:
             return f"Field '{field_name}' not found"
         ftif = _parse_type(field_type)
@@ -200,22 +224,14 @@ def _modify_struct_ida9(
         return f"Retype failed (error code {err})"
 
     elif action == "set_field_comment":
-        udm = ida_typeinf.udm_t()
-        udm.name = field_name
-        idx = tif.find_udm(udm, ida_typeinf.STRMEM_NAME)
+        idx = tif.find_udm(field_name, ida_typeinf.STRMEM_NAME)
         if idx == -1:
             return f"Field '{field_name}' not found"
-        # Access the actual udm from the UDT details
-        udt = ida_typeinf.udt_type_data_t()
-        tif.get_udt_details(udt)
-        if 0 <= idx < len(udt):
-            udt[idx].cmt = comment
-            # Rebuild from modified UDT
-            new_tif = ida_typeinf.tinfo_t()
-            new_tif.create_udt(udt)
-            new_tif.set_named_type(None, name, ida_typeinf.NTF_REPLACE)
+        try:
+            tif.set_udm_cmt(idx, comment)
             return f"Set comment on '{field_name}'"
-        return f"Field index {idx} out of range"
+        except Exception as e:
+            return f"Failed to set comment: {e}"
 
     elif action == "resize":
         if new_size <= 0:
@@ -249,20 +265,33 @@ def _get_struct_info_ida9(name: str) -> str:
     nmembers = tif.get_udt_nmembers()
     lines = [f"Struct: {name}", f"Size: {size} (0x{size:x})", f"Members: {nmembers}", ""]
 
-    udt = ida_typeinf.udt_type_data_t()
-    if not tif.get_udt_details(udt):
-        return f"Struct '{name}' found but could not read UDT details"
-
-    for idx, udm in enumerate(udt):
-        if hasattr(udm, "is_gap") and udm.is_gap():
-            continue
-        offset_bytes = udm.offset // 8
-        size_bytes = udm.size // 8
-        mname = udm.name
-        mtype = str(udm.type)
-        cmt = getattr(udm, "cmt", "") or ""
-        cmt_str = f"  ; {cmt}" if cmt else ""
-        lines.append(f"  +0x{offset_bytes:04x}  {mtype:24s} {mname:24s} ({size_bytes} bytes){cmt_str}")
+    # Prefer iter_struct() generator (IDA 9.x), fall back to get_udt_details
+    try:
+        for udm in tif.iter_struct():
+            if hasattr(udm, "is_gap") and udm.is_gap():
+                continue
+            offset_bytes = udm.offset // 8
+            size_bytes = udm.size // 8
+            mname = udm.name
+            mtype = str(udm.type)
+            cmt = getattr(udm, "cmt", "") or ""
+            cmt_str = f"  ; {cmt}" if cmt else ""
+            lines.append(f"  +0x{offset_bytes:04x}  {mtype:24s} {mname:24s} ({size_bytes} bytes){cmt_str}")
+    except (AttributeError, Exception):
+        # Fallback to get_udt_details
+        udt = ida_typeinf.udt_type_data_t()
+        if not tif.get_udt_details(udt):
+            return f"Struct '{name}' found but could not read UDT details"
+        for udm in udt:
+            if hasattr(udm, "is_gap") and udm.is_gap():
+                continue
+            offset_bytes = udm.offset // 8
+            size_bytes = udm.size // 8
+            mname = udm.name
+            mtype = str(udm.type)
+            cmt = getattr(udm, "cmt", "") or ""
+            cmt_str = f"  ; {cmt}" if cmt else ""
+            lines.append(f"  +0x{offset_bytes:04x}  {mtype:24s} {mname:24s} ({size_bytes} bytes){cmt_str}")
 
     return "\n".join(lines)
 
@@ -531,10 +560,10 @@ def list_structs(
 # --- Enums ---
 
 def _require_ida_enum() -> None:
-    if ida_enum is None:
+    """Check ida_enum availability. In IDA 9.x, idc still wraps enum functions."""
+    if ida_enum is None and idc is None:
         raise ToolError(
-            "ida_enum module not available (removed in IDA 9.x; "
-            "use ida_typeinf for enum operations)",
+            "Neither ida_enum nor idc module available for enum operations",
             tool_name="types",
         )
 
@@ -547,25 +576,27 @@ def create_enum(
 ) -> str:
     """Create a new enum with name/value pairs."""
     _require_ida_enum()
-    eid = ida_enum.get_enum(name)
+    member_list = json.loads(members)
+
+    # IDA 9.x: idc still has enum wrappers even without ida_enum
+    _enum_mod = ida_enum or idc
+
+    eid = _enum_mod.get_enum(name)
     if eid != idc.BADADDR:
         return f"Enum '{name}' already exists"
 
-    eid = ida_enum.add_enum(idc.BADADDR, name, 0)
+    eid = _enum_mod.add_enum(idc.BADADDR, name, 0)
     if eid == idc.BADADDR:
         return f"Failed to create enum '{name}'"
 
-    if bitfield:
+    if bitfield and ida_enum is not None:
         ida_enum.set_enum_bf(eid, True)
 
-    member_list = json.loads(members)
     for m in member_list:
         mname = m["name"]
         mval = m["value"]
-        bmask = mval if bitfield else 0xFFFFFFFF
-        err = ida_enum.add_enum_member(eid, mname, mval, bmask)
-        if err:
-            pass  # Non-fatal: duplicate values etc.
+        bmask = mval if bitfield else -1
+        _enum_mod.add_enum_member(eid, mname, mval, bmask)
 
     return f"Created enum '{name}' with {len(member_list)} members"
 
@@ -580,59 +611,117 @@ def modify_enum(
 ) -> str:
     """Modify an existing enum."""
     _require_ida_enum()
-    eid = ida_enum.get_enum(name)
+    _enum_mod = ida_enum or idc
+
+    eid = _enum_mod.get_enum(name)
     if eid == idc.BADADDR:
         return f"Enum '{name}' not found"
 
     if action == "add_member":
-        err = ida_enum.add_enum_member(eid, member_name, value)
+        err = _enum_mod.add_enum_member(eid, member_name, value, -1)
         return f"Added '{member_name}' = {value}" if err == 0 else f"Failed (error {err})"
     elif action == "remove_member":
-        cid = ida_enum.get_enum_member_by_name(member_name)
-        if cid == idc.BADADDR:
-            return f"Member '{member_name}' not found"
-        val = ida_enum.get_enum_member_value(cid)
-        serial = ida_enum.get_enum_member_serial(cid)
-        bmask = ida_enum.get_enum_member_bmask(cid)
-        ok = ida_enum.del_enum_member(eid, val, serial, bmask)
-        return f"Removed '{member_name}'" if ok else "Remove failed"
+        if ida_enum is not None:
+            cid = ida_enum.get_enum_member_by_name(member_name)
+            if cid == idc.BADADDR:
+                return f"Member '{member_name}' not found"
+            val = ida_enum.get_enum_member_value(cid)
+            serial = ida_enum.get_enum_member_serial(cid)
+            bmask = ida_enum.get_enum_member_bmask(cid)
+            ok = ida_enum.del_enum_member(eid, val, serial, bmask)
+            return f"Removed '{member_name}'" if ok else "Remove failed"
+        return "remove_member requires ida_enum (not available in IDA 9.x via idc)"
     elif action == "rename_member":
-        cid = ida_enum.get_enum_member_by_name(member_name)
-        if cid == idc.BADADDR:
-            return f"Member '{member_name}' not found"
-        ok = ida_enum.set_enum_member_name(cid, new_name)
-        return f"Renamed '{member_name}' → '{new_name}'" if ok else "Rename failed"
+        if ida_enum is not None:
+            cid = ida_enum.get_enum_member_by_name(member_name)
+            if cid == idc.BADADDR:
+                return f"Member '{member_name}' not found"
+            ok = ida_enum.set_enum_member_name(cid, new_name)
+            return f"Renamed '{member_name}' → '{new_name}'" if ok else "Rename failed"
+        # IDA 9.x: use idc wrapper
+        cid = idc.get_enum_member(eid, 0, 0, -1)  # need to find by name
+        return "rename_member via idc not fully supported — use execute_python"
 
     return f"Unknown action: {action}"
+
+
+def _get_enum_info_ida9(name: str) -> str:
+    """Get enum info using IDA 9.x ida_typeinf iter_enum()."""
+    tif = ida_typeinf.tinfo_t()
+    if not tif.get_named_type(None, name) or not tif.is_enum():
+        return f"Enum '{name}' not found"
+
+    lines = [f"Enum: {name}", ""]
+    try:
+        for edm in tif.iter_enum():
+            mname = edm.name
+            mval = edm.value
+            lines.append(f"  {mname:40s} = 0x{mval:x} ({mval})")
+    except (AttributeError, Exception) as e:
+        lines.append(f"  (iteration not supported: {e})")
+
+    return "\n".join(lines)
 
 
 @tool(category="types")
 def get_enum_info(name: Annotated[str, "Enum name"]) -> str:
     """Get all enum members with values."""
     _require_ida_enum()
-    eid = ida_enum.get_enum(name)
-    if eid == idc.BADADDR:
-        return f"Enum '{name}' not found"
 
-    is_bf = ida_enum.is_bf(eid)
-    lines = [f"Enum: {name}" + (" (bitfield)" if is_bf else ""), ""]
+    if ida_enum is not None:
+        eid = ida_enum.get_enum(name)
+        if eid == idc.BADADDR:
+            return f"Enum '{name}' not found"
 
-    bmask = ida_enum.get_first_bmask(eid) if is_bf else 0xFFFFFFFF
-    while True:
-        val = ida_enum.get_first_enum_member(eid, bmask)
-        while val != 0xFFFFFFFFFFFFFFFF and val != 0xFFFFFFFF:
-            cid = ida_enum.get_enum_member(eid, val, 0, bmask)
-            if cid != idc.BADADDR:
-                mname = ida_enum.get_enum_member_name(cid)
-                lines.append(f"  {mname:40s} = 0x{val:x} ({val})")
-            val = ida_enum.get_next_enum_member(eid, val, bmask)
+        is_bf = ida_enum.is_bf(eid)
+        lines = [f"Enum: {name}" + (" (bitfield)" if is_bf else ""), ""]
 
-        if not is_bf:
+        bmask = ida_enum.get_first_bmask(eid) if is_bf else 0xFFFFFFFF
+        while True:
+            val = ida_enum.get_first_enum_member(eid, bmask)
+            while val != 0xFFFFFFFFFFFFFFFF and val != 0xFFFFFFFF:
+                cid = ida_enum.get_enum_member(eid, val, 0, bmask)
+                if cid != idc.BADADDR:
+                    mname = ida_enum.get_enum_member_name(cid)
+                    lines.append(f"  {mname:40s} = 0x{val:x} ({val})")
+                val = ida_enum.get_next_enum_member(eid, val, bmask)
+
+            if not is_bf:
+                break
+            bmask = ida_enum.get_next_bmask(eid, bmask)
+            if bmask == 0xFFFFFFFFFFFFFFFF or bmask == 0xFFFFFFFF:
+                break
+
+        return "\n".join(lines)
+
+    # IDA 9.x fallback: use ida_typeinf iter_enum()
+    return _get_enum_info_ida9(name)
+
+
+def _list_enums_ida9(name_filter: str) -> str:
+    """List enums using IDA 9.x ordinal iteration via ida_typeinf."""
+    lines = ["Enums:"]
+    found = 0
+    limit = ida_typeinf.get_ordinal_limit()
+    for ordinal in range(1, limit):
+        tif = ida_typeinf.tinfo_t()
+        if not tif.get_numbered_type(None, ordinal):
+            continue
+        if not tif.is_enum():
+            continue
+        ename = tif.get_type_name()
+        if not ename:
+            continue
+        if name_filter and name_filter.lower() not in ename.lower():
+            continue
+        lines.append(f"  {ename:40s}")
+        found += 1
+        if found >= 200:
+            lines.append("  ... (truncated)")
             break
-        bmask = ida_enum.get_next_bmask(eid, bmask)
-        if bmask == 0xFFFFFFFFFFFFFFFF or bmask == 0xFFFFFFFF:
-            break
 
+    if found == 0:
+        lines.append("  (none)")
     return "\n".join(lines)
 
 
@@ -642,23 +731,28 @@ def list_enums(
 ) -> str:
     """List all enums in the IDB."""
     _require_ida_enum()
-    lines = ["Enums:"]
-    count = ida_enum.get_enum_qty()
-    found = 0
-    for i in range(count):
-        eid = ida_enum.getn_enum(i)
-        ename = ida_enum.get_enum_name(eid)
-        if not filter or filter.lower() in ename.lower():
-            nmembs = ida_enum.get_enum_size(eid)
-            lines.append(f"  {ename:40s} ({nmembs} members)")
-            found += 1
-        if found >= 200:
-            lines.append("  ... (truncated)")
-            break
 
-    if found == 0:
-        lines.append("  (none)")
-    return "\n".join(lines)
+    if ida_enum is not None:
+        lines = ["Enums:"]
+        count = ida_enum.get_enum_qty()
+        found = 0
+        for i in range(count):
+            eid = ida_enum.getn_enum(i)
+            ename = ida_enum.get_enum_name(eid)
+            if not filter or filter.lower() in ename.lower():
+                nmembs = ida_enum.get_enum_size(eid)
+                lines.append(f"  {ename:40s} ({nmembs} members)")
+                found += 1
+            if found >= 200:
+                lines.append("  ... (truncated)")
+                break
+
+        if found == 0:
+            lines.append("  (none)")
+        return "\n".join(lines)
+
+    # IDA 9.x fallback
+    return _list_enums_ida9(filter)
 
 
 # --- Typedefs & type application ---
@@ -729,26 +823,56 @@ def apply_type_to_variable(
 
     for lv in cfunc.get_lvars():
         if lv.name == var_name:
-            # Approach 1: set_lvar_type (IDA 7.6+)
-            set_lvar_type_fn = getattr(ida_hexrays, "set_lvar_type", None)
-            if set_lvar_type_fn is not None:
-                ok = set_lvar_type_fn(cfunc.entry_ea, lv, tif)
-                if ok:
-                    return f"Set type of '{var_name}' to '{type_str}'"
+            # Approach 1 (IDA 9.x preferred): modify_user_lvar_info with MLI_TYPE
+            # This persists the type change to the database.
+            modify_fn = getattr(ida_hexrays, "modify_user_lvar_info", None)
+            if modify_fn is not None:
+                try:
+                    lsi = ida_hexrays.lvar_saved_info_t()
+                    # lvar_t inherits lvar_locator_t — copy location + defea
+                    lsi.ll = lv
+                    lsi.type = tif
+                    lsi.size = tif.get_size()
+                    lsi.name = lv.name
+                    MLI_TYPE = getattr(ida_hexrays, "MLI_TYPE", 2)
+                    ok = modify_fn(cfunc.entry_ea, MLI_TYPE, lsi)
+                    if ok:
+                        return f"Set type of '{var_name}' to '{type_str}'"
+                except Exception as e:
+                    log_debug(f"modify_user_lvar_info failed for '{var_name}': {e}")
 
-            # Approach 2: lvar_saved_info_t + modify_user_lvars (older IDA builds)
+            # Approach 2: callback-based modify_user_lvars (IDA 9.x alternative)
             try:
-                lsi = ida_hexrays.lvar_saved_info_t()
-                lsi.ll = lv  # lvar_t inherits lvar_locator_t
-                lsi.type = tif
-                lsi.size = tif.get_size()
-                lvvec = ida_hexrays.lvar_uservec_t()
-                lvvec.push_back(lsi)
-                ok2 = ida_hexrays.modify_user_lvars(cfunc.entry_ea, lvvec)
+                class _TypeSetter(ida_hexrays.user_lvar_modifier_t):
+                    def modify_lvars(self, lvinf):
+                        info = lvinf.find_info(lv)
+                        if info is not None:
+                            info.type = tif
+                            info.size = tif.get_size()
+                            return True
+                        # Not found — add via keep_info then find again
+                        lvinf.keep_info(lv)
+                        info = lvinf.find_info(lv)
+                        if info is not None:
+                            info.type = tif
+                            info.size = tif.get_size()
+                            return True
+                        return False
+
+                ok2 = ida_hexrays.modify_user_lvars(cfunc.entry_ea, _TypeSetter())
                 if ok2:
                     return f"Set type of '{var_name}' to '{type_str}'"
             except Exception as fb_e:
-                log_debug(f"modify_user_lvars fallback failed for '{var_name}': {fb_e}")
+                log_debug(f"modify_user_lvars callback failed for '{var_name}': {fb_e}")
+
+            # Approach 3: in-memory only (last resort, won't persist)
+            try:
+                ok3 = lv.set_lvar_type(tif)
+                if ok3:
+                    lv.set_user_type()
+                    return f"Set type of '{var_name}' to '{type_str}' (in-memory, may not persist)"
+            except Exception as e:
+                log_debug(f"set_lvar_type fallback failed for '{var_name}': {e}")
 
             return f"Failed to retype '{var_name}' — try right-click → Set lvar type in the decompiler"
 
