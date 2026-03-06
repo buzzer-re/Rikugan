@@ -354,6 +354,85 @@ rikugan/agent/prompts/
 | `rikugan_plugin.py` | IDA Pro plugin entry point |
 | `rikugan_binaryninja.py` | Binary Ninja plugin entry point |
 
+## Development Standards
+
+### Python Style
+
+- **All modules** start with `from __future__ import annotations`
+- **Type hints everywhere** — function signatures, dataclass fields, return types. Use `typing.Annotated` for tool parameter descriptions.
+- **Dataclasses over dicts** — structured data uses `@dataclass`, not loose dictionaries. Config, state, events, records are all dataclasses.
+- **No bare `except:`** — always catch specific exceptions. The hierarchy in `core/errors.py` exists for a reason.
+- **f-strings for formatting** — never `%` or `.format()`. Hex addresses always use `f"0x{ea:x}"`.
+- **No mutable default arguments** — use `field(default_factory=...)` in dataclasses, `None` + `if` in functions.
+
+### Import Discipline
+
+- **Host API modules** (`ida_*`, `binaryninja`) are **always** imported via `importlib.import_module()` inside `try/except ImportError`. Never use bare `import ida_funcs` at module level — this crashes when loaded in the wrong host and triggers Shiboken UAF in IDA.
+- **Cross-package** uses absolute paths: `from rikugan.tools.base import tool`
+- **Within a package** also uses absolute paths: `from rikugan.binja.tools.common import get_bv`
+- **Constants from host APIs** that may not exist (e.g., `BADADDR`) must have local fallbacks defined at module level.
+
+### Tool Implementation Rules
+
+- Every tool **must** use the `@tool` decorator with an explicit `category`.
+- Tools that modify the database **must** set `mutating=True`. This triggers pre-state capture and undo tracking.
+- Mutating tools **must** have a corresponding entry in `mutation.py` — both `build_reverse_record()` (how to undo) and `capture_pre_state()` (what to save before the mutation).
+- Tool return values are **user-facing strings** — the LLM reads them. Be precise and include addresses. But getter tools used by `capture_pre_state` should return **raw data** (not formatted messages), because the captured value gets passed back as a tool argument on undo.
+- Tools that call Hex-Rays must set `requires_decompiler=True` and wrap `ida_hexrays.decompile()` in `try/except DecompilationFailure`.
+- Validate inputs at the boundary — check addresses are in range, functions exist, names are non-empty. Return an error string (don't raise) so the LLM can self-correct.
+
+### Thread Safety
+
+- **IDA Pro requires all API calls on the main thread.** The `@idasync` decorator in `core/thread_safety.py` handles this — it's applied automatically by the `@tool` decorator for IDA tools.
+- **Binary Ninja's API is thread-safe** — no marshalling needed.
+- **Never use Qt signals across threads** — use `queue.Queue` and poll with `QTimer`. This is how `BackgroundAgentRunner` communicates with the UI and why `_ModelFetcher` uses a queue instead of signals.
+- **Cancellation** uses `threading.Event` (`_cancelled`), checked via `_check_cancelled()` at every yield point, sleep loop iteration, and tool dispatch boundary. The check **must** appear:
+  - At the top of retry loops (before each attempt)
+  - Inside backoff sleep loops (every 0.5s)
+  - Before each tool execution
+  - In the streaming chunk loop
+
+### Error Handling
+
+- Use the exception hierarchy in `core/errors.py` — don't invent new base classes.
+- `ToolError` for tool-level failures (bad input, API call failed).
+- `ProviderError` / `RateLimitError` for LLM API issues — the retry loop in `_stream_llm_turn` handles these automatically.
+- `CancellationError` propagates up to the top-level `run()` generator — never catch and swallow it.
+- **Consecutive error tracking**: after 5 tool failures in a row, tools are temporarily disabled so the LLM is forced to explain what went wrong instead of looping.
+
+### Config & Settings
+
+- New config fields go in `RikuganConfig` as dataclass fields with sensible defaults.
+- Add the field name to the `load()` deserialization loop.
+- Add validation in `validate()` and clamping in `save()` for bounded numeric fields.
+- If the setting needs UI, add it to `SettingsDialog._build_behavior_group()` and wire it in `_on_accept()`.
+- Config values read at runtime should use direct attribute access (`self.config.max_retries`), not `getattr` — the dataclass guarantees the field exists.
+
+### UI Conventions
+
+- All Qt widgets use `PySide6` via `ui/qt_compat.py` — never import PySide6 directly.
+- Stylesheets are centralized in `ui/styles.py`. Component-specific overrides use local `_*_STYLE` constants.
+- **No cross-thread Qt operations** — no `signal.emit()` from background threads. Use queue-based polling.
+- Event routing: `BackgroundAgentRunner` → `Queue` → `QTimer._poll_events()` → `ChatView.handle_event()`.
+
+### Commit Practices
+
+- Prefix: `fix(scope)`, `feat(scope)`, `refactor(scope)`, `security`, `docs`.
+- Scope is the subsystem: `ida`, `binja`, `agent`, `ui`, `providers`, `installer`.
+- One logical change per commit. Bug fix + feature + refactor = three commits.
+- Test in the actual host (IDA/Binary Ninja) before committing tool changes — the `py_compile` check catches syntax but not runtime API issues.
+
+### What to Verify Before Merging
+
+- [ ] `python3 -m py_compile` passes on all modified files
+- [ ] New tools are registered in the host's `registry.py`
+- [ ] Mutating tools have undo support in `mutation.py`
+- [ ] Getter tools used by `capture_pre_state` return raw data, not formatted strings
+- [ ] `_check_cancelled()` is present in any new loop or blocking wait
+- [ ] Host API imports use `importlib.import_module()` with `try/except ImportError`
+- [ ] New config fields are in `load()`, `validate()`, `save()`, and the settings dialog
+- [ ] No `threading.Event` or Qt signal used for cross-thread communication (use `queue.Queue`)
+
 ## IDA API Notes
 
 IDA tool modules use `importlib.import_module()` for all `ida_*` imports to avoid Shiboken UAF crashes. Key considerations:
