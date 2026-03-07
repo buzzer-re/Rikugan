@@ -32,7 +32,7 @@ from .exploration_mode import (
     KnowledgeBase, PatchRecord,
 )
 from .minify import minify_text, minify_messages
-from ..core.sanitize import sanitize_tool_result, sanitize_skill_body
+from ..core.sanitize import sanitize_tool_result, sanitize_skill_body, strip_injection_markers
 from ..state.session import SessionState
 
 # Minimum acceptable context window; smaller values get flagged by /doctor.
@@ -361,22 +361,39 @@ class AgentLoop:
         )
 
     def _resolve_skill(self, user_message: str) -> tuple:
-        """Rewrite user message if it starts with a /skill slug.
+        """Rewrite user message if it matches a skill.
+
+        Checks explicit /slug invocation first, then falls back to
+        trigger pattern matching on the user's natural language.
 
         Returns (rewritten_message, skill_or_None).
         """
         if not self.skills:
             return (user_message, None)
+
+        # 1. Explicit /slug invocation
         skill, remaining = self.skills.resolve_skill_invocation(user_message)
-        if skill is None:
-            return (user_message, None)
-        log_debug(f"AgentLoop: skill invocation /{skill.slug}")
-        rewritten = (
-            f"[Skill: {skill.name}]\n"
-            f"{sanitize_skill_body(skill.body, skill.name)}\n\n"
-            f"User request: {remaining}"
-        )
-        return (rewritten, skill)
+        if skill is not None:
+            log_debug(f"AgentLoop: skill invocation /{skill.slug}")
+            rewritten = (
+                f"[Skill: {skill.name}]\n"
+                f"{sanitize_skill_body(skill.body, skill.name)}\n\n"
+                f"User request: {remaining}"
+            )
+            return (rewritten, skill)
+
+        # 2. Trigger pattern matching on natural language
+        skill = self.skills.match_triggers(user_message)
+        if skill is not None:
+            log_debug(f"AgentLoop: trigger-matched skill /{skill.slug}")
+            rewritten = (
+                f"[Skill: {skill.name}]\n"
+                f"{sanitize_skill_body(skill.body, skill.name)}\n\n"
+                f"User request: {user_message}"
+            )
+            return (rewritten, skill)
+
+        return (user_message, None)
 
     @staticmethod
     def _parse_plan(text: str) -> List[str]:
@@ -439,7 +456,7 @@ class AgentLoop:
                 self.tools.execute(record.reverse_tool, record.reverse_arguments)
                 undone += 1
                 log_info(f"Undo: {record.description}")
-            except Exception as e:
+            except ToolError as e:
                 errors.append(f"Failed to undo {record.description}: {e}")
                 log_error(f"Undo failed: {record.description}: {e}")
 
@@ -1097,8 +1114,9 @@ class AgentLoop:
             log_error(f"Tool {tc.name} unexpected error: {e}\n{traceback.format_exc()}")
 
         # Sanitize tool output before it enters the conversation.
-        # Error messages are internal and don't need sandboxing.
-        sanitized = sanitize_tool_result(result, tc.name) if not is_error else result
+        # Error messages may contain attacker-controlled content (e.g. function
+        # names), so strip injection markers even though we skip full wrapping.
+        sanitized = sanitize_tool_result(result, tc.name) if not is_error else strip_injection_markers(result)
         tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=sanitized, is_error=is_error)
         yield TurnEvent.tool_result_event(tc.id, tc.name, result, is_error)
         return tr

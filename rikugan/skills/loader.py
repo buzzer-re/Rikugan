@@ -131,6 +131,7 @@ class SkillDefinition:
     directory: str
     allowed_tools: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+    triggers: List[str] = field(default_factory=list)
     mode: str = ""  # e.g. "exploration" to trigger exploration mode
     author: str = ""
     version: str = ""
@@ -259,12 +260,19 @@ def discover_skills(skills_dir: str) -> List[SkillDefinition]:
             if refs:
                 body_text += "\n\n" + refs
 
+            # Parse triggers — list of keywords that auto-activate this skill
+            raw_triggers = fm.get("triggers", [])
+            if isinstance(raw_triggers, str):
+                raw_triggers = [t.strip() for t in raw_triggers.split(",") if t.strip()]
+            triggers = [t.lower() for t in raw_triggers]
+
             skill = SkillDefinition(
                 name=fm.get("name", entry),
                 description=fm.get("description", ""),
                 directory=skill_dir,
                 allowed_tools=fm.get("allowed_tools", []),
                 tags=fm.get("tags", []),
+                triggers=triggers,
                 mode=fm.get("mode", ""),
                 author=author,
                 version=version,
@@ -276,7 +284,7 @@ def discover_skills(skills_dir: str) -> List[SkillDefinition]:
             skills.append(skill)
             log_debug(f"Discovered skill: /{entry} — {skill.description or '(no description)'}")
 
-        except Exception as e:
+        except (OSError, ValueError, KeyError) as e:
             log_error(f"Failed to load skill from {md_path}: {e}")
 
     return skills

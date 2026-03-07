@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Generator, List, Optional
 
-from ...core.errors import CancellationError, ProviderError
+from ...core.errors import CancellationError, ProviderError, ToolError
 from ...core.logging import log_error, log_info
 from ...core.types import Message, Role, ToolResult
 from ..exploration_mode import (
@@ -396,7 +396,7 @@ def _run_phase4_save(
                     loop.tools.execute("execute_python", {"code": "; ".join(rollback_parts)})
                     rolled_back = True
                     log_info("Exploration mode: patches rolled back via execute_python")
-                except Exception as e:
+                except ToolError as e:
                     log_error(f"Exploration mode: rollback failed: {e}")
 
         discard_msg = (

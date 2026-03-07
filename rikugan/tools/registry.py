@@ -26,6 +26,7 @@ class ToolRegistry:
         self._tools: Dict[str, ToolDefinition] = {}
         self._schema_cache: Optional[List[Dict[str, Any]]] = None
         self._result_cache = ToolResultCache()
+        self._capabilities: Dict[str, bool] = {}
 
     @staticmethod
     def _coerce_arguments(defn: ToolDefinition, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -96,6 +97,18 @@ class ToolRegistry:
             log_debug(f"Unregistered {len(to_remove)} tools with prefix {prefix!r}")
         return len(to_remove)
 
+    def set_capabilities(self, capabilities: Dict[str, bool]) -> None:
+        """Declare which host capabilities are available (e.g. hexrays, ida_struct)."""
+        self._capabilities.update(capabilities)
+        self._schema_cache = None  # invalidate — available tools may have changed
+
+    def _available(self, defn: ToolDefinition) -> bool:
+        """Check if all requirements of a tool definition are met."""
+        for req in defn.requires:
+            if not self._capabilities.get(req, True):
+                return False
+        return True
+
     def get(self, name: str) -> Optional[ToolDefinition]:
         return self._tools.get(name)
 
@@ -107,7 +120,10 @@ class ToolRegistry:
 
     def to_provider_format(self) -> List[Dict[str, Any]]:
         if self._schema_cache is None:
-            self._schema_cache = [t.to_provider_format() for t in self._tools.values()]
+            self._schema_cache = [
+                t.to_provider_format() for t in self._tools.values()
+                if self._available(t)
+            ]
         return self._schema_cache
 
     def execute(self, name: str, arguments: Dict[str, Any]) -> str:
@@ -116,6 +132,12 @@ class ToolRegistry:
             raise ToolNotFoundError(f"Unknown tool: {name}", tool_name=name)
         if defn.handler is None:
             raise ToolError(f"Tool {name} has no handler", tool_name=name)
+        if not self._available(defn):
+            missing = [r for r in defn.requires if not self._capabilities.get(r, True)]
+            raise ToolError(
+                f"Tool {name} unavailable — requires: {', '.join(missing)}",
+                tool_name=name,
+            )
 
         arguments = self._coerce_arguments(defn, arguments)
 

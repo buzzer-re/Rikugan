@@ -26,7 +26,7 @@ _bn_log = None
 if _BN_AVAILABLE:
     try:
         _bn_log = importlib.import_module("binaryninja.log")
-    except Exception as e:
+    except ImportError as e:
         sys.stderr.write(f"[Rikugan] Could not import binaryninja.log: {e}\n")
 
 _logger: Optional[logging.Logger] = None
@@ -119,7 +119,7 @@ def get_logger() -> logging.Logger:
         _logger.debug(f"Log file: {path}")
         _logger.debug(f"Python: {sys.version}")
         _logger.debug(f"Thread: {threading.current_thread().name}")
-    except Exception as e:
+    except OSError as e:
         _logger.warning(f"Could not open debug log file: {e}")
 
     # Structured JSON log (JSONL format for machine parsing / analytics)
@@ -129,7 +129,7 @@ def get_logger() -> logging.Logger:
         json_handler.setLevel(logging.INFO)
         json_handler.setFormatter(_JSONFormatter())
         _logger.addHandler(json_handler)
-    except Exception as e:
+    except OSError as e:
         sys.stderr.write(f"[Rikugan] Could not open structured log file: {e}\n")
 
     return _logger

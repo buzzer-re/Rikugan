@@ -385,7 +385,7 @@ class ChatView(QScrollArea):
                     tw = ToolCallWidget(tc.name, tc.id)
                     try:
                         args_str = json.dumps(tc.arguments, indent=2)
-                    except Exception:
+                    except (TypeError, ValueError):
                         args_str = str(tc.arguments)
                     tw.set_arguments(args_str)
                     tw.mark_done()

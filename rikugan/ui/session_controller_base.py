@@ -30,7 +30,7 @@ def _normalize_db_path(path: str) -> str:
         return ""
     try:
         return os.path.normcase(os.path.realpath(os.path.abspath(path)))
-    except Exception:
+    except OSError:
         return path
 
 
@@ -163,7 +163,7 @@ class SessionControllerBase:
             try:
                 history = SessionHistory(self.config)
                 history.save_session(session)
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 log_error(f"Failed to save session on tab close: {e}")
         del self._sessions[tab_id]
         log_debug(f"Closed tab {tab_id}")
@@ -287,7 +287,7 @@ class SessionControllerBase:
                 history = SessionHistory(self.config)
                 path = history.save_session(session)
                 log_debug(f"Session auto-saved: {path}")
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 log_error(f"Failed to auto-save session: {e}")
 
     def new_chat(self) -> None:
@@ -328,7 +328,7 @@ class SessionControllerBase:
                     self._sessions[tab_id] = session
                     results.append((tab_id, session))
                     log_debug(f"Restored session {session.id} as tab {tab_id}")
-        except Exception as e:
+        except (OSError, ValueError, KeyError) as e:
             log_error(f"Failed to restore sessions: {e}")
         if results:
             # Remove the default empty session that was created in __init__
@@ -356,7 +356,7 @@ class SessionControllerBase:
                 self._sessions[self._active_tab_id] = session
                 log_info(f"Restored session {session.id} ({len(session.messages)} messages)")
                 return session
-        except Exception as e:
+        except (OSError, ValueError, KeyError) as e:
             log_error(f"Failed to restore session: {e}")
         return None
 
@@ -368,7 +368,7 @@ class SessionControllerBase:
                 try:
                     history = SessionHistory(self.config)
                     history.save_session(session)
-                except Exception as e:
+                except (OSError, ValueError) as e:
                     log_error(f"Failed to save session {tab_id} on file change: {e}")
         self._sessions.clear()
         self._idb_path = _normalize_db_path(new_idb_path)
@@ -413,6 +413,6 @@ class SessionControllerBase:
                 try:
                     history = SessionHistory(self.config)
                     history.save_session(session)
-                except Exception as e:
+                except (OSError, ValueError) as e:
                     log_error(f"Failed to save session {tab_id} on shutdown: {e}")
         self._mcp_manager.shutdown()

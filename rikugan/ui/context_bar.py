@@ -20,7 +20,7 @@ if is_ida():
     try:
         ida_funcs = importlib.import_module("ida_funcs")
         ida_name = importlib.import_module("ida_name")
-    except Exception:
+    except ImportError:
         ida_funcs = ida_name = None  # type: ignore[assignment]  # noqa: N816
 else:
     ida_funcs = ida_name = None  # type: ignore[assignment]  # noqa: N816

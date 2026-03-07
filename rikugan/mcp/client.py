@@ -286,5 +286,5 @@ class MCPClient:
             if errlog is not sys.stderr:
                 try:
                     errlog.close()
-                except Exception:
+                except OSError:
                     pass

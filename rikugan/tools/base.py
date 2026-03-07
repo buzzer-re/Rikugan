@@ -55,6 +55,7 @@ class ToolDefinition:
     mutating: bool = False
     timeout: Optional[float] = None  # per-tool timeout in seconds (None = use default)
     handler: Optional[Callable] = field(default=None, repr=False)
+    requires: List[str] = field(default_factory=list)
 
     def to_json_schema(self) -> Dict[str, Any]:
         properties: Dict[str, Any] = {}
@@ -187,6 +188,7 @@ def tool(
     requires_decompiler: bool = False,
     mutating: bool = False,
     timeout: Optional[float] = None,
+    requires: Optional[List[str]] = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to register a function as an agent tool.
 
@@ -202,6 +204,11 @@ def tool(
         tool_desc = description or (func.__doc__ or "").strip().split("\n")[0]
         params = _build_parameters(func)
 
+        # Build requires list — merge explicit requires with requires_decompiler compat
+        effective_requires = list(requires or [])
+        if requires_decompiler and "hexrays" not in effective_requires:
+            effective_requires.append("hexrays")
+
         defn = ToolDefinition(
             name=tool_name,
             description=tool_desc,
@@ -211,6 +218,7 @@ def tool(
             mutating=mutating,
             timeout=timeout,
             handler=func,
+            requires=effective_requires,
         )
 
         # All tools call IDA APIs, which must run on the main thread.

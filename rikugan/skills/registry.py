@@ -70,6 +70,28 @@ class SkillRegistry:
             lines.append(f"  - /{slug}: {desc}")
         return "\n".join(lines)
 
+    def match_triggers(self, user_text: str) -> Optional[SkillDefinition]:
+        """Match user text against skill trigger patterns.
+
+        Returns the best-matching skill, or None if no triggers match.
+        Skills with more matching triggers are preferred.
+        """
+        text_lower = user_text.lower()
+        best_skill: Optional[SkillDefinition] = None
+        best_count = 0
+
+        for skill in self._skills.values():
+            if not skill.triggers:
+                continue
+            hits = sum(1 for t in skill.triggers if t in text_lower)
+            if hits > best_count:
+                best_count = hits
+                best_skill = skill
+
+        if best_skill:
+            log_debug(f"Trigger match: /{best_skill.slug} ({best_count} hits)")
+        return best_skill
+
     def resolve_skill_invocation(self, user_text: str) -> Tuple[Optional[SkillDefinition], str]:
         """Check if user_text starts with /slug. Returns (skill, remaining) or (None, user_text)."""
         text = user_text.strip()

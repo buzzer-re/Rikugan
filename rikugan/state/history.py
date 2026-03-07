@@ -23,7 +23,7 @@ def _normalize_db_path(path: str) -> str:
         return ""
     try:
         return os.path.normcase(os.path.realpath(os.path.abspath(path)))
-    except Exception:
+    except OSError:
         return path
 
 

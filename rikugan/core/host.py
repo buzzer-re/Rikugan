@@ -35,11 +35,11 @@ try:
         _ida_kernwin = importlib.import_module("ida_kernwin")
     except ImportError:
         _ida_kernwin = None  # optional — absent in some IDA headless configurations
-except Exception:
+except ImportError:
     try:
         importlib.import_module("binaryninja")
         _HOST = HOST_BINARY_NINJA
-    except Exception:
+    except ImportError:
         _HOST = HOST_STANDALONE
 
 

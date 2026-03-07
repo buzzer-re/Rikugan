@@ -15,7 +15,7 @@ if _IDA_AVAILABLE:
 if _BN_AVAILABLE:
     try:
         bn_mainthread = importlib.import_module("binaryninja.mainthread")
-    except Exception:
+    except ImportError:
         bn_mainthread = None
 else:
     bn_mainthread = None
