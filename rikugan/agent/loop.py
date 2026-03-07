@@ -272,7 +272,6 @@ class AgentLoop:
         self._running = False
         self._consecutive_errors = 0
         self._tools_disabled_for_turn = False
-        self._event_queue: queue.Queue[TurnEvent] = queue.Queue()
         # Thread-safe queues for user answers and tool approvals (no race condition)
         # Subagents share the parent's queues so UI signals reach them.
         self._user_answer_queue: queue.Queue[str] = (
@@ -325,13 +324,11 @@ class AgentLoop:
 
     def _drain_queue(self, q: "queue.Queue[str]") -> None:
         """Remove any stale item from a maxsize=1 queue (non-blocking)."""
-        # q.empty() is a non-blocking check; TOCTOU is acceptable here
-        # because the subsequent put() is the only writer on the caller thread.
-        if not q.empty():
+        while True:
             try:
                 q.get_nowait()
             except queue.Empty:
-                pass  # race: another consumer drained between empty() and get_nowait()
+                break
 
     def submit_user_answer(self, answer: str) -> None:
         """Submit an answer to an ask_user question (called from UI thread)."""
@@ -1281,7 +1278,10 @@ class AgentLoop:
                 f"Context compaction triggered (usage ratio: "
                 f"{self._context_manager.usage_ratio:.1%})"
             )
-            self.session.messages = self._context_manager.compact_messages(self.session.messages)
+            with self.session._lock:
+                self.session.messages[:] = self._context_manager.compact_messages(
+                    self.session.messages,
+                )
 
         ctx_window = self.config.provider.context_window
         provider_messages = minify_messages(
@@ -1927,12 +1927,21 @@ class AgentLoop:
             self.session.is_running = False
 
 
+_EVENT_QUEUE_MAXSIZE = 500
+
+
 class BackgroundAgentRunner:
-    """Runs the AgentLoop in a background thread, bridging to a queue."""
+    """Runs the AgentLoop in a background thread, bridging to a bounded queue.
+
+    When the queue is full, consecutive TEXT_DELTA events are coalesced
+    into a single event instead of being dropped.
+    """
 
     def __init__(self, agent_loop: AgentLoop):
         self.agent_loop = agent_loop
-        self.event_queue: queue.Queue[Optional[TurnEvent]] = queue.Queue()
+        self.event_queue: queue.Queue[Optional[TurnEvent]] = queue.Queue(
+            maxsize=_EVENT_QUEUE_MAXSIZE,
+        )
         self._thread: Optional[threading.Thread] = None
 
     def start(self, user_message: str) -> None:
@@ -1943,13 +1952,46 @@ class BackgroundAgentRunner:
         self._thread.start()
 
     def _run(self, user_message: str) -> None:
+        pending_text: List[str] = []
         try:
             for event in self.agent_loop.run(user_message):
-                self.event_queue.put(event)
+                if event.type == TurnEventType.TEXT_DELTA:
+                    if self.event_queue.full():
+                        # Coalesce: buffer text deltas when queue is full
+                        pending_text.append(event.text)
+                        continue
+                    if pending_text:
+                        # Flush buffered text as a single coalesced delta
+                        pending_text.append(event.text)
+                        event = TurnEvent.text_delta("".join(pending_text))
+                        pending_text.clear()
+                    self.event_queue.put(event)
+                else:
+                    # Flush any pending text before non-delta events
+                    if pending_text:
+                        coalesced = TurnEvent.text_delta("".join(pending_text))
+                        pending_text.clear()
+                        self.event_queue.put(coalesced)
+                    self.event_queue.put(event)
         except Exception as e:
             log_error(f"BackgroundAgentRunner error: {e}\n{traceback.format_exc()}")
+            if pending_text:
+                try:
+                    self.event_queue.put(
+                        TurnEvent.text_delta("".join(pending_text)), timeout=1,
+                    )
+                except queue.Full:
+                    pass
+                pending_text.clear()
             self.event_queue.put(TurnEvent.error_event(str(e)))
         finally:
+            if pending_text:
+                try:
+                    self.event_queue.put(
+                        TurnEvent.text_delta("".join(pending_text)), timeout=1,
+                    )
+                except queue.Full:
+                    pass
             self.event_queue.put(None)  # Sentinel
 
     def cancel(self) -> None:

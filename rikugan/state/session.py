@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -51,7 +52,11 @@ def _truncate_tool_result(tr: ToolResult, max_chars: int) -> ToolResult:
 
 @dataclass
 class SessionState:
-    """Holds the state of one Rikugan conversation session."""
+    """Holds the state of one Rikugan conversation session.
+
+    Thread-safety: all mutations to ``messages`` are guarded by ``_lock``.
+    Readers that need a consistent snapshot should also hold the lock.
+    """
 
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
@@ -69,22 +74,43 @@ class SessionState:
     # Stored separately from main messages to avoid burning context tokens.
     subagent_logs: Dict[str, List[Message]] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self._lock = threading.Lock()
+
     def add_message(self, msg: Message) -> None:
-        self.messages.append(msg)
-        if msg.token_usage:
-            self.total_usage.prompt_tokens += msg.token_usage.prompt_tokens
-            self.total_usage.completion_tokens += msg.token_usage.completion_tokens
-            self.total_usage.total_tokens += msg.token_usage.total_tokens
-            # Track the last prompt size as current context usage
-            if msg.token_usage.prompt_tokens > 0:
-                self.last_prompt_tokens = msg.token_usage.context_tokens
+        with self._lock:
+            self.messages.append(msg)
+            if msg.token_usage:
+                self.total_usage.prompt_tokens += msg.token_usage.prompt_tokens
+                self.total_usage.completion_tokens += msg.token_usage.completion_tokens
+                self.total_usage.total_tokens += msg.token_usage.total_tokens
+                # Track the last prompt size as current context usage
+                if msg.token_usage.prompt_tokens > 0:
+                    self.last_prompt_tokens = msg.token_usage.context_tokens
 
     def clear(self) -> None:
-        self.messages.clear()
-        self.total_usage = TokenUsage()
-        self.last_prompt_tokens = 0
-        self.current_turn = 0
-        self.is_running = False
+        with self._lock:
+            self.messages.clear()
+            self.total_usage = TokenUsage()
+            self.last_prompt_tokens = 0
+            self.current_turn = 0
+            self.is_running = False
+
+    def prune_messages(self, keep_last_n: int = 50) -> int:
+        """Drop old messages in place, preserving the system prompt + last N.
+
+        Returns the number of messages removed.
+        """
+        with self._lock:
+            if len(self.messages) <= keep_last_n + 1:
+                return 0
+
+            # Keep messages[0] (system prompt / first user message) + tail
+            head = self.messages[:1]
+            tail = self.messages[-keep_last_n:]
+            removed = len(self.messages) - len(head) - len(tail)
+            self.messages[:] = head + tail
+            return removed
 
     def get_messages_for_provider(self, context_window: int = 0) -> List[Message]:
         """Return messages sanitized and trimmed for the provider API.
@@ -94,7 +120,9 @@ class SessionState:
         3. Drops oldest messages if the estimated token count exceeds
            the context window budget.
         """
-        sanitized = self._sanitize(list(self.messages))
+        with self._lock:
+            snapshot = list(self.messages)
+        sanitized = self._sanitize(snapshot)
         sanitized = self._truncate_results(sanitized)
         if context_window > 0:
             sanitized = self._trim_to_budget(sanitized, context_window)
@@ -192,4 +220,5 @@ class SessionState:
         return result
 
     def message_count(self) -> int:
-        return len(self.messages)
+        with self._lock:
+            return len(self.messages)

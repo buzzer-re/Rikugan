@@ -239,19 +239,26 @@ class MCPClient:
             env=self.config.env if self.config.env else None,
         )
 
+        # Use the configured timeout for handshake; default to 15s.
+        handshake_timeout = getattr(self.config, "timeout", 15.0) or 15.0
+
         errlog = _safe_errlog()
         try:
             async with stdio_client(server_params, errlog=errlog) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     self._session = session
 
-                    # Initialize handshake
-                    init_result = await session.initialize()
+                    # Initialize handshake (bounded by timeout)
+                    init_result = await asyncio.wait_for(
+                        session.initialize(), timeout=handshake_timeout,
+                    )
                     server_info = getattr(init_result, "server_info", None) or getattr(init_result, "serverInfo", None)
                     log_debug(f"MCP[{self.name}]: initialized, server: {server_info}")
 
-                    # Discover tools
-                    tools_result = await session.list_tools()
+                    # Discover tools (bounded by timeout)
+                    tools_result = await asyncio.wait_for(
+                        session.list_tools(), timeout=handshake_timeout,
+                    )
                     self._tools = []
                     for t in tools_result.tools:
                         self._tools.append(MCPToolSchema(

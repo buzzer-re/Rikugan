@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Dict, List, Optional
 
 from ..constants import MCP_TOOL_PREFIX
-from ..core.logging import log_debug, log_error, log_info
+from ..core.logging import log_debug, log_error, log_info, log_warning
 from ..tools.registry import ToolRegistry
 from .config import MCPServerConfig, load_mcp_config
 from .client import MCPClient
 from .bridge import register_mcp_tools
+
+# Soft timeout: log a warning if startup takes longer than this.
+_SOFT_TIMEOUT = 5.0
+# Hard timeout: abort startup entirely after this many seconds.
+_HARD_TIMEOUT = 15.0
 
 
 class MCPManager:
@@ -60,10 +66,22 @@ class MCPManager:
         registry: ToolRegistry,
         on_complete: Optional[Callable[[str, int], None]],
     ) -> None:
-        """Start a single MCP server (runs in background thread)."""
+        """Start a single MCP server (runs in background thread).
+
+        Uses a soft timeout (_SOFT_TIMEOUT) to emit a warning and a hard
+        timeout (_HARD_TIMEOUT) to abort, preventing indefinite UI freezes.
+        """
+        hard = min(config.timeout, _HARD_TIMEOUT)
         client = MCPClient(config)
+        t0 = time.monotonic()
         try:
-            client.start(timeout=config.timeout)
+            client.start(timeout=hard)
+            elapsed = time.monotonic() - t0
+            if elapsed > _SOFT_TIMEOUT:
+                log_warning(
+                    f"MCP[{config.name}]: startup took {elapsed:.1f}s "
+                    f"(soft limit {_SOFT_TIMEOUT}s)"
+                )
             with self._lock:
                 self._clients[config.name] = client
             count = register_mcp_tools(client, registry)
