@@ -46,16 +46,7 @@ fi
 
 # ── 2. Ruff — lint ────────────────────────────────────────────────────────────
 info "[2/5] Ruff lint..."
-RUFF_ARGS=(
-    --select "E,W,F,I,UP,B,RUF"
-    --ignore "E501,B008"
-    # binja/ida imports are unresolvable — ignore unused imports there
-    --per-file-ignores "rikugan/binja/**:F401"
-    --per-file-ignores "rikugan/binja/**:E741"
-    --per-file-ignores "rikugan/ida/**:F401"
-    --per-file-ignores "rikugan/core/sanitize.py:RUF003"
-    --per-file-ignores "rikugan/ui/plan_view.py:RUF001"
-)
+RUFF_ARGS=()
 if $FIX; then
     RUFF_ARGS+=(--fix)
 fi
@@ -68,10 +59,7 @@ fi
 
 # ── 3. Mypy — core modules only ───────────────────────────────────────────────
 info "[3/5] Mypy (core + providers)..."
-MYPY_OUT=$(python3 -m mypy rikugan/core rikugan/providers \
-    --ignore-missing-imports \
-    --no-error-summary \
-    --pretty \
+MYPY_OUT=$(python3 -m mypy rikugan/core rikugan/providers --pretty \
     2>&1) && MYPY_OK=true || MYPY_OK=false
 
 if $MYPY_OK; then

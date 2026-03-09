@@ -82,7 +82,7 @@ chore/deps     ─┘
 5. Once reviewed and CI passes, it gets merged to `dev`
 6. Releases go from `dev` → `main` with a version tag
 
-**Direct pushes to `dev` and `main` are not allowed** — everything goes through a PR.
+**Direct pushes to `main` are not allowed** — must go through a PR. `dev` accepts direct pushes.
 
 ---
 

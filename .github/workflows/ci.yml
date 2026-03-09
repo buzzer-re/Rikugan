@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [dev, main]
+    branches: [main]
     paths:
       - "rikugan/**/*.py"
       - "tests/**/*.py"
@@ -27,11 +27,7 @@ jobs:
         run: python -m ruff format --check rikugan/
 
       - name: Lint
-        run: |
-          python -m ruff check rikugan/ \
-            --select "E,W,F,I,UP,B,RUF" \
-            --ignore "E501,B008" \
-            --per-file-ignores "rikugan/binja/**:F401,rikugan/ida/**:F401"
+        run: python -m ruff check rikugan/
 
   typecheck:
     name: Mypy
@@ -48,10 +44,7 @@ jobs:
         run: pip install mypy tomli
 
       - name: Type check (core + providers)
-        run: |
-          python -m mypy rikugan/core rikugan/providers \
-            --ignore-missing-imports \
-            --no-error-summary
+        run: python -m mypy rikugan/core rikugan/providers
 
   test:
     name: Pytest

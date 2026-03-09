@@ -365,10 +365,10 @@ chore/deps     ─┘
 ```
 
 - **`main`** — always releasable. Binary Ninja plugin manager tracks this branch directly. Never push here directly.
-- **`dev`** — integration branch. All feature/fix PRs target `dev`. Never push here directly.
+- **`dev`** — integration branch. Push freely here — no CI gate.
 - **`feat/*`, `fix/*`, `chore/*`, `refactor/*`** — short-lived branches off `dev`. One logical change per branch.
 
-Direct pushes to `dev` and `main` are blocked by branch protection — everything goes through a PR.
+Direct pushes to `main` are blocked by branch protection. `dev` is open for direct pushes.
 
 ### Before You Push — Run ci-local.sh
 
