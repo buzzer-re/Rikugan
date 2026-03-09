@@ -129,7 +129,7 @@ Binary Ninja and IDA Pro APIs are stubbed at test time — you do not need eithe
 
 ## Code Quality
 
-This project uses [desloppify](https://desloppify.com) to track codebase health. The current objective score is **90.3/100** (target: 95).
+This project uses [desloppify](https://github.com/peteromallet/desloppify) to track codebase health. The current objective score is **90.3/100** (target: 95).
 
 Run a scan locally at any time:
 
