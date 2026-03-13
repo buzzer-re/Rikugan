@@ -6,7 +6,7 @@ import importlib
 from typing import Any
 
 from rikugan.ui.panel_core import RikuganPanelCore
-from rikugan.ui.qt_compat import QVBoxLayout, QWidget
+from rikugan.ui.qt_compat import QT_BINDING, QVBoxLayout, QWidget
 
 from .actions import RikuganUIHooks
 from .session_controller import IdaSessionController
@@ -24,10 +24,13 @@ class RikuganPanel(idaapi.PluginForm):
         self._core: RikuganPanelCore | None = None
 
     def OnCreate(self, form: Any) -> None:
-        try:
+        if QT_BINDING == "PyQt5":
             self._form_widget = self.FormToPyQtWidget(form)
-        except Exception:
-            self._form_widget = self.FormToPySideWidget(form)
+        else:
+            try:
+                self._form_widget = self.FormToPySideWidget(form)
+            except Exception:
+                self._form_widget = self.FormToPyQtWidget(form)
 
         self._root = QWidget()
         form_layout = QVBoxLayout(self._form_widget)
