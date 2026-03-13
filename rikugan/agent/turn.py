@@ -34,6 +34,10 @@ class TurnEventType(str, Enum):
     SAVE_COMPLETED = "save_completed"
     SAVE_DISCARDED = "save_discarded"
     MUTATION_RECORDED = "mutation_recorded"
+    SUBAGENT_SPAWNED = "subagent_spawned"
+    SUBAGENT_PROGRESS = "subagent_progress"
+    SUBAGENT_COMPLETED = "subagent_completed"
+    SUBAGENT_FAILED = "subagent_failed"
 
 
 @dataclass
@@ -277,5 +281,71 @@ class TurnEvent:
                 "reversible": reversible,
                 "reverse_tool": reverse_tool,
                 "reverse_args": reverse_args or {},
+            },
+        )
+
+    @staticmethod
+    def subagent_spawned(
+        agent_id: str,
+        name: str,
+        agent_type: str,
+        task: str,
+    ) -> TurnEvent:
+        return TurnEvent(
+            type=TurnEventType.SUBAGENT_SPAWNED,
+            text=name,
+            metadata={
+                "agent_id": agent_id,
+                "agent_type": agent_type,
+                "task": task,
+            },
+        )
+
+    @staticmethod
+    def subagent_progress(
+        agent_id: str,
+        turn_count: int,
+        text: str = "",
+    ) -> TurnEvent:
+        return TurnEvent(
+            type=TurnEventType.SUBAGENT_PROGRESS,
+            text=text,
+            metadata={
+                "agent_id": agent_id,
+                "turn_count": turn_count,
+            },
+        )
+
+    @staticmethod
+    def subagent_completed(
+        agent_id: str,
+        name: str,
+        summary: str,
+        turn_count: int = 0,
+        elapsed: float = 0.0,
+    ) -> TurnEvent:
+        return TurnEvent(
+            type=TurnEventType.SUBAGENT_COMPLETED,
+            text=summary,
+            metadata={
+                "agent_id": agent_id,
+                "name": name,
+                "turn_count": turn_count,
+                "elapsed": elapsed,
+            },
+        )
+
+    @staticmethod
+    def subagent_failed(
+        agent_id: str,
+        name: str,
+        error: str,
+    ) -> TurnEvent:
+        return TurnEvent(
+            type=TurnEventType.SUBAGENT_FAILED,
+            error=error,
+            metadata={
+                "agent_id": agent_id,
+                "name": name,
             },
         )

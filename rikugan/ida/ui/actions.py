@@ -97,6 +97,45 @@ if _HAS_IDA:
         def update(self, ctx) -> int:
             return idaapi.AST_ENABLE_ALWAYS
 
+    class _OpenToolsAction(idaapi.action_handler_t):
+        """Open the Rikugan Tools panel."""
+
+        def __init__(self, panel_getter: Callable[[], Any]):
+            super().__init__()
+            self._get_panel = panel_getter
+
+        def activate(self, ctx) -> int:
+            panel = self._get_panel()
+            if panel is None:
+                return 0
+            panel.show_tools_panel(tab_index=0)
+            return 1
+
+        def update(self, ctx) -> int:
+            return idaapi.AST_ENABLE_ALWAYS
+
+    class _SendToBulkRenameAction(idaapi.action_handler_t):
+        """Send the current function to the Bulk Renamer."""
+
+        def __init__(self, panel_getter: Callable[[], Any]):
+            super().__init__()
+            self._get_panel = panel_getter
+
+        def activate(self, ctx) -> int:
+            panel = self._get_panel()
+            if panel is None:
+                return 0
+            context = _get_context()
+            func_ea = context.get("func_ea")
+            if func_ea is not None:
+                panel.show_tools_with_renamer(address=func_ea)
+            else:
+                panel.show_tools_panel(tab_index=0)
+            return 1
+
+        def update(self, ctx) -> int:
+            return idaapi.AST_ENABLE_ALWAYS
+
     # ------------------------------------------------------------------
     # Handler functions — shared handlers from ui.action_handlers,
     # with IDA-specific wrappers for microcode terminology.
@@ -251,6 +290,33 @@ if _HAS_IDA:
                 )
                 idaapi.register_action(desc)
 
+            # Register "Open Tools" action (menu + context menu)
+            idaapi.register_action(
+                idaapi.action_desc_t(
+                    "rikugan:open_tools",
+                    "Open Tools",
+                    _OpenToolsAction(self._get_panel),
+                    "",
+                    "Open the Rikugan Tools panel",
+                )
+            )
+            idaapi.attach_action_to_menu(
+                "Edit/Plugins/Rikugan/",
+                "rikugan:open_tools",
+                idaapi.SETMENU_APP,
+            )
+
+            # Register "Send to Bulk Rename" action
+            idaapi.register_action(
+                idaapi.action_desc_t(
+                    "rikugan:send_to_bulk_rename",
+                    "Send to Bulk Rename",
+                    _SendToBulkRenameAction(self._get_panel),
+                    "",
+                    "Send function to Rikugan Bulk Renamer",
+                )
+            )
+
             self._registered = True
 
         def finish_populating_widget_popup(self, widget, popup) -> None:
@@ -262,6 +328,11 @@ if _HAS_IDA:
             for action_id, _label, _handler, _auto, _hk, _tt, views in _ACTION_DEFS:
                 if view_key in views:
                     idaapi.attach_action_to_popup(widget, popup, action_id, "Rikugan/")
+
+            # Always attach "Send to Bulk Rename" and "Open Tools" in disasm/pseudo views
+            if view_key in ("disasm", "pseudo"):
+                idaapi.attach_action_to_popup(widget, popup, "rikugan:send_to_bulk_rename", "Rikugan/")
+                idaapi.attach_action_to_popup(widget, popup, "rikugan:open_tools", "Rikugan/")
 
         def database_inited(self, is_new_database: bool, idc_script: str) -> None:
             """Called when a database is opened or created."""
@@ -282,6 +353,8 @@ if _HAS_IDA:
             if self._registered:
                 for action_id, *_ in _ACTION_DEFS:
                     idaapi.unregister_action(action_id)
+                idaapi.unregister_action("rikugan:open_tools")
+                idaapi.unregister_action("rikugan:send_to_bulk_rename")
                 self._registered = False
 
 else:

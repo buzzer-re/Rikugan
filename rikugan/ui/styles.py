@@ -21,7 +21,7 @@ QFrame#message_user {
     background-color: #2d2d2d;
     border-radius: 8px;
     padding: 8px;
-    margin: 4px 40px 4px 8px;
+    margin: 4px 8px 4px 8px;
 }
 
 QFrame#message_assistant {
@@ -173,5 +173,110 @@ QGroupBox::title {
     subcontrol-origin: margin;
     left: 8px;
     padding: 0 4px;
+}
+
+QFrame#tools_panel {
+    background-color: #1e1e1e;
+    border-left: 1px solid #3c3c3c;
+}
+
+QFrame#tools_panel QTabWidget::pane {
+    border: none;
+}
+
+QFrame#tools_panel QTabBar {
+    background: #1e1e1e;
+    border: none;
+}
+
+QFrame#tools_panel QTabBar::tab {
+    background: #252526;
+    color: #cccccc;
+    padding: 4px 12px;
+    border: none;
+    border-right: 1px solid #3c3c3c;
+    font-size: 11px;
+}
+
+QFrame#tools_panel QTabBar::tab:selected {
+    background: #1e1e1e;
+    color: #ffffff;
+}
+
+QFrame#tools_panel QTabBar::tab:hover {
+    background: #2d2d2d;
+}
+
+QTreeWidget {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    border: none;
+    font-size: 11px;
+}
+
+QTreeWidget::item {
+    padding: 2px 4px;
+}
+
+QTreeWidget::item:selected {
+    background-color: #264f78;
+}
+
+QTreeWidget::item:hover {
+    background-color: #2d2d2d;
+}
+
+QHeaderView::section {
+    background-color: #252526;
+    color: #cccccc;
+    border: none;
+    border-right: 1px solid #3c3c3c;
+    padding: 3px 6px;
+    font-size: 11px;
+}
+
+QTableWidget {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    border: none;
+    gridline-color: #3c3c3c;
+    font-size: 11px;
+}
+
+QTableWidget::item {
+    padding: 2px 4px;
+}
+
+QTableWidget::item:selected {
+    background-color: #264f78;
+}
+
+QProgressBar {
+    background-color: #2d2d2d;
+    border: 1px solid #3c3c3c;
+    border-radius: 3px;
+    text-align: center;
+    color: #d4d4d4;
+    font-size: 10px;
+    height: 14px;
+}
+
+QProgressBar::chunk {
+    background-color: #4ec9b0;
+    border-radius: 2px;
+}
+
+QRadioButton {
+    color: #d4d4d4;
+    font-size: 11px;
+    spacing: 4px;
+}
+
+QTextEdit {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    font-size: 11px;
 }
 """

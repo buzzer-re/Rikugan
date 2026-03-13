@@ -63,6 +63,14 @@ class RikuganConfig:
     active_profile: str = "default"
     custom_profiles: dict[str, dict] = field(default_factory=dict)
 
+    # A2A / external agents
+    a2a_auto_discover: bool = True
+    a2a_agents: list[dict[str, Any]] = field(default_factory=list)
+
+    # Bulk renamer defaults
+    bulk_renamer_batch_size: int = 10
+    bulk_renamer_max_concurrent: int = 3
+
     _config_dir: str = field(default_factory=_default_config_dir, repr=False)
 
     @property
@@ -149,6 +157,10 @@ class RikuganConfig:
             "enabled_external_mcp",
             "active_profile",
             "custom_profiles",
+            "a2a_auto_discover",
+            "a2a_agents",
+            "bulk_renamer_batch_size",
+            "bulk_renamer_max_concurrent",
         ):
             if k in data:
                 setattr(self, k, data[k])

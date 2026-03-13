@@ -579,3 +579,629 @@ The following IDA 9.x API changes are handled by the codebase:
 | `tinfo_t.parse(decl)` | Convenience method, `til` defaults to `None` (valid — uses default IDB TIL) |
 | `tinfo_t.add_udm(name, type_str, offset_bits)` | Accepts string types directly in IDA 9.x |
 | `tinfo_t.iter_struct()` / `iter_enum()` | Generator-based iteration (preferred over `get_udt_details`) |
+
+---
+
+## Agents System Architecture
+
+> Design document for the Rikugan agents subsystem: bulk function renamer,
+> subagent orchestration, specialized RE agents, and A2A integration.
+
+### Tools Panel
+
+A new **"Tools"** button in the action-button stack (`_build_action_buttons`)
+opens a slide-out panel on the right side of the splitter — same pattern as
+`MutationLogPanel`.
+
+```
+RikuganPanelCore
+├── QSplitter(Horizontal)
+│   ├── QTabWidget (chat tabs)        [stretch=3]
+│   ├── MutationLogPanel              [stretch=1, toggle]
+│   └── ToolsPanel ← NEW             [stretch=1, toggle]
+└── InputArea + buttons
+```
+
+`ToolsPanel` is a `QTabWidget` with three tabs:
+
+| Tab            | Widget                | Purpose                          |
+| -------------- | --------------------- | -------------------------------- |
+| **Renamer**    | `BulkRenamerWidget`   | Batch function renaming          |
+| **Agents**     | `AgentTreeWidget`     | Subagent launcher + live tree    |
+| **A2A**        | `A2ABridgeWidget`     | External agent integration       |
+
+File: `rikugan/ui/tools_panel.py`
+
+### Bulk Function Renamer
+
+#### UI — `BulkRenamerWidget`
+
+File: `rikugan/ui/bulk_renamer.py`
+
+```
+BulkRenamerWidget (QWidget)
+├── QHBoxLayout (top bar)
+│   ├── QLineEdit (filter/search)
+│   ├── QPushButton "Select All" / "Deselect All"
+│   ├── QComboBox (filter: All | User-renamed | Auto-named | Imports)
+│   └── QLabel ("142 / 2048 selected")
+├── QTableWidget
+│   │  Columns: [☐] Address | Current Name | New Name | Status
+│   │  - checkbox per row
+│   │  - "New Name" starts empty, filled by agent
+│   │  - Status: ⏳ queued | 🔄 analyzing | ✅ renamed | ⚠ skipped | ❌ error
+│   └── (sortable by address, name, status)
+├── QHBoxLayout (analysis controls)
+│   ├── QRadioButton "Quick Analysis" (default, checked)
+│   ├── QRadioButton "Deep Analysis"
+│   ├── QSpinBox "Batch size" (default: 10)
+│   └── QSpinBox "Max concurrent" (default: 3)
+└── QHBoxLayout (action bar)
+    ├── QPushButton "Start Renaming"
+    ├── QPushButton "Pause"
+    ├── QPushButton "Undo All"
+    ├── QProgressBar (0 / N)
+    └── QLabel "Elapsed: 00:00  |  ~2:30 remaining"
+```
+
+#### Analysis Modes
+
+Both modes spawn a `SubagentRunner` per batch. The system prompt differs:
+
+**Quick Analysis** (default):
+- Decompile function → single-turn LLM call
+- System prompt: *"Given this decompiled function, suggest a descriptive name.
+  Respond with ONLY the new name. Use snake_case. If the function is trivial
+  (thunk/stub/wrapper), prefix with the pattern (e.g. `thunk_`, `j_`)."*
+- No tool calls — raw HLIL passed as user message, name returned as text
+- **Budget**: 1 turn, ~500 tokens per function
+- Falls back to `sub_<addr>` on timeout/error
+
+**Deep Analysis**:
+- Subagent gets full tool access (decompile, xrefs, strings, imports, IL)
+- System prompt: *"Analyze this function thoroughly. Examine callers, callees,
+  string references, constants, and data structures. Then suggest a precise,
+  descriptive name. Respond with ONLY the new name on the last line."*
+- **Budget**: up to 8 turns, ~4000 tokens per function
+- Can chase xrefs 2 levels deep
+
+#### Backend — `BulkRenamerEngine`
+
+File: `rikugan/agent/bulk_renamer.py`
+
+```python
+@dataclass
+class RenameJob:
+    address: int
+    current_name: str
+    new_name: str = ""
+    status: Literal["queued", "analyzing", "renamed", "skipped", "error"] = "queued"
+    error: str = ""
+
+class BulkRenamerEngine:
+    """Processes rename jobs in configurable batches."""
+
+    def __init__(
+        self,
+        provider: LLMProvider,
+        tool_registry: ToolRegistry,
+        config: RikuganConfig,
+        host_name: str,
+        mode: Literal["quick", "deep"] = "quick",
+        batch_size: int = 10,
+        max_concurrent: int = 3,
+    ): ...
+
+    def enqueue(self, jobs: list[RenameJob]) -> None: ...
+
+    def start(self) -> Generator[RenameEvent, None, None]:
+        """Yield RenameEvents as jobs complete. Non-blocking via threading."""
+        ...
+
+    def pause(self) -> None: ...
+    def resume(self) -> None: ...
+    def cancel(self) -> None: ...
+    def undo_all(self) -> None:
+        """Reverse all renames using MutationRecord history."""
+        ...
+```
+
+**Batching strategy** (quick mode):
+- Group N functions into a single prompt:
+  ```
+  Rename these functions. Reply with one line per function: <address> <new_name>
+
+  0x401000:
+  int sub_401000(int a1, char* a2) { ... }
+
+  0x401080:
+  void sub_401080(void) { ... }
+  ```
+- Parse response line-by-line, apply renames via `rename_function` tool
+- Failed parses → individual retry
+
+**Batching strategy** (deep mode):
+- One subagent per function (isolated context)
+- `max_concurrent` subagents run in parallel via `ThreadPoolExecutor`
+- Each subagent yields `RenameEvent` back to the UI queue
+
+#### Rename Events
+
+```python
+class RenameEventType(str, Enum):
+    JOB_STARTED = "job_started"
+    JOB_COMPLETED = "job_completed"
+    JOB_ERROR = "job_error"
+    BATCH_PROGRESS = "batch_progress"  # N/total
+    ALL_DONE = "all_done"
+
+@dataclass
+class RenameEvent:
+    type: RenameEventType
+    job: RenameJob | None = None
+    progress: int = 0
+    total: int = 0
+```
+
+The `BulkRenamerWidget` polls these via a `QTimer` (same 50ms pattern as
+`panel_core`).
+
+#### Heuristic Filters
+
+Before queuing, skip functions that are:
+- Imports (external symbols) — already named
+- Already user-renamed (no `sub_` / `FUN_` / `fn_` prefix)
+- Thunks with <3 instructions (just rename to `thunk_<target>`)
+- Compiler-generated (`.init`, `.fini`, `__cxa_*`, `_start`)
+
+User can override via "Force include" checkbox per row.
+
+### Subagent System
+
+#### Data Model
+
+File: `rikugan/agent/subagent_manager.py`
+
+```python
+class SubagentStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+@dataclass
+class SubagentInfo:
+    id: str                       # uuid4
+    name: str                     # user-visible label
+    task: str                     # the prompt/goal
+    agent_type: str               # "custom" | "network_recon" | "report_writer"
+    status: SubagentStatus
+    created_at: float             # time.time()
+    completed_at: float | None
+    parent_id: str | None         # for nested subagents
+    children: list[str]           # child subagent IDs
+    summary: str                  # final output (compact)
+    turn_count: int               # how many turns executed
+    token_usage: TokenUsage | None
+    perks: list[str]              # enabled perks (see Perks System)
+
+class SubagentManager:
+    """Registry of all subagents in the current session."""
+
+    def __init__(self, provider, tool_registry, config, host_name, skill_registry): ...
+
+    def spawn(
+        self,
+        name: str,
+        task: str,
+        agent_type: str = "custom",
+        parent_id: str | None = None,
+        perks: list[str] | None = None,
+        max_turns: int = 20,
+    ) -> str:
+        """Spawn a new subagent. Returns subagent ID."""
+        ...
+
+    def cancel(self, agent_id: str) -> None: ...
+    def get(self, agent_id: str) -> SubagentInfo: ...
+    def list_all(self) -> list[SubagentInfo]: ...
+    def tree(self) -> list[SubagentInfo]:
+        """Return agents as a forest (roots first, children nested)."""
+        ...
+```
+
+#### UI — `AgentTreeWidget`
+
+File: `rikugan/ui/agent_tree.py`
+
+The tree view shows all subagents hierarchically:
+
+```
+AgentTreeWidget (QWidget)
+├── QHBoxLayout (toolbar)
+│   ├── QPushButton "+ New Agent"
+│   ├── QPushButton "Kill Selected"
+│   └── QLabel "3 running / 5 completed"
+├── QTreeWidget
+│   │  Columns: Name | Type | Status | Turns | Time
+│   │  - Network Recon       network_recon   running    12   0:42
+│   │  │  └─ Struct Parser   custom          completed   4   0:08
+│   │  - Report Writer       report_writer   completed   6   0:15
+│   │  - Custom: "trace crypto"  custom      running     8   0:31
+│   └── (double-click → expand output panel)
+└── QTextEdit (output preview — read-only, shows selected agent's summary)
+```
+
+**"+ New Agent" dialog** (`SpawnAgentDialog`):
+
+```
+SpawnAgentDialog (QDialog)
+├── QComboBox "Agent Type"
+│   ├── Custom Task
+│   ├── Network Reconstructor
+│   └── Report Writer
+├── QTextEdit "Task / Goal" (multi-line)
+├── QGroupBox "Perks" (checkboxes)
+│   ├── [ ] Deep decompilation (chase xrefs 3+ levels)
+│   ├── [ ] String harvesting (dump all referenced strings)
+│   ├── [ ] Import mapping (map all API calls)
+│   ├── [ ] Memory layout (analyze stack frames, globals)
+│   └── [ ] Hypothesis mode (generate and test theories)
+├── QSpinBox "Max turns" (default: 20)
+└── QDialogButtonBox (Launch | Cancel)
+```
+
+#### Perks System
+
+Perks are system-prompt fragments prepended to the subagent's instructions:
+
+```python
+SUBAGENT_PERKS: dict[str, str] = {
+    "deep_decompilation": (
+        "When analyzing functions, always check callers and callees up to 3 "
+        "levels deep. Decompile every function you reference."
+    ),
+    "string_harvesting": (
+        "List ALL string references in every function you analyze. "
+        "Include cross-references to those strings."
+    ),
+    "import_mapping": (
+        "Map every imported API call. Note which functions call which imports "
+        "and what arguments they pass."
+    ),
+    "memory_layout": (
+        "Analyze stack frame layouts, global variable accesses, and "
+        "structure field offsets for every function you examine."
+    ),
+    "hypothesis_mode": (
+        "After initial analysis, generate 3 hypotheses about the code's "
+        "purpose. Then systematically test each hypothesis using the "
+        "available tools. Report which hypotheses were confirmed or rejected."
+    ),
+}
+```
+
+#### Integration with Main Context
+
+When a subagent completes:
+1. Its `summary` is injected into the active chat as a system message:
+   ```
+   [Subagent "Network Recon" completed (12 turns, 0:42)]
+   <summary>
+   Found 3 C2 endpoints, 2 custom structs, RC4 encryption...
+   </summary>
+   ```
+2. A `TurnEvent.SUBAGENT_COMPLETED` event updates the `AgentTreeWidget`
+3. The user can click "Inject to Chat" on any completed agent to re-send
+   its summary into the current conversation
+
+New `TurnEventType` values:
+
+```python
+SUBAGENT_SPAWNED = "subagent_spawned"
+SUBAGENT_PROGRESS = "subagent_progress"
+SUBAGENT_COMPLETED = "subagent_completed"
+SUBAGENT_FAILED = "subagent_failed"
+```
+
+### Specialized Agents
+
+#### Network Reconstructor
+
+**Goal**: Rebuild network communication structures and C2 protocol.
+
+File: `rikugan/agent/agents/network_recon.py`
+
+System prompt:
+
+```
+You are a network protocol reverse engineer. Your task is to reconstruct
+the network communication layer of this binary.
+
+Workflow:
+1. Find all socket/network API imports (connect, send, recv, WSA*,
+   InternetOpen*, HttpSendRequest*, etc.)
+2. Trace callers of each network API to find the communication functions
+3. Identify:
+   - Server addresses / domains (hardcoded or constructed)
+   - Port numbers
+   - Protocol type (HTTP, TCP raw, DNS, custom)
+   - Encryption/encoding (XOR, RC4, AES, base64, custom)
+   - C2 command structure (command IDs, dispatch tables)
+   - Data exfiltration format
+4. For each identified struct, declare it using declare_c_type
+5. Output a structured summary with:
+   - Network topology diagram (ASCII)
+   - C struct definitions for all protocol messages
+   - Command dispatch table
+   - Encryption details
+```
+
+**Default perks**: `import_mapping`, `string_harvesting`, `deep_decompilation`
+**Default max_turns**: 30
+
+#### Report Writer
+
+**Goal**: Summarize all findings from the session into a structured report.
+
+File: `rikugan/agent/agents/report_writer.py`
+
+System prompt:
+
+```
+You are a malware analysis report writer. Summarize ALL findings from
+this analysis session into a professional report.
+
+Report structure:
+1. Executive Summary (3-5 sentences)
+2. File Metadata (name, size, type, hashes if available)
+3. Key Findings
+   - Capabilities (what the malware does)
+   - Persistence mechanisms
+   - Network indicators (C2, domains, IPs)
+   - Evasion techniques
+   - Data targeted for exfiltration
+4. Technical Details
+   - Function-by-function breakdown of key routines
+   - Struct definitions discovered
+   - String artifacts
+5. MITRE ATT&CK Mapping (technique IDs)
+6. IOCs (Indicators of Compromise)
+7. Recommendations
+
+Use markdown formatting. Be precise and cite function addresses.
+```
+
+**Input**: The report writer receives the full conversation history of the
+parent session (compacted) plus any subagent summaries. It does NOT get
+tool access — it works purely from accumulated context.
+
+**Default perks**: none (read-only agent)
+**Default max_turns**: 5
+
+### A2A Bridge — External Agent Integration
+
+#### Protocol Choice
+
+Based on the current landscape:
+- **MCP** (Anthropic): agent-to-tool — already integrated in Rikugan
+- **A2A** (Google/Linux Foundation): agent-to-agent — the emerging standard
+
+Rikugan implements **A2A client support** for delegating tasks to external
+agents. This means Rikugan can *send* tasks to A2A-compatible agents but
+does not need to *be* an A2A server (the binary analysis tools stay local).
+
+For agents that don't support A2A yet (Claude Code, Codex CLI), Rikugan
+falls back to **subprocess spawning** with structured I/O.
+
+#### Architecture
+
+File: `rikugan/agent/a2a/`
+
+```
+rikugan/agent/a2a/
+├── __init__.py
+├── client.py          # A2AClient — JSON-RPC over HTTPS + SSE
+├── subprocess_bridge.py  # Fallback for CLI agents
+├── registry.py        # ExternalAgentRegistry — discover + manage
+└── types.py           # A2A message types (Task, Artifact, etc.)
+```
+
+#### External Agent Registry
+
+File: `rikugan/agent/a2a/registry.py`
+
+```python
+@dataclass
+class ExternalAgentConfig:
+    name: str                # "claude-code", "codex", "custom-a2a"
+    transport: Literal["a2a", "subprocess"]
+    endpoint: str            # URL for a2a, command for subprocess
+    capabilities: list[str]  # ["code_generation", "research", "refactoring"]
+    model: str               # optional model override
+    env: dict[str, str]      # environment variables for subprocess
+
+class ExternalAgentRegistry:
+    """Discover and manage external agents."""
+
+    def discover(self) -> list[ExternalAgentConfig]:
+        """Auto-detect available agents on the system."""
+        agents = []
+        # Check for claude CLI
+        if shutil.which("claude"):
+            agents.append(ExternalAgentConfig(
+                name="claude-code",
+                transport="subprocess",
+                endpoint="claude",
+                capabilities=["code_generation", "research", "refactoring"],
+            ))
+        # Check for codex CLI
+        if shutil.which("codex"):
+            agents.append(ExternalAgentConfig(
+                name="codex",
+                transport="subprocess",
+                endpoint="codex",
+                capabilities=["code_generation", "research"],
+            ))
+        # Load user-configured A2A agents from config
+        ...
+        return agents
+```
+
+#### Subprocess Bridge
+
+For CLI agents (Claude Code, Codex), use subprocess with structured prompts:
+
+```python
+class SubprocessBridge:
+    """Bridge to CLI-based agents via subprocess."""
+
+    def run_task(
+        self,
+        agent: ExternalAgentConfig,
+        task: str,
+        timeout: int = 300,
+    ) -> Generator[A2AEvent, None, str]:
+        """Run a task via CLI subprocess. Stream output."""
+        # claude --print --output-format json "task description"
+        # codex --quiet "task description"
+        ...
+```
+
+#### UI — `A2ABridgeWidget`
+
+File: `rikugan/ui/a2a_widget.py`
+
+```
+A2ABridgeWidget (QWidget)
+├── QGroupBox "Available Agents"
+│   └── QListWidget
+│       ├── claude-code (local CLI)
+│       ├── codex (local CLI)
+│       └── custom-a2a (https://...)
+├── QGroupBox "Delegate Task"
+│   ├── QComboBox "Target Agent"
+│   ├── QTextEdit "Task description"
+│   ├── QCheckBox "Include current context summary"
+│   └── QPushButton "Send Task"
+└── QGroupBox "Task History"
+    └── QTableWidget
+        Columns: Agent | Task (truncated) | Status | Result
+```
+
+**Context forwarding**: When "Include current context summary" is checked,
+Rikugan compacts the current session into a ~2000 token summary and prepends
+it to the task. This gives the external agent enough context about the binary
+being analyzed without leaking the full conversation.
+
+#### A2A Config
+
+In `rikugan.toml` (user config):
+
+```toml
+[a2a]
+# Auto-discover CLI agents on PATH
+auto_discover = true
+
+# Additional A2A agents
+[[a2a.agents]]
+name = "my-research-agent"
+transport = "a2a"
+endpoint = "https://my-agent.example.com/.well-known/agent.json"
+capabilities = ["research"]
+```
+
+### Agents System — File Layout
+
+New files to create:
+
+```
+rikugan/
+├── agent/
+│   ├── bulk_renamer.py          # BulkRenamerEngine, RenameJob, RenameEvent
+│   ├── subagent_manager.py      # SubagentManager, SubagentInfo
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── network_recon.py     # Network Reconstructor prompt + config
+│   │   ├── report_writer.py     # Report Writer prompt + config
+│   │   └── perks.py             # SUBAGENT_PERKS dict
+│   └── a2a/
+│       ├── __init__.py
+│       ├── client.py            # A2AClient
+│       ├── subprocess_bridge.py # SubprocessBridge
+│       ├── registry.py          # ExternalAgentRegistry
+│       └── types.py             # A2A message types
+├── ui/
+│   ├── tools_panel.py           # ToolsPanel (QTabWidget container)
+│   ├── bulk_renamer.py          # BulkRenamerWidget
+│   ├── agent_tree.py            # AgentTreeWidget, SpawnAgentDialog
+│   └── a2a_widget.py            # A2ABridgeWidget
+```
+
+Modified files:
+
+```
+rikugan/
+├── agent/
+│   ├── turn.py                  # +4 new TurnEventType values
+│   └── subagent.py              # SubagentRunner gains manager integration
+├── ui/
+│   ├── panel_core.py            # +Tools button, +ToolsPanel in splitter
+│   └── chat_view.py             # Handle new subagent events
+├── core/
+│   └── config.py                # +a2a config section, +bulk_renamer defaults
+```
+
+### Implementation Order
+
+| Phase | Scope                          | Depends on |
+| ----- | ------------------------------ | ---------- |
+| **1** | `SubagentManager` + events     | existing `SubagentRunner` |
+| **2** | `ToolsPanel` shell + button    | — |
+| **3** | `AgentTreeWidget` + spawn dialog | Phase 1, 2 |
+| **4** | Specialized agents (prompts)   | Phase 1 |
+| **5** | `BulkRenamerEngine`            | Phase 1 |
+| **6** | `BulkRenamerWidget`            | Phase 2, 5 |
+| **7** | A2A types + subprocess bridge  | — |
+| **8** | `ExternalAgentRegistry`        | Phase 7 |
+| **9** | `A2ABridgeWidget`              | Phase 2, 8 |
+
+Phases 1-4 form the MVP. Phases 5-6 can ship independently.
+Phases 7-9 (A2A) are experimental and can land behind a feature flag.
+
+### Threading Model
+
+All agent work runs on background threads. UI polls via `QTimer`.
+
+```
+Main Thread (Qt)                Background Threads
+─────────────────               ──────────────────
+ToolsPanel                      BulkRenamerEngine
+  ├── BulkRenamerWidget ◄────── ├── ThreadPoolExecutor(max_concurrent)
+  │   poll QTimer (50ms)        │   ├── SubagentRunner (func batch 1)
+  │   ← RenameEvent queue       │   ├── SubagentRunner (func batch 2)
+  │                              │   └── SubagentRunner (func batch 3)
+  ├── AgentTreeWidget ◄──────── SubagentManager
+  │   poll QTimer (50ms)        ├── Thread (agent 1)
+  │   ← SubagentEvent queue    ├── Thread (agent 2)
+  │                              └── Thread (agent 3)
+  └── A2ABridgeWidget ◄──────── SubprocessBridge
+      poll QTimer (50ms)        └── subprocess.Popen (claude/codex)
+      ← A2AEvent queue
+```
+
+No cross-thread Qt signals. All communication via `queue.Queue`.
+Cancellation via `threading.Event` checked every loop iteration.
+
+### Security Considerations
+
+- **A2A subprocess**: Never pass raw binary data to external agents. Only
+  pass decompiled/disassembled text summaries.
+- **Subprocess escaping**: Use `subprocess.run(args_list)` (not shell=True).
+  Validate all agent names against an allowlist.
+- **A2A network**: HTTPS only. Validate agent card JSON schema before use.
+- **Bulk renamer**: All renames go through `rename_function` tool which
+  records `MutationRecord` entries → fully undoable.
+- **Rate limiting**: Respect provider rate limits. `BulkRenamerEngine`
+  implements exponential backoff on 429 responses.

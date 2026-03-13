@@ -38,7 +38,7 @@ _BLOCK_CODE_STYLE = (
     f"background-color:{_BLOCK_BG}; color:{_BLOCK_FG}; "
     f"border:1px solid {_CODE_BORDER}; border-radius:4px; "
     f"padding:8px; font-family:monospace; font-size:12px; "
-    f"white-space:pre;"
+    f"white-space:pre-wrap; word-break:break-all;"
 )
 
 

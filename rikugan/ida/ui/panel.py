@@ -10,6 +10,7 @@ from rikugan.ui.qt_compat import QVBoxLayout, QWidget
 
 from .actions import RikuganUIHooks
 from .session_controller import IdaSessionController
+from .tools_form import RikuganToolsForm
 
 idaapi = importlib.import_module("idaapi")
 
@@ -39,6 +40,7 @@ class RikuganPanel(idaapi.PluginForm):
         self._core = RikuganPanelCore(
             controller_factory=IdaSessionController,
             ui_hooks_factory=lambda panel_getter: RikuganUIHooks(panel_getter=panel_getter),
+            tools_form_factory=lambda tools_widget: RikuganToolsForm(tools_widget),
             parent=self._root,
         )
         root_layout.addWidget(self._core)

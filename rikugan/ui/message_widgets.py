@@ -12,6 +12,7 @@ from .qt_compat import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     Qt,
     QTimer,
     QToolButton,
@@ -118,6 +119,8 @@ class UserMessageWidget(QFrame):
             Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self._content.setStyleSheet("color: #d4d4d4; font-size: 13px;")
+        self._content.setMinimumWidth(0)
+        self._content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._content)
 
 
@@ -223,7 +226,8 @@ class _ThinkingBlock(QFrame):
 class AssistantMessageWidget(QFrame):
     """Displays an assistant message with streaming support and Markdown rendering."""
 
-    _RENDER_BATCH = 40
+    # Larger batch = fewer re-layouts during streaming = less shaking.
+    _RENDER_BATCH = 120
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -251,6 +255,9 @@ class AssistantMessageWidget(QFrame):
         )
         self._content.setOpenExternalLinks(True)
         self._content.setStyleSheet("color: #d4d4d4; font-size: 13px;")
+        # Prevent the label from requesting more width than its parent
+        self._content.setMinimumWidth(0)
+        self._content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._content)
 
     def _render(self) -> None:
@@ -510,6 +517,49 @@ class ExplorationFindingWidget(QFrame):
             layout.addWidget(rel_label)
 
 
+class SubagentEventWidget(QFrame):
+    """Displays a subagent lifecycle event (spawned, completed, failed)."""
+
+    _STATUS_COLORS: ClassVar[dict[str, str]] = {
+        "spawned": "#569cd6",
+        "completed": "#4ec9b0",
+        "failed": "#f44747",
+    }
+
+    def __init__(
+        self,
+        status: str,
+        name: str,
+        detail: str = "",
+        parent: QWidget = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("message_tool")
+        color = self._STATUS_COLORS.get(status, "#808080")
+        self.setStyleSheet(f"QFrame#message_tool {{ border-color: {color}; background: #252530; }}")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+
+        icon_map = {"spawned": "\u25b6", "completed": "\u2714", "failed": "\u2718"}
+        icon = icon_map.get(status, "\u2022")
+        self._icon = QLabel(icon)
+        self._icon.setStyleSheet(f"color: {color}; font-size: 14px;")
+        layout.addWidget(self._icon)
+
+        label_text = f"Subagent \u201c{name}\u201d {status}"
+        self._label = QLabel(label_text)
+        self._label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
+        layout.addWidget(self._label)
+
+        if detail:
+            self._detail = QLabel(detail)
+            self._detail.setWordWrap(True)
+            self._detail.setStyleSheet("color: #b0b0b0; font-size: 11px;")
+            layout.addWidget(self._detail, 1)
+
+
 class ErrorMessageWidget(QFrame):
     """Displays an error message."""
 
@@ -531,4 +581,6 @@ class ErrorMessageWidget(QFrame):
             Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self._content.setStyleSheet("color: #f44747; font-size: 12px;")
+        self._content.setMinimumWidth(0)
+        self._content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._content)

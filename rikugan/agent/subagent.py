@@ -35,6 +35,7 @@ class SubagentRunner:
         host_name: str = "IDA Pro",
         skill_registry: SkillRegistry | None = None,
         parent_loop: Any | None = None,
+        cancel_event: Any | None = None,
     ):
         self.provider = provider
         self.tools = tool_registry
@@ -42,6 +43,7 @@ class SubagentRunner:
         self.host_name = host_name
         self.skills = skill_registry
         self._parent_loop = parent_loop
+        self._cancel_event = cancel_event
         self._last_session: SessionState | None = None
 
     @property

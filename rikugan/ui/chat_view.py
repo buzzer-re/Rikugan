@@ -13,6 +13,7 @@ from .message_widgets import (
     ExplorationFindingWidget,
     ExplorationPhaseWidget,
     QueuedMessageWidget,
+    SubagentEventWidget,
     ThinkingWidget,
     UserMessageWidget,
     UserQuestionWidget,
@@ -20,6 +21,7 @@ from .message_widgets import (
 from .plan_view import PlanView
 from .qt_compat import (
     QScrollArea,
+    QSizePolicy,
     Qt,
     QTimer,
     QVBoxLayout,
@@ -57,6 +59,9 @@ class ChatView(QScrollArea):
 
         self._container = QWidget()
         self._container.setObjectName("chat_container")
+        # Prevent the container from requesting more width than the viewport;
+        # this is critical for word-wrap to work inside a QScrollArea.
+        self._container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(4, 4, 4, 4)
         self._layout.setSpacing(4)
@@ -79,10 +84,11 @@ class ChatView(QScrollArea):
         # Map tool_call_id -> group it belongs to (for result routing/status)
         self._group_map: dict[str, ToolGroupWidget] = {}
 
-        # Member timer for scroll-to-bottom
+        # Member timer for scroll-to-bottom — coalesce at 80ms to reduce
+        # layout thrashing during rapid streaming
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setSingleShot(True)
-        self._scroll_timer.setInterval(50)
+        self._scroll_timer.setInterval(80)
         self._scroll_timer.timeout.connect(self._do_scroll)
 
         # Timer for minimum thinking display duration (500ms)
@@ -224,6 +230,12 @@ class ChatView(QScrollArea):
             TurnEventType.SAVE_APPROVAL_REQUEST,
         ):
             self._handle_question_event(event)
+        elif etype in (
+            TurnEventType.SUBAGENT_SPAWNED,
+            TurnEventType.SUBAGENT_COMPLETED,
+            TurnEventType.SUBAGENT_FAILED,
+        ):
+            self._handle_subagent_event(event)
         elif etype == TurnEventType.ERROR:
             self._hide_thinking()
             self._reset_tool_run()
@@ -354,6 +366,24 @@ class ChatView(QScrollArea):
             )
         self._scroll_to_bottom()
 
+    def _handle_subagent_event(self, event: TurnEvent) -> None:
+        meta = event.metadata
+        if event.type == TurnEventType.SUBAGENT_SPAWNED:
+            name = event.text
+            agent_type = meta.get("agent_type", "custom")
+            self._insert_widget(SubagentEventWidget("spawned", name, f"type: {agent_type}"))
+        elif event.type == TurnEventType.SUBAGENT_COMPLETED:
+            name = meta.get("name", "")
+            turns = meta.get("turn_count", 0)
+            elapsed = meta.get("elapsed", 0.0)
+            detail = f"{turns} turns, {elapsed:.0f}s"
+            self._insert_widget(SubagentEventWidget("completed", name, detail))
+        elif event.type == TurnEventType.SUBAGENT_FAILED:
+            name = meta.get("name", "")
+            error = event.error or "Unknown error"
+            self._insert_widget(SubagentEventWidget("failed", name, error))
+        self._scroll_to_bottom()
+
     def _handle_question_event(self, event: TurnEvent) -> None:
         self._hide_thinking()
         self._reset_tool_run()
@@ -436,6 +466,18 @@ class ChatView(QScrollArea):
         idx = self._layout.count() - 1
         self._layout.insertWidget(idx, widget)
 
+    def resizeEvent(self, event) -> None:
+        """Keep the container width pinned to the viewport width.
+
+        QScrollArea.setWidgetResizable(True) handles this when there is no
+        horizontal scrollbar, but QLabel rich-text word-wrap still sometimes
+        requests a wider sizeHint.  Explicitly clamping here guarantees text
+        wraps to the visible area.
+        """
+        super().resizeEvent(event)
+        if self._container is not None:
+            self._container.setFixedWidth(self.viewport().width())
+
     def _is_near_bottom(self) -> bool:
         """True if the user hasn't scrolled up (within ~60px of bottom)."""
         sb = self.verticalScrollBar()
@@ -446,7 +488,6 @@ class ChatView(QScrollArea):
             self._scroll_timer.start()
 
     def _do_scroll(self) -> None:
-        self._container.updateGeometry()
         sb = self.verticalScrollBar()
         sb.setValue(sb.maximum())
 
