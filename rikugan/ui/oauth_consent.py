@@ -1,4 +1,4 @@
-"""OAuth consent dialog shown before auto-loading tokens from macOS Keychain."""
+"""OAuth consent dialog shown when enabling OAuth in settings."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def show_oauth_consent(parent: QWidget | None = None) -> str:
     layout = QVBoxLayout(dlg)
 
     warning = QLabel(
-        "<b>Rikugan detected a Claude Code OAuth token in your macOS Keychain.</b>"
+        "<b>Use your Claude Code OAuth token with Rikugan?</b>"
         "<br><br>"
         "Using this token with third-party tools carries risk. "
         "Please read Anthropic's policy before proceeding:"
@@ -66,4 +66,12 @@ def show_oauth_consent(parent: QWidget | None = None) -> str:
     api_btn.clicked.connect(_on_api_key)
 
     dlg.exec()
+
+    # Force immediate C++ destruction to prevent the QDialogButtonBox
+    # from surviving until QApplication::~QApplication() (same crash
+    # pattern as the QFrame orphan fix — PySide6 disconnectNotify on
+    # a dead Python interpreter).
+    dlg.setParent(None)
+    dlg.deleteLater()
+
     return result["choice"]

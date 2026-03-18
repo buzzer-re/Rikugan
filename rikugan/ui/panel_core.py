@@ -265,38 +265,16 @@ class RikuganPanelCore(QWidget):
         self._build_ui()
 
     def _check_oauth_consent(self) -> None:
-        """Show the OAuth consent dialog if a keychain token exists but consent
-        was never given.  Sets ``auth_cache.set_keychain_consent`` so the
-        warm-up thread knows whether keychain autoload is allowed.
+        """Apply persisted OAuth consent to the auth cache.
+
+        The consent dialog itself is only shown from the settings checkbox
+        (``_on_oauth_toggled``).  This method just restores the persisted
+        state so the warm-up thread knows whether keychain autoload is
+        allowed.
         """
-        from ..providers.auth_cache import has_keychain_token, set_keychain_consent
+        from ..providers.auth_cache import set_keychain_consent
 
-        # Already consented — enable keychain
-        if self._config.oauth_consent_accepted:
-            set_keychain_consent(True)
-            return
-
-        # Explicit API key configured — no need to prompt
-        if self._config.provider.api_key:
-            return
-
-        # No keychain token — nothing to prompt about
-        if not has_keychain_token():
-            return
-
-        # Show consent dialog (blocks until user chooses)
-        from .oauth_consent import show_oauth_consent
-
-        choice = show_oauth_consent(parent=None)
-        if choice == "accept":
-            self._config.oauth_consent_accepted = True
-            self._config.save()
-            set_keychain_consent(True)
-        else:
-            # "api_key" or "cancel" — don't autoload from keychain
-            set_keychain_consent(False)
-            # Open settings so the user can enter an API key
-            QTimer.singleShot(500, self._on_settings)
+        set_keychain_consent(self._config.oauth_consent_accepted)
 
     def _ensure_skills_refresh_timer(self) -> None:
         """Refresh skill autocomplete once background discovery completes."""
