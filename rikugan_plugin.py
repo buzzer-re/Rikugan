@@ -167,7 +167,8 @@ class RikuganPlugin(idaapi.plugin_t):
     wanted_hotkey = "Ctrl+Shift+I"
 
     def init(self) -> idaapi.plugmod_t:
-        idaapi.msg("[Rikugan] Plugin loaded (v0.1.0)\n")
+        _ver = importlib.import_module("rikugan.constants").PLUGIN_VERSION
+        idaapi.msg(f"[Rikugan] Plugin loaded (v{_ver})\n")
         return RikuganPlugmod()
 
 
