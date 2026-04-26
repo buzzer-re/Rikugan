@@ -57,8 +57,8 @@ class OpenAICompatProvider(OpenAIProvider):
             streaming=True,
             tool_use=True,
             vision=False,
-            max_context_window=128000,
-            max_output_tokens=4096,
+            max_context_window=200000,
+            max_output_tokens=16384,
         )
 
     def list_models(self) -> list[ModelInfo]:
