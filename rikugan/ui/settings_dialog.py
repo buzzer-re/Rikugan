@@ -10,6 +10,7 @@ from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_error
 from ..core.types import ModelInfo
 from ..providers.auth_cache import resolve_auth_cached
+from ..providers.auth_compat import apply_keychain_consent, invalidate_auth_cache
 from ..providers.ollama_provider import DEFAULT_OLLAMA_URL
 from ..providers.registry import ProviderRegistry
 from .qt_compat import (
@@ -570,10 +571,8 @@ class SettingsDialog(QDialog):
                 self._oauth_cb.blockSignals(False)
                 return
         # Update consent and refresh auth status
-        from ..providers.auth_cache import invalidate_cache, set_keychain_consent
-
-        set_keychain_consent(checked)
-        invalidate_cache()
+        apply_keychain_consent(checked)
+        invalidate_auth_cache()
         self._update_auth_status()
 
     # --- Auth status ---

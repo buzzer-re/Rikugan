@@ -15,6 +15,7 @@ from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_error, log_info, log_warning
 from ..core.types import Role
 from ..providers.auth_cache import resolve_auth_cached
+from ..providers.auth_compat import apply_keychain_consent
 from ..providers.registry import ProviderRegistry
 from .chat_view import ChatView
 from .context_bar import ContextBar
@@ -331,9 +332,7 @@ class RikuganPanelCore(QWidget):
         state so the warm-up thread knows whether keychain autoload is
         allowed.
         """
-        from ..providers.auth_cache import set_keychain_consent
-
-        set_keychain_consent(self._config.oauth_consent_accepted)
+        apply_keychain_consent(self._config.oauth_consent_accepted)
 
     def _ensure_skills_refresh_timer(self) -> None:
         """Refresh skill autocomplete once background discovery completes."""
