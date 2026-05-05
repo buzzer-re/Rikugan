@@ -443,6 +443,21 @@ class ChatView(QScrollArea):
         """Replay saved Message objects into the chat view."""
         self.clear_chat()
 
+        # Disable Qt layout/paint passes for the duration of the restore.
+        # Without this each _insert_widget call triggers a full O(n) layout
+        # recalculation on the growing container, making session restore
+        # O(n²) in the number of messages.
+        self._container.setUpdatesEnabled(False)
+        try:
+            self._restore_messages_inner(messages)
+        finally:
+            self._container.setUpdatesEnabled(True)
+
+        self._current_assistant = None
+        self._reset_tool_run()
+        self._scroll_to_bottom()
+
+    def _restore_messages_inner(self, messages: list[Message]) -> None:
         for msg in messages:
             if msg.role == Role.USER:
                 if _is_hidden_system_user_message(msg.content):
@@ -477,10 +492,6 @@ class ChatView(QScrollArea):
                     group = self._group_map.get(tr.tool_call_id)
                     if group:
                         group.notify_result(tr.is_error)
-
-        self._current_assistant = None
-        self._reset_tool_run()
-        self._scroll_to_bottom()
 
     def clear_chat(self) -> None:
         self._force_hide_thinking()

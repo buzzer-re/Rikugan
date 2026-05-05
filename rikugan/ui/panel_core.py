@@ -1035,13 +1035,26 @@ class RikuganPanelCore(QWidget):
             return
         self._polling = True
         try:
-            for _ in range(20):
-                event = self._ctrl.get_event(timeout=0)
-                if event is None:
-                    if not self._ctrl.is_agent_running:
-                        self._on_agent_finished()
-                    return
-                self._on_event(event)
+            chat_view = self._active_chat_view()
+            container = chat_view._container if chat_view is not None else None
+            # Defer layout/paint passes until the whole batch is processed.
+            # When 3 tools complete between ticks, each TOOL_RESULT makes a hidden
+            # widget visible which triggers an O(n-widgets) layout cascade on the
+            # chat container.  Batching those into one final pass cuts this from
+            # O(k·n) to O(n) per tick.
+            if container is not None:
+                container.setUpdatesEnabled(False)
+            try:
+                for _ in range(30):
+                    event = self._ctrl.get_event(timeout=0)
+                    if event is None:
+                        if not self._ctrl.is_agent_running:
+                            self._on_agent_finished()
+                        return
+                    self._on_event(event)
+            finally:
+                if container is not None:
+                    container.setUpdatesEnabled(True)
         finally:
             self._polling = False
 

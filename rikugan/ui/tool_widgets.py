@@ -587,6 +587,7 @@ class ToolCallWidget(QFrame):
         self._args_label = QLabel()
         self._args_label.setObjectName("tool_content")
         self._args_label.setWordWrap(True)
+        self._args_label.setTextFormat(Qt.TextFormat.PlainText)
         self._args_label.setTextInteractionFlags(
             qt_flags(
                 Qt.TextInteractionFlag.TextSelectableByMouse,
@@ -608,6 +609,7 @@ class ToolCallWidget(QFrame):
         self._result_label = QLabel()
         self._result_label.setObjectName("tool_content")
         self._result_label.setWordWrap(True)
+        self._result_label.setTextFormat(Qt.TextFormat.PlainText)
         self._result_label.setTextInteractionFlags(
             qt_flags(
                 Qt.TextInteractionFlag.TextSelectableByMouse,
@@ -630,10 +632,12 @@ class ToolCallWidget(QFrame):
         _SharedSpinnerTimer.get().unregister(self)
 
     def _toggle(self) -> None:
+        self.setUpdatesEnabled(False)
         self._expanded = not self._expanded
         self._detail_widget.setVisible(self._expanded)
         self._preview_label.setVisible(not self._expanded and bool(self._args_text))
         self._toggle_btn.setText("\u25bc" if self._expanded else "\u25b6")
+        self.setUpdatesEnabled(True)
 
     def set_arguments(self, args_text: str) -> None:
         self._args_text = args_text
@@ -894,10 +898,12 @@ class ToolBatchWidget(QFrame):
             self._status_label.setText(f"{done}/{self._count}")
 
     def _toggle(self) -> None:
+        self.setUpdatesEnabled(False)
         self._expanded = not self._expanded
         self._detail_widget.setVisible(self._expanded)
         self._preview_label.setVisible(not self._expanded and bool(self._first_args))
         self._toggle_btn.setText("\u25bc" if self._expanded else "\u25b6")
+        self.setUpdatesEnabled(True)
 
     @property
     def tool_name(self) -> str:
@@ -1016,9 +1022,11 @@ class ToolGroupWidget(QFrame):
             )
 
     def _toggle(self) -> None:
+        self.setUpdatesEnabled(False)
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
         self._toggle_btn.setText("\u25bc" if self._expanded else "\u25b6")
+        self.setUpdatesEnabled(True)
 
     @property
     def count(self) -> int:

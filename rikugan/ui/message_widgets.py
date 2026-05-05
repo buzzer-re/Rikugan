@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import re as _re
+import time as _time
 from typing import ClassVar
 
 from .markdown import md_to_html
@@ -121,6 +122,38 @@ def _tool_frame_style(
 
 # Re-export tool widgets so existing consumers that import from this module
 # continue to work without changes.
+
+
+# ---------------------------------------------------------------------------
+# Height-caching QLabel — eliminates O(text_length) layout-pass cost
+# ---------------------------------------------------------------------------
+
+
+class _HeightCachedLabel(QLabel):
+    """QLabel that opts out of the layout heightForWidth protocol.
+
+    QLabel with wordWrap forces an O(text_length) heightForWidth() call on
+    every layout pass (e.g. when any sibling widget changes size).  In a chat
+    with many long assistant messages this makes tool expand/collapse and
+    parallel-tool completion O(N x msg_length) instead of O(N).
+
+    By returning False from hasHeightForWidth() and pinning the height after
+    each render, layout passes cost O(1) for this widget.  The correct height
+    is still computed — just once per render instead of on every layout event.
+    """
+
+    def hasHeightForWidth(self) -> bool:
+        return False
+
+    def pin_height(self) -> None:
+        """Fix widget height to the value heightForWidth returns for the current width."""
+        w = self.width()
+        if w <= 0:
+            return
+        h = QLabel.heightForWidth(self, w)
+        if h > 0:
+            self.setFixedHeight(h)
+
 
 # ---------------------------------------------------------------------------
 # Collapsible section (unchanged, used internally)
@@ -343,14 +376,21 @@ class _ThinkingBlock(QFrame):
 class AssistantMessageWidget(QFrame):
     """Displays an assistant message with streaming support and Markdown rendering."""
 
-    # Larger batch = fewer re-layouts during streaming = less shaking.
-    _RENDER_BATCH = 120
+    # Render at most every 100ms during streaming regardless of message length.
+    # This caps the O(n) md_to_html cost to ~10 fps as messages grow.
+    _RENDER_INTERVAL_S: float = 0.10
+    # Minimum pending chars before a time-gated render fires (avoids renders for tiny deltas).
+    _RENDER_BATCH_MIN: int = 30
+    # Unconditional render threshold — ensures we flush even when the interval
+    # hasn't elapsed (e.g. burst of 500+ chars in a single poll tick).
+    _RENDER_BATCH_MAX: int = 500
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("message_assistant")
         self._full_text = ""
         self._pending_delta = 0
+        self._last_render_time: float = 0.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -367,7 +407,7 @@ class AssistantMessageWidget(QFrame):
         self._thinking_block = _ThinkingBlock()
         layout.addWidget(self._thinking_block)
 
-        self._content = QLabel()
+        self._content = _HeightCachedLabel()
         self._content.setWordWrap(True)
         self._content.setTextFormat(Qt.TextFormat.RichText)
         self._content.setTextInteractionFlags(
@@ -403,11 +443,28 @@ class AssistantMessageWidget(QFrame):
             self._thinking_block.hide()
         self._content.setText(md_to_html(visible, self))
         self._pending_delta = 0
+        self._last_render_time = _time.monotonic()
+        self._content.pin_height()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self._content.pin_height()
 
     def append_text(self, delta: str) -> None:
         self._full_text += delta
         self._pending_delta += len(delta)
-        if self._pending_delta >= self._RENDER_BATCH:
+        # Unconditional flush for very large bursts (prevents queue build-up).
+        if self._pending_delta >= self._RENDER_BATCH_MAX:
+            self._render()
+            return
+        # Time-gated render: fire once per interval when enough chars are pending.
+        # This caps md_to_html cost to ~10 fps regardless of how long the message
+        # has grown — avoids O(n²) total render work over a long response.
+        if (
+            self._pending_delta >= self._RENDER_BATCH_MIN
+            and _time.monotonic() - self._last_render_time >= self._RENDER_INTERVAL_S
+        ):
             self._render()
 
     def set_text(self, text: str) -> None:
