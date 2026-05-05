@@ -135,7 +135,7 @@ class _HeightCachedLabel(QLabel):
     QLabel with wordWrap forces an O(text_length) heightForWidth() call on
     every layout pass (e.g. when any sibling widget changes size).  In a chat
     with many long assistant messages this makes tool expand/collapse and
-    parallel-tool completion O(N × msg_length) instead of O(N).
+    parallel-tool completion O(N x msg_length) instead of O(N).
 
     By returning False from hasHeightForWidth() and pinning the height after
     each render, layout passes cost O(1) for this widget.  The correct height
