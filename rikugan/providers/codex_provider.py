@@ -24,7 +24,7 @@ CODEX_ISSUER = "https://auth.openai.com"
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_AUTH_MODE = "chatgpt"
 CODEX_ORIGINATOR = "codex_cli_rs"
-CODEX_MODELS_CLIENT_VERSION = "0.133.0"
+CODEX_MODELS_CLIENT_VERSION = "0.146.0"
 
 
 @dataclass
@@ -95,15 +95,47 @@ def _id_token_info(id_token: str) -> dict[str, Any]:
     }
 
 
+def _version_tuple(value: str) -> tuple[int, ...]:
+    """Parse a dotted version into comparable integers.
+
+    Parsing stops at the first segment that is not purely numeric, so a
+    prerelease such as ``"0.146.0-beta.1"`` compares equal to ``"0.146.0"``
+    instead of ranking above it.
+
+    Args:
+        value: A version string such as ``"0.146.0"``.
+
+    Returns:
+        One integer per leading numeric segment; empty if there are none.
+    """
+    parts: list[int] = []
+    for chunk in value.lstrip("vV").split("."):
+        if not chunk.isdigit():
+            break
+        parts.append(int(chunk))
+    return tuple(parts)
+
+
 def _codex_models_client_version() -> str:
+    """Return the newest Codex client version discoverable on this machine.
+
+    The models endpoint gates availability on this value, so reporting a stale
+    version silently hides newer models.  ``models_cache.json`` records the
+    version that last wrote the cache, which can lag far behind the installed
+    CLI, so take the highest of every candidate rather than the first found.
+
+    Returns:
+        A dotted version string, never empty.
+    """
+    candidates = [CODEX_MODELS_CLIENT_VERSION]
     for path, key in ((_models_cache_path(), "client_version"), (_version_path(), "latest_version")):
         try:
             value = json.loads(path.read_text(encoding="utf-8")).get(key)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
             continue
         if isinstance(value, str) and value:
-            return value
-    return CODEX_MODELS_CLIENT_VERSION
+            candidates.append(value)
+    return max(candidates, key=_version_tuple)
 
 
 def _request_json(
