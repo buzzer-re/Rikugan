@@ -10,9 +10,15 @@ from ..core.logging import log_debug, log_warning
 
 
 def _load_auth_cache() -> ModuleType | None:
+    # Resolve relative to this package, not by absolute name.  Binary Ninja loads
+    # the plugin directory itself as top-level ``rikugan``, so the real package
+    # there is ``rikugan.rikugan.providers`` and an absolute
+    # ``rikugan.providers.auth_cache`` import raises ModuleNotFoundError.
+    # TypeError guards the degenerate case of an empty ``__package__``, which
+    # import_module reports as TypeError rather than ImportError.
     try:
-        return importlib.import_module("rikugan.providers.auth_cache")
-    except ImportError as e:
+        return importlib.import_module(".auth_cache", __package__)
+    except (ImportError, TypeError) as e:
         log_warning(f"Unable to import auth cache: {e}")
         return None
 
@@ -32,7 +38,7 @@ def _call_module_func(module: ModuleType, name: str, *args: Any) -> bool:
     func = getattr(module, name, None)
     if not callable(func):
         log_warning(
-            f"rikugan.providers.auth_cache is missing {name} "
+            f"{module.__name__} is missing {name} "
             f"from {_module_origin(module)}; installation may be stale or mixed. "
             "Restart the host and rerun the Rikugan installer after updating.",
         )
