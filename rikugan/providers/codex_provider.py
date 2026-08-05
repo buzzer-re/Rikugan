@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from ..core.errors import AuthenticationError, ContextLengthError, ProviderError, RateLimitError
+from ..core.tls import ssl_context
 from ..core.types import Message, ModelInfo, ProviderCapabilities, Role, StreamChunk, TokenUsage, ToolCall
 from .base import LLMProvider
 
@@ -117,7 +118,7 @@ def _request_json(
     if headers:
         req_headers.update(headers)
     req = urllib.request.Request(url, data=data, headers=req_headers, method="GET" if data is None else "POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
         raw = resp.read().decode("utf-8")
     return json.loads(raw) if raw else {}
 
@@ -130,7 +131,7 @@ def _request_form(url: str, fields: dict[str, str], timeout: float = 120.0) -> d
         headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "Rikugan Codex"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -490,7 +491,7 @@ class CodexProvider(LLMProvider):
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            resp = urllib.request.urlopen(req, timeout=120.0)
+            resp = urllib.request.urlopen(req, timeout=120.0, context=ssl_context())
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
                 self._refresh_auth()
@@ -498,7 +499,7 @@ class CodexProvider(LLMProvider):
                 if payload is not None:
                     headers["Content-Type"] = "application/json"
                 req = urllib.request.Request(url, data=data, headers=headers, method=method)
-                resp = urllib.request.urlopen(req, timeout=120.0)
+                resp = urllib.request.urlopen(req, timeout=120.0, context=ssl_context())
             else:
                 raise
         if stream:

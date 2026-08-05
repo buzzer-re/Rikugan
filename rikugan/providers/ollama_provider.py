@@ -7,6 +7,7 @@ import os
 import urllib.request
 
 from ..core.logging import log_debug
+from ..core.tls import ssl_context
 from ..core.types import ModelInfo, ProviderCapabilities
 from .openai_compat import OpenAICompatProvider
 
@@ -55,7 +56,10 @@ class OllamaProvider(OpenAICompatProvider):
         try:
             base = self.api_base.removesuffix("/v1").rstrip("/")
             url = f"{base}/api/tags"
-            with urllib.request.urlopen(url, timeout=5) as resp:
+            # Only override the opener for TLS. Passing a context on plain http
+            # would bypass any opener the host installed and buy nothing.
+            context = ssl_context() if url.lower().startswith("https:") else None
+            with urllib.request.urlopen(url, timeout=5, context=context) as resp:
                 data = json.loads(resp.read())
             models = []
             for m in data.get("models", []):
