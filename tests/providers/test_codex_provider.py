@@ -12,7 +12,14 @@ from unittest.mock import patch
 
 from rikugan.core.errors import AuthenticationError
 from rikugan.core.types import Message, Role
-from rikugan.providers.codex_provider import CodexProvider, _id_token_info, codex_auth_status
+from rikugan.providers.codex_provider import (
+    CODEX_MODELS_CLIENT_VERSION,
+    CodexProvider,
+    _codex_models_client_version,
+    _id_token_info,
+    _version_tuple,
+    codex_auth_status,
+)
 
 
 def _jwt(claims: dict) -> str:
@@ -115,7 +122,7 @@ class TestCodexModels(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CODEX_HOME": tmp}, clear=False):
             home = Path(tmp)
             _write_auth(home, {"access_token": "access", "refresh_token": "refresh", "account_id": "acct"})
-            (home / "models_cache.json").write_text(json.dumps({"client_version": "0.133.0"}))
+            (home / "models_cache.json").write_text(json.dumps({"client_version": "0.150.0"}))
             provider = CodexProvider()
 
             with patch.object(
@@ -146,7 +153,66 @@ class TestCodexModels(unittest.TestCase):
         self.assertEqual(models[0].context_window, 272000)
         self.assertTrue(models[0].supports_tools)
         self.assertTrue(models[0].supports_vision)
-        request.assert_called_once_with("GET", "models?client_version=0.133.0", None, stream=False)
+        request.assert_called_once_with("GET", "models?client_version=0.150.0", None, stream=False)
+
+
+class TestCodexClientVersion(unittest.TestCase):
+    """The models endpoint gates availability on client_version — never report a stale one."""
+
+    def _resolve(self, files: dict[str, dict]) -> str:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CODEX_HOME": tmp}, clear=False):
+            for name, payload in files.items():
+                (Path(tmp) / name).write_text(json.dumps(payload))
+            return _codex_models_client_version()
+
+    def test_stale_models_cache_does_not_mask_newer_version(self):
+        """The real-world case: an old cache alongside an updated CLI."""
+        resolved = self._resolve(
+            {
+                "models_cache.json": {"client_version": "0.134.0"},
+                "version.json": {"latest_version": "0.146.0"},
+            }
+        )
+        self.assertEqual(resolved, "0.146.0")
+
+    def test_newer_cache_wins_over_version_file(self):
+        resolved = self._resolve(
+            {
+                "models_cache.json": {"client_version": "0.152.0"},
+                "version.json": {"latest_version": "0.146.0"},
+            }
+        )
+        self.assertEqual(resolved, "0.152.0")
+
+    def test_builtin_floor_used_when_local_versions_are_older(self):
+        resolved = self._resolve({"models_cache.json": {"client_version": "0.100.0"}})
+        self.assertEqual(resolved, CODEX_MODELS_CLIENT_VERSION)
+
+    def test_missing_files_fall_back_to_builtin(self):
+        self.assertEqual(self._resolve({}), CODEX_MODELS_CLIENT_VERSION)
+
+    def test_malformed_json_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CODEX_HOME": tmp}, clear=False):
+            (Path(tmp) / "models_cache.json").write_text("{not json")
+            self.assertEqual(_codex_models_client_version(), CODEX_MODELS_CLIENT_VERSION)
+
+    def test_numeric_not_lexicographic_ordering(self):
+        """String comparison would rank "0.9.0" above "0.146.0"."""
+        self.assertEqual(max(["0.9.0", "0.146.0"], key=_version_tuple), "0.146.0")
+
+    def test_prerelease_does_not_outrank_its_release(self):
+        """A -beta/rc suffix must never resolve higher than the plain release."""
+        for prerelease in ("0.146.0-beta.1", "0.146.0rc1", "0.146.0+build.7"):
+            with self.subTest(prerelease=prerelease):
+                self.assertLessEqual(_version_tuple(prerelease), _version_tuple("0.146.0"))
+
+    def test_leading_v_is_tolerated(self):
+        self.assertEqual(_version_tuple("v0.146.0"), _version_tuple("0.146.0"))
+
+    def test_unparsable_versions_never_win(self):
+        for junk in ("", "unknown", "not.a.version"):
+            with self.subTest(junk=junk):
+                self.assertLess(_version_tuple(junk), _version_tuple("0.1.0"))
 
 
 class TestCodexRequestPayload(unittest.TestCase):
