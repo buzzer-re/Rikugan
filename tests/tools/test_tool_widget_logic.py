@@ -10,11 +10,13 @@ import json
 import unittest
 
 from tests.qt_stubs import ensure_pyside6_stubs
+
 ensure_pyside6_stubs()
 
 from rikugan.ui.tool_widgets import (  # noqa: E402
     _strip_mcp_prefix,
     _tool_color,
+    _format_result_chip,
     _format_tool_group_label,
     _format_tool_summary,
     _truncate_preview,
@@ -25,6 +27,7 @@ from rikugan.ui.tool_widgets import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # _strip_mcp_prefix
 # ---------------------------------------------------------------------------
+
 
 class TestStripMcpPrefix(unittest.TestCase):
     def test_plain_name_unchanged(self):
@@ -49,6 +52,7 @@ class TestStripMcpPrefix(unittest.TestCase):
 # _tool_color
 # ---------------------------------------------------------------------------
 
+
 class TestToolColor(unittest.TestCase):
     def test_known_analysis_tool(self):
         color = _tool_color("decompile_function")
@@ -70,6 +74,7 @@ class TestToolColor(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # _format_tool_group_label
 # ---------------------------------------------------------------------------
+
 
 class TestFormatToolGroupLabel(unittest.TestCase):
     def test_empty_list(self):
@@ -101,6 +106,7 @@ class TestFormatToolGroupLabel(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # _format_tool_summary
 # ---------------------------------------------------------------------------
+
 
 class TestFormatToolSummary(unittest.TestCase):
     def test_decompile_with_address(self):
@@ -170,6 +176,7 @@ class TestFormatToolSummary(unittest.TestCase):
 # _truncate_preview
 # ---------------------------------------------------------------------------
 
+
 class TestTruncatePreview(unittest.TestCase):
     def test_short_text_unchanged(self):
         text = "line1\nline2\nline3"
@@ -194,6 +201,43 @@ class TestTruncatePreview(unittest.TestCase):
         text = "a\nb\nc\nd\ne"
         result = _truncate_preview(text, max_lines=2)
         self.assertIn("… +3 lines", result)
+
+
+# ---------------------------------------------------------------------------
+# _format_result_chip
+# ---------------------------------------------------------------------------
+
+
+class TestFormatResultChip(unittest.TestCase):
+    def test_error_shows_a_cross(self):
+        self.assertEqual(_format_result_chip("decompile_function", "boom", True), "\u2717")
+
+    def test_paginated_result_reports_the_total(self):
+        chip = _format_result_chip("get_xrefs_to", "Xrefs 0-3 of 3:\n  0x401000  main")
+        self.assertEqual(chip, "3 refs")
+
+    def test_function_page_uses_a_short_noun(self):
+        chip = _format_result_chip("list_functions", "Functions 0-50 of 1284:\n  0x401000  main")
+        self.assertEqual(chip, "1,284 fns")
+
+    def test_unknown_title_keeps_its_own_noun(self):
+        chip = _format_result_chip("list_widgets", "Widgets 0-2 of 2:\n  a")
+        self.assertEqual(chip, "2 widgets")
+
+    def test_mutating_tool_advertises_undo(self):
+        chip = _format_result_chip("rename_function", "Renamed to _rc4_ksa")
+        self.assertEqual(chip, "\u2713 undoable")
+
+    def test_decompilation_reports_line_count(self):
+        chip = _format_result_chip("decompile_function", "int main() {\n  return 0;\n}")
+        self.assertEqual(chip, "3 lines")
+
+    def test_mcp_prefixed_names_are_matched(self):
+        chip = _format_result_chip("mcp__server__rename_function", "ok")
+        self.assertEqual(chip, "\u2713 undoable")
+
+    def test_plain_result_falls_back_to_a_check(self):
+        self.assertEqual(_format_result_chip("some_tool", "done"), "\u2713")
 
 
 if __name__ == "__main__":
