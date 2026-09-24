@@ -827,6 +827,10 @@ class RikuganPanelCore(QWidget):
         self._binary_summary = BinarySummary()
         self._binary_summary_loaded = False
         self._binary_summary_attempts = 0
+        self._native_mcp_probe: queue.Queue | None = None
+        self._native_mcp_timer: QTimer | None = None
+        self._native_mcp_available = False
+        self._native_mcp_active = False
         self._binary_queue: queue.Queue | None = None
         self._binary_timer: QTimer | None = None
         self._tab_status: dict[str, str] = {}
@@ -945,6 +949,7 @@ class RikuganPanelCore(QWidget):
             settings=self._on_settings,
             mutations=self._on_toggle_mutation_log,
         )
+        self._panel_header.set_native_mcp_callback(self._toggle_native_mcp)
         layout.addWidget(self._panel_header)
 
         # Top-level mode switcher: Chat | Tools.
@@ -1000,6 +1005,7 @@ class RikuganPanelCore(QWidget):
             self._composer.set_model(self._config.provider.model)
         self._apply_responsive_layout()
         QTimer.singleShot(0, self._load_binary_summary)
+        QTimer.singleShot(0, self._detect_native_mcp)
 
         if self._ui_hooks_factory is not None:
             try:
@@ -1191,6 +1197,7 @@ class RikuganPanelCore(QWidget):
     def _poll_binary_summary(self) -> None:
         if self._is_shutdown or self._binary_queue is None:
             self._stop_binary_poll_timer()
+            self._stop_native_mcp_timer()
             return
         try:
             summary = self._binary_queue.get_nowait()
@@ -1200,6 +1207,133 @@ class RikuganPanelCore(QWidget):
         self._binary_queue = None
         self._binary_summary = summary
         self._refresh_all_welcomes()
+
+    # --- Binary Ninja's own MCP server ----------------------------------
+
+    def _detect_native_mcp(self) -> None:
+        """Look for the host's MCP server, off the UI thread."""
+        if self._is_shutdown or self._ctrl.host_name != "Binary Ninja":
+            return
+        if not getattr(self._ctrl, "runtime_ready", False):
+            QTimer.singleShot(500, self._detect_native_mcp)
+            return
+
+        from ..binja import native_mcp
+
+        result_queue: queue.Queue = queue.Queue()
+        self._native_mcp_probe = result_queue
+        url = self._config.binja_mcp_url or native_mcp.DEFAULT_URL
+
+        threading.Thread(
+            target=lambda: result_queue.put(native_mcp.probe(url)),
+            daemon=True,
+            name="rikugan-native-mcp-probe",
+        ).start()
+
+        self._native_mcp_timer = QTimer(self)
+        self._native_mcp_timer.setInterval(200)
+        self._native_mcp_timer.timeout.connect(self._poll_native_mcp)
+        self._native_mcp_timer.start()
+
+    def _stop_native_mcp_timer(self) -> None:
+        if self._native_mcp_timer is None:
+            return
+        self._native_mcp_timer.stop()
+        try:
+            self._native_mcp_timer.timeout.disconnect(self._poll_native_mcp)
+        except (RuntimeError, TypeError) as e:
+            log_debug(f"native MCP timer disconnect failed: {e}")
+        self._native_mcp_timer.deleteLater()
+        self._native_mcp_timer = None
+
+    def _poll_native_mcp(self) -> None:
+        if self._is_shutdown or self._native_mcp_probe is None:
+            self._stop_native_mcp_timer()
+            return
+        try:
+            result = self._native_mcp_probe.get_nowait()
+        except queue.Empty:
+            return
+        self._stop_native_mcp_timer()
+        self._native_mcp_probe = None
+        if not result.available:
+            return
+
+        self._native_mcp_available = True
+        if self._panel_header is not None:
+            self._panel_header.set_native_mcp_available(True)
+
+        consent = self._config.binja_mcp_consent.get(self._native_mcp_key())
+        if consent is None:
+            consent = self._ask_native_mcp_consent(result)
+            self._remember_native_mcp_consent(consent)
+        if consent:
+            self._start_native_mcp()
+
+    def _native_mcp_key(self) -> str:
+        """Consent is remembered per binary, not per session."""
+        return self._ctrl._db_instance_id or self._ctrl._idb_path or "default"
+
+    def _remember_native_mcp_consent(self, allowed: bool) -> None:
+        self._config.binja_mcp_consent[self._native_mcp_key()] = allowed
+        try:
+            self._config.save()
+        except Exception as e:
+            log_error(f"Failed to save Binary Ninja MCP consent: {e}")
+
+    def _ask_native_mcp_consent(self, result) -> bool:
+        reply = QMessageBox.question(
+            self,
+            "Binary Ninja MCP server",
+            f"Binary Ninja is exposing {result.tool_count} tools over MCP.\n\n"
+            "Let Rikugan use them for this binary? They read the same analysis "
+            "database you are looking at, so the agent will prefer them over its "
+            "own equivalents.",
+            qt_flags(QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No),
+            QMessageBox.StandardButton.Yes,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _start_native_mcp(self) -> None:
+        """Connect to the host's MCP server and expose its tools to the agent."""
+        if self._native_mcp_active or self._is_shutdown:
+            return
+        from ..binja import native_mcp
+
+        url = self._config.binja_mcp_url or native_mcp.DEFAULT_URL
+        self._ctrl._mcp_manager.start_server(
+            native_mcp.server_config(url),
+            self._ctrl.get_tool_registry(),
+            on_complete=lambda name, count: log_info(f"Binary Ninja MCP: {count} tools available"),
+        )
+        self._native_mcp_active = True
+        if self._panel_header is not None:
+            self._panel_header.set_native_mcp_active(True)
+
+    def _stop_native_mcp(self) -> None:
+        if not self._native_mcp_active:
+            return
+        from ..binja import native_mcp
+
+        self._ctrl._mcp_manager.stop_server(
+            native_mcp.SERVER_NAME,
+            self._ctrl.get_tool_registry(),
+            native_mcp.tool_prefix(),
+        )
+        self._native_mcp_active = False
+        if self._panel_header is not None:
+            self._panel_header.set_native_mcp_active(False)
+
+    def _toggle_native_mcp(self) -> None:
+        """Turn the host's MCP tools on or off, remembering the choice."""
+        if not self._native_mcp_available:
+            return
+        if self._native_mcp_active:
+            self._stop_native_mcp()
+            self._remember_native_mcp_consent(False)
+        else:
+            self._start_native_mcp()
+            self._remember_native_mcp_consent(True)
 
     def _chat_group(self, tab_id: str) -> str:
         """Group label for a chat: the binary it belongs to."""

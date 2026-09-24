@@ -56,6 +56,11 @@ class RikuganConfig:
     # UI-driving tools are still marshalled either way. Set False to send
     # everything back through the main thread.
     binja_background_tools: bool = True
+    # Binary Ninja 6.0 ships an MCP server plugin. When one is running Rikugan
+    # offers to use it, once per binary; the answer is remembered here, keyed by
+    # database instance id, so a binary is never asked twice.
+    binja_mcp_url: str = ""
+    binja_mcp_consent: dict[str, bool] = field(default_factory=dict)
     exploration_turn_limit: int = 100  # max turns in exploration phase before forcing transition
     max_retries: int = 3  # max retries on rate-limit / transient API errors
     silent_retry_mode: bool = False  # show loading indicator instead of error messages on retry
@@ -191,6 +196,8 @@ class RikuganConfig:
             "session_storage_dir",
             "approve_mutations",
             "binja_background_tools",
+            "binja_mcp_url",
+            "binja_mcp_consent",
             "exploration_turn_limit",
             "max_retries",
             "silent_retry_mode",

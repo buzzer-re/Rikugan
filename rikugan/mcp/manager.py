@@ -121,6 +121,44 @@ class MCPManager:
             except Exception as stop_err:
                 log_debug(f"MCP[{config.name}]: cleanup after start failure: {stop_err}")
 
+    def start_server(
+        self,
+        config: MCPServerConfig,
+        registry: ToolRegistry,
+        on_complete: Callable[[str, int], None] | None = None,
+    ) -> None:
+        """Start one server in the background, leaving the others alone.
+
+        Used for a server the user turns on mid-session, where restarting every
+        configured server would be both slow and visible.
+        """
+        if self._shut_down:
+            log_warning("MCP: start_server called after shutdown — ignoring")
+            return
+        with self._lock:
+            gen = self._generation
+        threading.Thread(
+            target=self._start_one,
+            args=(config, registry, on_complete, gen),
+            daemon=True,
+            name=f"mcp-start-{config.name}",
+        ).start()
+
+    def stop_server(self, name: str, registry: ToolRegistry | None = None, prefix: str = "") -> bool:
+        """Stop one server and drop its tools from *registry*."""
+        with self._lock:
+            client = self._clients.pop(name, None)
+        if client is None:
+            return False
+        try:
+            client.stop()
+        except Exception as e:
+            log_error(f"MCP[{name}]: stop failed: {e}")
+        if registry is not None and prefix:
+            removed = registry.unregister_by_prefix(prefix)
+            log_info(f"MCP[{name}]: stopped, {removed} tools removed")
+        return True
+
     def stop_all(self) -> None:
         """Stop all running MCP servers."""
         with self._lock:

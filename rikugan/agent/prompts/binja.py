@@ -53,3 +53,22 @@ _BINJA_CAPABILITIES = (
 )
 
 BINJA_BASE_PROMPT = assemble_system_prompt(_BINJA_INTRO, _BINJA_TOOL_USAGE, _BINJA_CAPABILITIES)
+
+
+# Rikugan connects to Binary Ninja's own MCP server when the user allows it.
+# That server talks to the live BinaryView through the host's own API, so where
+# the two overlap it is the more authoritative source.
+NATIVE_MCP_TOOL_PREFIX = "mcp_binaryninja_"
+
+NATIVE_MCP_SECTION = """
+## Binary Ninja's own MCP tools
+
+The `mcp_binaryninja_*` tools come from Binary Ninja's own MCP server, running
+inside the host. Prefer them over Rikugan's built-in equivalents whenever both
+can answer a question: they read the same analysis database the user is looking
+at, so their view of names, types and cross-references is the authoritative one.
+
+Use Rikugan's built-in tools when the MCP server has no equivalent, when a call
+to it fails, or for anything it does not cover (patching, scripting, microcode).
+Do not call both for the same fact just to compare them.
+"""

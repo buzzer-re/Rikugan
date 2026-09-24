@@ -24,6 +24,7 @@ _CHEVRON = "▾"
 _PLUS = "+"
 _OVERFLOW = "\u2026"
 _SIDEBAR = "\u2630"  # trigram for heaven, reads as a list/menu glyph
+_MCP = "\u2b21"  # hexagon: the host's own MCP tools
 _MAX_TITLE_CHARS = 26
 
 
@@ -49,6 +50,7 @@ class PanelHeader(QWidget):
         self._delete_callback: Callable[[], None] | None = None
         self._settings_callback: Callable[[], None] | None = None
         self._mutations_callback: Callable[[], None] | None = None
+        self._mcp_callback: Callable[[], None] | None = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 7, 8, 7)
@@ -65,6 +67,12 @@ class PanelHeader(QWidget):
         # keeps it against the left edge instead of centring in the header.
         layout.addWidget(self._switcher)
         layout.addStretch()
+
+        # Only shown once a host MCP server has actually answered a handshake.
+        self._mcp_btn = self._make_icon_button(_MCP, "Binary Ninja MCP tools", self._on_mcp)
+        self._mcp_btn.setCheckable(True)
+        self._mcp_btn.setVisible(False)
+        layout.addWidget(self._mcp_btn)
 
         self._new_btn = self._make_icon_button(_PLUS, "New chat", self._on_new)
         layout.addWidget(self._new_btn)
@@ -104,6 +112,23 @@ class PanelHeader(QWidget):
         """Show the active chat's name on the switcher button."""
         self._switcher.setText(f"{elide_title(title)}  {_CHEVRON}")
         self._switcher.setToolTip(title or "Untitled")
+
+    def set_native_mcp_callback(self, callback: Callable[[], None] | None) -> None:
+        self._mcp_callback = callback
+
+    def set_native_mcp_available(self, available: bool) -> None:
+        """Show the toggle only when the host actually offers MCP tools."""
+        self._mcp_btn.setVisible(available)
+
+    def set_native_mcp_active(self, active: bool) -> None:
+        self._mcp_btn.setChecked(active)
+        self._mcp_btn.setToolTip(
+            "Binary Ninja MCP tools: on (click to disable)" if active else "Binary Ninja MCP tools: off (click to use)"
+        )
+
+    def _on_mcp(self) -> None:
+        if self._mcp_callback is not None:
+            self._mcp_callback()
 
     def set_sidebar_open(self, is_open: bool) -> None:
         """Reflect whether the chat list is showing."""

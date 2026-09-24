@@ -346,6 +346,11 @@ def _make_panel():
     panel._chat_sidebar = None
     panel._tab_status = {}
     panel._sidebar_rows = {}
+    panel._native_mcp_available = False
+    panel._native_mcp_active = False
+    panel._native_mcp_probe = None
+    panel._native_mcp_timer = None
+    panel._panel_header = MagicMock()
     panel._tab_approval = {}
     panel._pending_restore_messages = {}
     panel._context_bar = None
@@ -770,6 +775,95 @@ class TestDontAutoLoadChats(unittest.TestCase):
         panel._select_chat("ghost")
 
         panel._create_tab.assert_not_called()
+
+
+class TestNativeMcpConsent(unittest.TestCase):
+    """Binary Ninja's MCP server is offered once per binary, and remembered."""
+
+    def _panel(self):
+        panel = _make_panel()
+        panel._config.binja_mcp_consent = {}
+        panel._config.binja_mcp_url = ""
+        panel._ctrl._db_instance_id = "db-1"
+        panel._ctrl._idb_path = "/samples/x.bndb"
+        return panel
+
+    def test_consent_is_keyed_to_the_database(self):
+        panel = self._panel()
+        self.assertEqual(panel._native_mcp_key(), "db-1")
+
+    def test_answer_is_written_to_the_config(self):
+        panel = self._panel()
+        panel._remember_native_mcp_consent(True)
+        self.assertEqual(panel._config.binja_mcp_consent["db-1"], True)
+        panel._config.save.assert_called()
+
+    def test_toggling_off_stops_the_server_and_remembers_it(self):
+        panel = self._panel()
+        panel._native_mcp_available = True
+        panel._native_mcp_active = True
+        panel._stop_native_mcp = MagicMock()
+        panel._toggle_native_mcp()
+        panel._stop_native_mcp.assert_called_once()
+        self.assertEqual(panel._config.binja_mcp_consent["db-1"], False)
+
+    def test_toggling_on_starts_the_server_and_remembers_it(self):
+        panel = self._panel()
+        panel._native_mcp_available = True
+        panel._native_mcp_active = False
+        panel._start_native_mcp = MagicMock()
+        panel._toggle_native_mcp()
+        panel._start_native_mcp.assert_called_once()
+        self.assertEqual(panel._config.binja_mcp_consent["db-1"], True)
+
+    def test_the_toggle_does_nothing_without_a_server(self):
+        panel = self._panel()
+        panel._native_mcp_available = False
+        panel._start_native_mcp = MagicMock()
+        panel._toggle_native_mcp()
+        panel._start_native_mcp.assert_not_called()
+
+    def test_a_remembered_yes_starts_without_asking_again(self):
+        panel = self._panel()
+        panel._config.binja_mcp_consent = {"db-1": True}
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=True, url="u", tool_count=4, error=""
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._ask_native_mcp_consent = MagicMock()
+        panel._start_native_mcp = MagicMock()
+        panel._poll_native_mcp()
+        panel._ask_native_mcp_consent.assert_not_called()
+        panel._start_native_mcp.assert_called_once()
+
+    def test_a_remembered_no_is_honoured_silently(self):
+        panel = self._panel()
+        panel._config.binja_mcp_consent = {"db-1": False}
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=True, url="u", tool_count=4, error=""
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._ask_native_mcp_consent = MagicMock()
+        panel._start_native_mcp = MagicMock()
+        panel._poll_native_mcp()
+        panel._ask_native_mcp_consent.assert_not_called()
+        panel._start_native_mcp.assert_not_called()
+        # Still offered on the toggle, so a "no" is never a dead end.
+        self.assertTrue(panel._native_mcp_available)
+
+    def test_no_server_means_no_prompt_and_no_toggle(self):
+        panel = self._panel()
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=False, url="u", tool_count=0, error="refused"
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._ask_native_mcp_consent = MagicMock()
+        panel._poll_native_mcp()
+        panel._ask_native_mcp_consent.assert_not_called()
+        self.assertFalse(panel._native_mcp_available)
 
 
 if __name__ == "__main__":
