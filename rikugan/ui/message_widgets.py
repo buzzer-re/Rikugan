@@ -181,6 +181,23 @@ def _tool_frame_style(
     return f"QFrame#{object_name} {{ {_frame_css(background=bg, border=border, radius=6)} }}"
 
 
+_THINK_OPEN = "<think>"
+
+
+def strip_partial_think_tag(text: str) -> str:
+    """Drop a half-revealed ``<think>`` from the end of streamed text.
+
+    The typewriter reveals a character at a time, so an opening tag arrives as
+    ``<``, ``<t``, ``<th``… Each of those escapes to literal text and flashes in
+    the bubble for a few frames before the tag completes and the whole run
+    becomes reasoning — text appearing and then taking itself back.
+    """
+    for size in range(len(_THINK_OPEN) - 1, 0, -1):
+        if text.endswith(_THINK_OPEN[:size]):
+            return text[:-size]
+    return text
+
+
 def normalize_escaped_newlines(text: str) -> str:
     """Turn literal ``\\n`` sequences into real newlines.
 
@@ -611,6 +628,8 @@ class AssistantMessageWidget(QFrame):
         self._committed_html = ""
         self._committed_visible_len = 0
         self._last_tail_len = 0
+        # Latched once any text has been displayed; see _sync_bubble_visibility.
+        self._has_shown_text = False
         # Resolve the markdown theme once; reuse it on every streaming frame so
         # render cost excludes palette reads and color blends. The host theme is
         # effectively constant for a message's lifetime.
@@ -715,7 +734,9 @@ class AssistantMessageWidget(QFrame):
     def _render_progressive(self) -> None:
         """Render the revealed text, re-parsing/laying out only the tail."""
         theme = self._md_theme_cached()
-        visible = self._update_thinking(self._full_text[: self._displayed_len])
+        # Streaming only: the final render has the whole message, where a
+        # trailing "<" is real text rather than an unfinished tag.
+        visible = strip_partial_think_tag(self._update_thinking(self._full_text[: self._displayed_len]))
 
         # Visible text is append-only in practice; reset defensively if it shrank
         # (e.g. a <think> block resolving) so the committed prefix stays valid.
@@ -772,17 +793,24 @@ class AssistantMessageWidget(QFrame):
         self._sync_bubble_visibility()
 
     def _sync_bubble_visibility(self) -> None:
-        """Hide what has nothing to show.
+        """Hide what has nothing to show — but never un-show text.
 
         A turn whose text is entirely reasoning leaves both labels empty, and
         one that is only whitespace leaves nothing at all. The frame used to
         stay either way: first as an empty grey box, then — once the frame was
-        hidden — as a bare "Rikugan" label with a gap beneath it. Hide the whole
-        message unless it has text or reasoning to read.
+        hidden — as a bare "Rikugan" label with a gap beneath it.
+
+        Hiding is latched off once anything has been displayed. A render's
+        notion of "visible text" is derived from a *prefix* of the message
+        while it streams, so it can be transiently empty — an opening ``<think>``
+        tag revealed one character at a time is enough — and a message must
+        never take back text the reader has already seen.
         """
         has_text = bool(self._committed_label.text()) or bool(self._tail_label.text())
-        self._bubble.setVisible(has_text)
-        self.setVisible(has_text or not self._thinking_block.isHidden())
+        if has_text:
+            self._has_shown_text = True
+        self._bubble.setVisible(has_text or self._has_shown_text)
+        self.setVisible(has_text or self._has_shown_text or not self._thinking_block.isHidden())
 
     def _reveal_tick(self) -> None:
         remaining = len(self._full_text) - self._displayed_len

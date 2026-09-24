@@ -15,6 +15,7 @@ from rikugan.ui.message_widgets import (
     _assistant_bubble_theme,
     _commit_index_in_tail,
     _split_thinking,
+    strip_partial_think_tag,
 )
 
 
@@ -195,6 +196,24 @@ class TestCommitDoesNotSplitLists(unittest.TestCase):
     def test_plain_paragraphs_commit_as_before(self):
         tail = "One.\n\nTwo.\n\n"
         self.assertEqual(_commit_index_in_tail(tail), len(tail))
+
+
+class TestStripPartialThinkTag(unittest.TestCase):
+    """A half-revealed opening tag must not flash as literal text."""
+
+    def test_each_prefix_of_the_tag_is_dropped(self):
+        for size in range(1, len("<think>")):
+            partial = "<think>"[:size]
+            with self.subTest(partial=partial):
+                self.assertEqual(strip_partial_think_tag(f"Answer{partial}"), "Answer")
+
+    def test_complete_tag_is_left_for_the_splitter(self):
+        self.assertEqual(strip_partial_think_tag("Answer<think>"), "Answer<think>")
+
+    def test_ordinary_text_is_untouched(self):
+        for text in ("Answer.", "a < b", "x <= y", ""):
+            with self.subTest(text=text):
+                self.assertEqual(strip_partial_think_tag(text), text)
 
 
 if __name__ == "__main__":

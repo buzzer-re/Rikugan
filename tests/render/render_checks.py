@@ -186,6 +186,31 @@ def _check_whitespace_only_message_is_hidden(app, view) -> None:
         _fail("whitespace-only message still shows a 'Rikugan' label")
 
 
+def _check_shown_text_is_never_retracted(app, view) -> None:
+    """A message must not take back text the reader has already seen.
+
+    While streaming, "visible text" is derived from a prefix of the message, so
+    it can be transiently empty — an opening <think> tag being revealed one
+    character at a time is enough.
+    """
+    from rikugan.ui.message_widgets import AssistantMessageWidget
+
+    widget = AssistantMessageWidget(parent=view._container)
+    view._insert_widget(widget)
+    app.processEvents()
+    widget.set_text("The PackFileSystem stores entries uncompressed.")
+    app.processEvents()
+    if not widget.isVisible():
+        _fail("assistant text was not shown at all")
+        return
+
+    # Anything that renders an empty visible portion afterwards.
+    widget.set_text("<think>")
+    app.processEvents()
+    if not widget.isVisible():
+        _fail("a message that had shown text hid itself again")
+
+
 def _drain_reveal(widget) -> None:
     for _ in range(400):
         if widget._displayed_len >= len(widget._full_text):
@@ -296,6 +321,7 @@ def main() -> int:
     _check_reasoning_only_is_hidden(app, view)
     _check_one_widget_per_message(app, view)
     _check_whitespace_only_message_is_hidden(app, view)
+    _check_shown_text_is_never_retracted(app, view)
     _check_restored_message_height(app)
     _check_body_text_contrast()
     _check_question_renders_line_breaks(app, view)
