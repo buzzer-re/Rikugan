@@ -112,6 +112,59 @@ def _check_reasoning_only_is_hidden(app, view) -> None:
         _fail("reasoning-only turn still shows an empty bubble")
 
 
+def _check_one_widget_per_message(app, view) -> None:
+    """A provider interleaves text and tool_use blocks inside one message.
+
+    Closing the bubble at the tool call split that message across two widgets,
+    each holding a fragment and each rendering as a bare "Rikugan" label.
+    """
+    from rikugan.agent.turn import TurnEvent
+    from rikugan.ui.message_widgets import AssistantMessageWidget
+
+    before = len(view._container.findChildren(AssistantMessageWidget))
+    answer = "Let me check the caller. "
+    for event in (
+        TurnEvent.turn_start(1),
+        TurnEvent.text_delta(answer),
+        TurnEvent.tool_call_start("rc1", "decompile_function"),
+        TurnEvent.tool_call_done("rc1", "decompile_function", '{"address":"0x1000"}'),
+        TurnEvent.text_done(answer),
+        TurnEvent.tool_result_event("rc1", "decompile_function", "int main(){}", False),
+        TurnEvent.turn_end(1),
+    ):
+        view.handle_event(event)
+        app.processEvents()
+
+    created = view._container.findChildren(AssistantMessageWidget)[before:]
+    if len(created) != 1:
+        _fail(f"one assistant message rendered as {len(created)} bubbles")
+    for widget in created:
+        _drain_reveal(widget)
+    app.processEvents()
+    if created and not created[0]._bubble.isVisible():
+        _fail("assistant text was not shown for a message that also called a tool")
+
+
+def _check_whitespace_only_message_is_hidden(app, view) -> None:
+    """Whitespace-only output must not leave a bare role label behind."""
+    from rikugan.ui.message_widgets import AssistantMessageWidget
+
+    widget = AssistantMessageWidget(parent=view._container)
+    view._insert_widget(widget)
+    app.processEvents()
+    widget.set_text("\n")
+    app.processEvents()
+    if widget.isVisible():
+        _fail("whitespace-only message still shows a 'Rikugan' label")
+
+
+def _drain_reveal(widget) -> None:
+    for _ in range(400):
+        if widget._displayed_len >= len(widget._full_text):
+            return
+        widget._reveal_tick()
+
+
 def _check_body_text_contrast() -> None:
     """Body text must be readable on the bubble it sits on."""
     from rikugan.ui.message_widgets import _assistant_bubble_theme
@@ -178,6 +231,8 @@ def main() -> int:
 
     _check_bubble_heights(app, view)
     _check_reasoning_only_is_hidden(app, view)
+    _check_one_widget_per_message(app, view)
+    _check_whitespace_only_message_is_hidden(app, view)
     _check_body_text_contrast()
     _check_question_renders_line_breaks(app, view)
     _check_streamed_message_has_no_band(app, view)

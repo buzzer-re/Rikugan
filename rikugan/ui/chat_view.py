@@ -347,9 +347,10 @@ class ChatView(QScrollArea):
         etype = event.type
         if etype == TurnEventType.TOOL_CALL_START:
             self._hide_thinking()
-            # The assistant's text for this turn is finished. Closing the bubble
-            # here stops a later text_done from overwriting it in place.
-            self._current_assistant = None
+            # Deliberately keep _current_assistant: a provider interleaves text
+            # and tool_use blocks within one assistant message, and the final
+            # text_done carries that whole message. Clearing it here split one
+            # message across two bubbles, each holding a fragment.
             if event.tool_name in _HIDDEN_TOOL_CALLS:
                 return
             tw = ToolCallWidget(event.tool_name, event.tool_call_id, parent=self._container)

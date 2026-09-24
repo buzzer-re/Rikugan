@@ -690,7 +690,9 @@ class AssistantMessageWidget(QFrame):
         """
         if "<think>" not in text:
             self._thinking_block.hide()
-            return text
+            # Whitespace-only output is nothing to read. Rendering it produced a
+            # lone <br>, which showed as a "Rikugan" label with a gap under it.
+            return text if text.strip() else ""
         thinking, visible = _split_thinking(text)
         if thinking:
             in_progress = "</think>" not in text
@@ -759,14 +761,17 @@ class AssistantMessageWidget(QFrame):
         self._sync_bubble_visibility()
 
     def _sync_bubble_visibility(self) -> None:
-        """Hide the bubble when it has nothing to show.
+        """Hide what has nothing to show.
 
-        A turn whose text is entirely reasoning leaves both labels empty; the
-        frame used to stay, so the message read as an empty grey box with a
-        collapsed "Thinking" row above it.
+        A turn whose text is entirely reasoning leaves both labels empty, and
+        one that is only whitespace leaves nothing at all. The frame used to
+        stay either way: first as an empty grey box, then — once the frame was
+        hidden — as a bare "Rikugan" label with a gap beneath it. Hide the whole
+        message unless it has text or reasoning to read.
         """
-        has_content = bool(self._committed_label.text()) or bool(self._tail_label.text())
-        self._bubble.setVisible(has_content)
+        has_text = bool(self._committed_label.text()) or bool(self._tail_label.text())
+        self._bubble.setVisible(has_text)
+        self.setVisible(has_text or not self._thinking_block.isHidden())
 
     def _reveal_tick(self) -> None:
         remaining = len(self._full_text) - self._displayed_len
