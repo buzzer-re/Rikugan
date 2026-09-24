@@ -26,6 +26,38 @@ _WARM_CREAM = "#ffecd2"  # lighten + warm dark surfaces
 _WARM_BROWN = "#4a3c28"  # darken + warm light surfaces
 
 
+# Rikugan's own dark theme. The Tools panel has always painted these exact
+# values, so the chat uses them too rather than deriving its own greys from the
+# host palette — the two tabs of one dock must not read as two products.
+# Light host themes still fall through to the palette-derived path below.
+PRODUCT_PANEL = "#1e1e1e"
+PRODUCT_SURFACE = "#2d2d2d"
+PRODUCT_SURFACE_ALT = "#252526"
+PRODUCT_SURFACE_HI = "#3c3c3c"
+PRODUCT_BORDER = "#3c3c3c"
+PRODUCT_BORDER_SOFT = "#333333"
+PRODUCT_TEXT = "#d4d4d4"
+PRODUCT_SUBTLE = "#a8a8a8"
+PRODUCT_MUTED = "#808080"
+PRODUCT_FAINT = "#6a6a6a"
+PRODUCT_ACCENT = "#4ec9b0"
+
+_PRODUCT_PALETTE: dict[str, str] = {
+    "window": PRODUCT_PANEL,
+    "window_text": PRODUCT_TEXT,
+    "base": PRODUCT_SURFACE_ALT,
+    "alt_base": PRODUCT_SURFACE,
+    "text": PRODUCT_TEXT,
+    "button": PRODUCT_SURFACE,
+    "button_text": PRODUCT_TEXT,
+    "highlight": PRODUCT_ACCENT,
+    "highlight_text": PRODUCT_PANEL,
+    "mid": PRODUCT_BORDER,
+    "dark": "#141414",
+    "light": PRODUCT_SURFACE_HI,
+}
+
+
 def _hex_luminance(color: str) -> float:
     color = color.lstrip("#")
     if len(color) != 6:
@@ -134,14 +166,71 @@ def get_host_palette_colors(source=None) -> dict[str, str]:
         return dict(_FALLBACK_COLORS)
 
 
+def _use_product_theme(colors: dict[str, str]) -> bool:
+    """Whether to paint Rikugan's own dark theme instead of deriving one.
+
+    IDA owns its dock, and a light host theme needs palette-derived colors to
+    stay readable; everywhere else the product theme wins so the chat matches
+    the Tools panel exactly.
+    """
+    return not use_native_host_theme() and _hex_luminance(colors["window"]) < 0.5
+
+
+def _product_chat_tokens() -> dict[str, str]:
+    """Chat tokens for the product theme, in the Tools panel's own colors."""
+    assistant_bg = blend_theme_color(PRODUCT_PANEL, _WARM_CREAM, 0.14)
+    return {
+        "panel": PRODUCT_PANEL,
+        "chat_canvas": PRODUCT_PANEL,
+        "assistant_bg": assistant_bg,
+        "assistant_border": blend_theme_color(assistant_bg, _WARM_CREAM, 0.10),
+        "tool_bg": PRODUCT_SURFACE_ALT,
+        "thinking_bg": PRODUCT_SURFACE_ALT,
+        "input_bg": PRODUCT_SURFACE,
+        "text": PRODUCT_TEXT,
+        "muted": PRODUCT_MUTED,
+        "subtle": PRODUCT_SUBTLE,
+        "border": PRODUCT_BORDER,
+        "accent": PRODUCT_ACCENT,
+        "accent_text": PRODUCT_PANEL,
+        "code_bg": blend_theme_color(assistant_bg, _WARM_CREAM, 0.10),
+        # Extras the redesigned surfaces need, pinned to the same palette.
+        "surface": PRODUCT_SURFACE,
+        "surface_hi": PRODUCT_SURFACE_HI,
+        "border_soft": PRODUCT_BORDER_SOFT,
+        "faint": PRODUCT_FAINT,
+        "accent_soft": blend_theme_color(PRODUCT_ACCENT, PRODUCT_PANEL, 0.62),
+        "accent_deep": blend_theme_color(PRODUCT_ACCENT, PRODUCT_PANEL, 0.30),
+    }
+
+
+def get_effective_palette(source=None) -> dict[str, str]:
+    """Return the palette the panel paints with: product theme or host."""
+    if isinstance(source, dict) and "chat_canvas" not in source:
+        colors = _normalize_ida_palette(source)
+    elif isinstance(source, dict):
+        colors = dict(_PRODUCT_PALETTE)
+    else:
+        colors = get_host_palette_colors(source)
+    if _use_product_theme(colors):
+        return dict(_PRODUCT_PALETTE)
+    return colors
+
+
 def get_chat_color_tokens(source=None) -> dict[str, str]:
-    """Return semantic colors for chat surfaces derived from the host Window role."""
+    """Return semantic colors for chat surfaces.
+
+    Dark hosts get Rikugan's own theme (the Tools panel's colors); light hosts
+    and IDA keep colors derived from the live host palette.
+    """
     if isinstance(source, dict):
         if "chat_canvas" in source:
             return source
         colors = _normalize_ida_palette(source)
     else:
         colors = get_host_palette_colors(source)
+    if _use_product_theme(colors):
+        return _product_chat_tokens()
     panel = colors["window"]
     text = colors["window_text"]
     is_dark = _hex_luminance(panel) < 0.5
@@ -200,6 +289,61 @@ def host_stylesheet(custom_css: str, native_css: str = "") -> str:
     return native_css if use_native_host_theme() else custom_css
 
 
+# Qt resolves the first family that exists; Menlo covers macOS, DejaVu Sans Mono
+# Linux, and Consolas Windows. Courier New is deliberately absent — it is what
+# the old "Consolas, Courier New" stack fell back to on macOS.
+MONO_FONT_STACK = 'Menlo, "SF Mono", Consolas, "DejaVu Sans Mono", monospace'
+
+# Only used when the host cannot be asked for its font (headless tests).
+_FALLBACK_FONT_PT = 9.0
+
+
+def _host_font_size(source=None) -> tuple[float, str]:
+    """Return the host UI font's size as ``(value, css_unit)``."""
+    font = None
+    get_font = getattr(source, "font", None)
+    if callable(get_font):
+        try:
+            font = get_font()
+        except Exception:
+            font = None
+    if font is None:
+        try:
+            from .qt_compat import QApplication
+
+            instance = getattr(QApplication, "instance", None)
+            app = instance() if callable(instance) else None
+            font = app.font() if app is not None and hasattr(app, "font") else None
+        except Exception:
+            font = None
+    if font is not None:
+        try:
+            points = float(font.pointSizeF())
+            if points > 0:
+                return points, "pt"
+            pixels = float(font.pixelSize())
+            if pixels > 0:
+                return pixels, "px"
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return _FALLBACK_FONT_PT, "pt"
+
+
+def get_host_font_tokens(source=None) -> dict[str, str]:
+    """Return the two type sizes these panels use, matched to the host font.
+
+    Two sizes only: body text at the host's own size and one step down for
+    secondary text. Fixed pixel sizes are what made the panel look foreign
+    next to native views on a HiDPI Mac.
+    """
+    size, unit = _host_font_size(source)
+    return {
+        "font_base": f"{size:g}{unit}",
+        "font_small": f"{max(size - 1.0, 1.0):g}{unit}",
+        "mono": MONO_FONT_STACK,
+    }
+
+
 def build_theme_stylesheet(source=None) -> str:
     """Return the active panel stylesheet for the current host."""
     if use_native_host_theme():
@@ -207,69 +351,29 @@ def build_theme_stylesheet(source=None) -> str:
     return DARK_THEME
 
 
-def build_small_button_stylesheet(source=None, danger: bool = False) -> str:
-    """Return a palette-aware small button stylesheet for host UIs."""
-    colors = get_host_palette_colors(source)
-    bg = colors["button"]
-    fg = colors["button_text"]
-    border = blend_theme_color(colors["mid"], colors["window"], 0.35)
-    hover = blend_theme_color(bg, colors["light"], 0.12)
-    pressed = blend_theme_color(bg, colors["dark"], 0.12)
-    if danger:
-        fg = "#f87171"
-        border = blend_theme_color("#f44747", colors["window"], 0.2)
-    return (
-        f"QPushButton {{ background-color: {bg}; color: {fg}; border: 1px solid {border}; "
-        "border-radius: 6px; padding: 4px; font-size: 11px; }"
-        f"QPushButton:hover {{ background-color: {hover}; }}"
-        f"QPushButton:pressed {{ background-color: {pressed}; }}"
-        f"QPushButton:disabled {{ color: {blend_theme_color(fg, colors['window'], 0.45)}; "
-        f"border-color: {blend_theme_color(border, colors['window'], 0.35)}; }}"
-    )
-
-
-def build_mini_tool_button_stylesheet(source=None, danger: bool = False) -> str:
-    """Return a compact palette-aware QToolButton stylesheet."""
-    colors = get_host_palette_colors(source)
-    bg = blend_theme_color(colors["button"], colors["window"], 0.2)
-    fg = colors["button_text"]
-    border = blend_theme_color(colors["mid"], colors["window"], 0.3)
-    hover = blend_theme_color(bg, colors["light"], 0.14)
-    pressed = blend_theme_color(bg, colors["dark"], 0.14)
-    if danger:
-        fg = "#f87171"
-        border = blend_theme_color("#f44747", colors["window"], 0.2)
-    return (
-        f"QToolButton {{ background-color: {bg}; color: {fg}; border: 1px solid {border}; "
-        "border-radius: 3px; padding: 2px 6px; font-size: 11px; }}"
-        f"QToolButton:hover {{ background-color: {hover}; }}"
-        f"QToolButton:pressed {{ background-color: {pressed}; }}"
-        f"QToolButton:disabled {{ color: {blend_theme_color(fg, colors['window'], 0.45)}; "
-        f"border-color: {blend_theme_color(border, colors['window'], 0.35)}; }}"
-    )
-
-
 def build_chat_sidebar_stylesheet(source=None) -> str:
-    """Return palette-aware stylesheet for the chat session sidebar."""
-    colors = get_host_palette_colors(source)
-    surface = blend_theme_color(colors["window"], colors["button"], 0.16)
-    input_bg = blend_theme_color(colors["base"], colors["window"], 0.18)
-    border = blend_theme_color(colors["mid"], colors["window"], 0.35)
-    hover = blend_theme_color(colors["highlight"], colors["window"], 0.82)
-    selected = blend_theme_color(colors["highlight"], colors["window"], 0.68)
-    text = colors["window_text"]
-    muted = blend_theme_color(text, colors["window"], 0.45)
+    """Return the chat list stylesheet, in the same tokens as every other surface.
+
+    It used to blend its own greys out of the raw host palette, which left the
+    list a slightly different shade from the chat beside it.
+    """
+    t = _extended_tokens(source)
     css = (
-        f"QWidget#chat_sidebar {{ background-color: {surface}; color: {text}; }}"
-        f"QLabel#chat_sidebar_title {{ color: {text}; font-weight: bold; font-size: 12px; }}"
-        f"QLabel#chat_row_title {{ color: {text}; font-weight: bold; font-size: 12px; background: transparent; }}"
-        f"QLabel#chat_row_detail {{ color: {muted}; font-size: 11px; background: transparent; }}"
-        f"QLineEdit#chat_search {{ background-color: {input_bg}; color: {text}; border: 1px solid {border}; "
-        "border-radius: 3px; padding: 4px 6px; }}"
-        f"QListWidget#chat_thread_list {{ border: none; background-color: {surface}; outline: none; }}"
+        f"QWidget#chat_sidebar {{ background-color: {t['panel']}; color: {t['text']}; }}"
+        f"QLabel#chat_sidebar_title {{ color: {t['text']}; font-size: {t['font_base']}; }}"
+        f"QLabel#chat_row_title {{ color: {t['text']}; font-size: {t['font_base']}; background: transparent; }}"
+        f"QLabel#chat_row_detail {{ color: {t['muted']}; font-size: {t['font_small']}; "
+        "background: transparent; }"
+        f"QLineEdit#chat_search {{ background-color: {t['input_bg']}; color: {t['text']}; "
+        f"border: 1px solid {t['border']}; border-radius: 3px; padding: 4px 6px; "
+        f"font-size: {t['font_base']}; }}"
+        f"QListWidget#chat_thread_list {{ border: none; background-color: {t['panel']}; outline: none; }}"
         "QListWidget#chat_thread_list::item { border: none; padding: 0px; }"
-        f"QListWidget#chat_thread_list::item:hover {{ background-color: {hover}; }}"
-        f"QListWidget#chat_thread_list::item:selected {{ background-color: {selected}; }}"
+        f"QListWidget#chat_thread_list::item:hover {{ background-color: {t['surface']}; }}"
+        # A tinted surface, not an accent fill: the row's muted detail line was
+        # unreadable on saturated teal.
+        f"QListWidget#chat_thread_list::item:selected {{ background-color: {t['surface_hi']}; "
+        f"border-left: 2px solid {t['accent']}; }}"
     )
     # In IDA let the dock's native Qt theme color all containers; only
     # Binary Ninja / standalone mode needs explicit palette-derived colors.
@@ -294,14 +398,27 @@ def build_chat_view_stylesheet(source=None) -> str:
     )
 
 
-def build_input_area_stylesheet(source=None) -> str:
-    """Return a palette-aware input editor stylesheet."""
+def build_input_area_stylesheet(source=None, flat: bool = False) -> str:
+    """Return a palette-aware input editor stylesheet.
+
+    ``flat`` drops the border and background so the editor can sit inside the
+    composer frame, which draws both itself.
+    """
     tokens = get_chat_color_tokens(source)
+    if flat:
+        return (
+            "QPlainTextEdit#input_area { "
+            f"background: transparent; color: {tokens['text']}; "
+            f"border: none; padding: 2px; font-size: {get_host_font_tokens(source)['font_base']}; "
+            f"selection-background-color: {tokens['accent']}; "
+            f"selection-color: {tokens['accent_text']}; }}"
+            f"QPlainTextEdit#input_area:disabled {{ color: {tokens['muted']}; }}"
+        )
     return (
         "QPlainTextEdit#input_area { "
         f"background-color: {tokens['input_bg']}; color: {tokens['text']}; "
         f"border: 1px solid {tokens['border']}; border-radius: 8px; "
-        "padding: 8px; font-size: 13px; "
+        f"padding: 8px; font-size: {get_host_font_tokens(source)['font_base']}; "
         f"selection-background-color: {tokens['accent']}; "
         f"selection-color: {tokens['accent_text']}; }}"
         f"QPlainTextEdit#input_area:disabled {{ color: {tokens['muted']}; }}"
@@ -351,45 +468,13 @@ QWidget#chat_container {
     background-color: #1e1e1e;
 }
 
-QFrame#message_user {
-    background-color: #2d2d2d;
-    border-radius: 8px;
-    padding: 8px;
-    margin: 4px 8px 4px 8px;
-}
-
-QFrame#message_assistant {
-    background-color: #1e1e1e;
-    border-radius: 8px;
-    padding: 8px;
-    margin: 4px 8px 4px 8px;
-}
-
-QFrame#message_tool {
-    background-color: #252526;
-    border: 1px solid #3c3c3c;
-    border-radius: 4px;
-    padding: 3px 6px;
-    margin: 1px 12px 1px 12px;
-}
-
-QFrame#message_thinking {
-    background-color: #1e1e1e;
-    border-radius: 6px;
-    padding: 4px 8px;
-    margin: 2px 8px;
-}
-
-QLabel#tool_header {
-    color: #569cd6;
-    font-weight: bold;
-    font-size: 11px;
-}
+/* Message frames (#message_user, #message_assistant, #message_tool,
+   #message_thinking, #message_question, #message_notice) are styled by the
+   widgets themselves from the shared tokens. Repeating them here made a second,
+   competing color source that fought the tokens in every non-IDA host. */
 
 QLabel#tool_content {
-    color: #9cdcfe;
     font-family: monospace;
-    font-size: 11px;
 }
 
 QPlainTextEdit#input_area {
@@ -614,3 +699,165 @@ QTextEdit {
     font-size: 11px;
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# Redesigned chat surfaces (header, drawer, welcome, composer, context bar)
+#
+# Colors come from ``get_chat_color_tokens`` and type comes from the host's own
+# UI font, so these panels read as part of IDA / Binary Ninja rather than as a
+# web page pasted into the dock. Only the outermost container background is
+# dropped in IDA so the dock's own color shows through.
+# ---------------------------------------------------------------------------
+
+
+def _extended_tokens(source=None) -> dict[str, str]:
+    """Chat tokens plus the extra shades and type sizes these surfaces need."""
+    tokens = dict(get_chat_color_tokens(source))
+    if "surface" not in tokens:
+        # Host-derived path: the product theme already carries these pinned.
+        panel = tokens["panel"]
+        text = tokens["text"]
+        is_dark = _hex_luminance(panel) < 0.5
+        toward = "#ffffff" if is_dark else "#000000"
+        tokens["faint"] = blend_theme_color(text, panel, 0.58)
+        tokens["surface"] = blend_theme_color(tokens["chat_canvas"], toward, 0.06 if is_dark else 0.03)
+        tokens["surface_hi"] = blend_theme_color(tokens["chat_canvas"], toward, 0.11 if is_dark else 0.055)
+        tokens["border_soft"] = blend_theme_color(tokens["border"], panel, 0.45)
+        tokens["accent_soft"] = blend_theme_color(tokens["accent"], panel, 0.62)
+        tokens["accent_deep"] = blend_theme_color(tokens["accent"], panel, 0.30)
+    tokens.update(get_host_font_tokens(source))
+    return tokens
+
+
+def _container_bg(color: str) -> str:
+    """Container background: transparent in IDA, palette-derived elsewhere."""
+    return "transparent" if use_native_host_theme() else color
+
+
+def build_mode_bar_stylesheet(source=None) -> str:
+    """Return the Chat / Tools switcher stylesheet at the host's type size."""
+    t = _extended_tokens(source)
+    return (
+        f"QTabBar#mode_bar {{ background-color: {_container_bg(t['panel'])}; border: none; "
+        f"border-bottom: 1px solid {t['border_soft']}; }}"
+        f"QTabBar#mode_bar::tab {{ background: transparent; color: {t['muted']}; padding: 5px 14px; "
+        f"border: none; border-bottom: 2px solid transparent; font-size: {t['font_base']}; }}"
+        f"QTabBar#mode_bar::tab:selected {{ color: {t['text']}; border-bottom: 2px solid {t['accent']}; }}"
+        f"QTabBar#mode_bar::tab:hover:!selected {{ color: {t['text']}; }}"
+    )
+
+
+def build_panel_header_stylesheet(source=None) -> str:
+    """Return the stylesheet for the chat header (switcher and icon buttons)."""
+    t = _extended_tokens(source)
+    return (
+        f"QWidget#panel_header {{ background-color: {_container_bg(t['panel'])}; "
+        f"border-bottom: 1px solid {t['border_soft']}; }}"
+        f"QToolButton#chat_switcher {{ background: transparent; color: {t['text']}; "
+        "border: 1px solid transparent; border-radius: 4px; padding: 3px 8px; "
+        f"font-size: {t['font_base']}; text-align: left; }}"
+        f"QToolButton#chat_switcher:hover {{ background-color: {t['surface']}; border-color: {t['border']}; }}"
+        f"QToolButton#header_icon {{ background: transparent; color: {t['subtle']}; "
+        f"border: 1px solid transparent; border-radius: 4px; font-size: {t['font_base']}; }}"
+        f"QToolButton#header_icon:hover {{ background-color: {t['surface']}; "
+        f"border-color: {t['border']}; color: {t['text']}; }}"
+    )
+
+
+def build_chat_drawer_stylesheet(source=None) -> str:
+    """Return the stylesheet for the overlay chat drawer and its scrim."""
+    t = _extended_tokens(source)
+    return (
+        "QWidget#chat_drawer_scrim { background-color: rgba(0, 0, 0, 110); }"
+        # As an overlay the drawer must be opaque in every host, so this rule
+        # deliberately sets a background even where IDA owns the dock theme.
+        f'QWidget#chat_sidebar[drawer="true"] {{ background-color: {t["panel"]}; '
+        f"border-right: 1px solid {t['border']}; }}"
+        f"QLabel#chat_group_header {{ color: {t['faint']}; font-size: {t['font_small']}; "
+        "background: transparent; padding: 6px 4px 3px 4px; }"
+        f"QWidget#chat_sidebar_footer {{ border-top: 1px solid {t['border_soft']}; }}"
+        f"QToolButton#drawer_chip {{ background-color: {t['surface']}; color: {t['muted']}; "
+        f"border: 1px solid {t['border']}; border-radius: 4px; padding: 4px 8px; "
+        f"font-size: {t['font_small']}; }}"
+        f"QToolButton#drawer_chip:hover {{ background-color: {t['surface_hi']}; color: {t['text']}; }}"
+    )
+
+
+def build_welcome_stylesheet(source=None) -> str:
+    """Return the stylesheet for the empty-chat welcome screen."""
+    t = _extended_tokens(source)
+    return (
+        f"QWidget#welcome_view {{ background-color: {_container_bg(t['chat_canvas'])}; }}"
+        f"QLabel#welcome_subtitle {{ color: {t['muted']}; font-size: {t['font_base']}; "
+        "background: transparent; }"
+        f"QFrame#binary_card {{ background-color: {t['surface']}; border: 1px solid {t['border_soft']}; "
+        "border-radius: 4px; }"
+        f"QLabel#binary_name {{ color: {t['text']}; font-size: {t['font_base']}; background: transparent; "
+        f"font-family: {t['mono']}; }}"
+        f"QLabel#binary_chip {{ color: {t['muted']}; font-size: {t['font_small']}; "
+        f"background-color: {t['chat_canvas']}; border: 1px solid {t['border_soft']}; "
+        f"border-radius: 3px; padding: 2px 6px; font-family: {t['mono']}; }}"
+        f"QLabel#welcome_section {{ color: {t['faint']}; font-size: {t['font_small']}; "
+        "background: transparent; }"
+        f"QFrame#suggestion_row {{ background: transparent; border: 1px solid {t['border']}; "
+        "border-radius: 4px; }"
+        f"QFrame#suggestion_row:hover {{ background-color: {t['surface']}; }}"
+        f"QLabel#suggestion_icon {{ color: {t['muted']}; font-size: {t['font_base']}; "
+        "background: transparent; }"
+        f"QLabel#suggestion_title {{ color: {t['text']}; font-size: {t['font_base']}; "
+        "background: transparent; }"
+        f"QLabel#suggestion_command {{ color: {t['faint']}; font-size: {t['font_small']}; "
+        f"background: transparent; font-family: {t['mono']}; }}"
+        f"QLabel#suggestion_chevron {{ color: {t['border']}; font-size: {t['font_base']}; "
+        "background: transparent; }"
+        f"QLabel#welcome_hint {{ color: {t['faint']}; font-size: {t['font_small']}; "
+        "background: transparent; }"
+    )
+
+
+def build_composer_stylesheet(source=None) -> str:
+    """Return the stylesheet for the composer frame and its control row."""
+    t = _extended_tokens(source)
+    return (
+        f"QWidget#composer {{ background-color: {_container_bg(t['panel'])}; }}"
+        f"QFrame#composer_frame {{ background-color: {t['input_bg']}; border: 1px solid {t['border']}; "
+        "border-radius: 5px; }"
+        f'QFrame#composer_frame[focused="true"] {{ border-color: {t["accent"]}; }}'
+        f"QToolButton#composer_chip {{ background: transparent; color: {t['muted']}; "
+        "border: 1px solid transparent; border-radius: 4px; padding: 3px 7px; "
+        f"font-size: {t['font_small']}; }}"
+        f"QToolButton#composer_chip:hover {{ background-color: {t['surface_hi']}; color: {t['text']}; }}"
+        f"QLabel#composer_model {{ color: {t['muted']}; font-size: {t['font_small']}; "
+        f"background: transparent; font-family: {t['mono']}; }}"
+        f"QToolButton#composer_send {{ background-color: {t['accent_deep']}; color: {t['accent']}; "
+        f"border: 1px solid {t['accent_soft']}; border-radius: 4px; font-size: {t['font_base']}; }}"
+        f"QToolButton#composer_send:hover {{ background-color: {t['accent_soft']}; "
+        f"color: {t['accent_text']}; }}"
+        f"QToolButton#composer_send:disabled {{ background-color: {t['surface']}; color: {t['faint']}; "
+        f"border-color: {t['border']}; }}"
+        f"QToolButton#composer_stop {{ background-color: {t['surface_hi']}; color: #f87171; "
+        f"border: 1px solid #6b3a3a; border-radius: 4px; font-size: {t['font_base']}; }}"
+        "QToolButton#composer_stop:hover { background-color: #6b3a3a; color: #ffffff; }"
+    )
+
+
+def build_context_bar_stylesheet(source=None) -> str:
+    """Return the stylesheet for the two-group context bar."""
+    t = _extended_tokens(source)
+    return (
+        f"QFrame#context_bar {{ background-color: {_container_bg(t['panel'])}; "
+        f"border-top: 1px solid {t['border_soft']}; }}"
+        f"QLabel#context_value {{ color: {t['subtle']}; font-size: {t['font_small']}; "
+        f"font-family: {t['mono']}; background: transparent; }}"
+        f"QLabel#context_label {{ color: {t['muted']}; font-size: {t['font_small']}; "
+        f"font-family: {t['mono']}; background: transparent; }}"
+        f"QLabel#context_separator {{ color: {t['border']}; font-size: {t['font_small']}; "
+        "background: transparent; }"
+        f'QLabel#context_dot[state="idle"] {{ color: {t["accent"]}; font-size: {t["font_small"]}; '
+        "background: transparent; }"
+        f'QLabel#context_dot[state="running"] {{ color: #d7ba7d; font-size: {t["font_small"]}; '
+        "background: transparent; }"
+        f'QLabel#context_dot[state="error"] {{ color: #f87171; font-size: {t["font_small"]}; '
+        "background: transparent; }"
+    )
