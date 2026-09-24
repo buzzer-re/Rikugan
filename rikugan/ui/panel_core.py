@@ -13,15 +13,18 @@ from typing import Any
 from ..agent.mutation import MutationRecord
 from ..agent.turn import TurnEvent, TurnEventType
 from ..core.config import RikuganConfig
+from ..core.host import get_current_address
 from ..core.logging import log_debug, log_error, log_info, log_warning
 from ..core.types import Role
 from ..providers.auth_cache import resolve_auth_cached
 from ..providers.auth_compat import apply_keychain_consent
 from ..providers.registry import ProviderRegistry
+from .binary_summary import BinarySummary, build_binary_summary, parse_total_count
 from .chat_view import ChatView
+from .composer import Composer
 from .context_bar import ContextBar
-from .input_area import InputArea
 from .mutation_log_view import MutationLogPanel
+from .panel_header import PanelHeader
 from .qt_compat import (
     QCheckBox,
     QDialog,
@@ -34,7 +37,6 @@ from .qt_compat import (
     QListWidgetItem,
     QMenu,
     QMessageBox,
-    QPushButton,
     QSize,
     QSizePolicy,
     QSplitter,
@@ -50,28 +52,41 @@ from .qt_compat import (
     qt_run,
 )
 from .styles import (
+    build_chat_drawer_stylesheet,
     build_chat_sidebar_stylesheet,
     build_chat_view_stylesheet,
-    build_mini_tool_button_stylesheet,
-    build_small_button_stylesheet,
+    build_mode_bar_stylesheet,
+    build_panel_header_stylesheet,
     build_theme_stylesheet,
     maybe_host_stylesheet,
-    use_native_host_theme,
 )
 from .tool_widgets import _SharedSpinnerTimer
 from .tools_panel import ToolsPanel
+from .welcome_view import WelcomeView, build_suggestions
 
 _TOOL_RESULT_TRUNCATE_CHARS = 2000
-_SMALL_BTN_STYLE = (
-    "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-    "border-radius: 6px; padding: 4px; font-size: 11px; }"
-    "QPushButton:hover { background: #3c3c3c; }"
-)
-_CANCEL_BTN_STYLE = (
-    "QPushButton { background: #2d2d2d; color: #c42b1c; border: 1px solid #3c3c3c; "
-    "border-radius: 6px; padding: 4px; font-size: 11px; }"
-    "QPushButton:hover { background: #3c3c3c; }"
-)
+
+# Below this width the chat list costs more than half the panel, so it becomes
+# an overlay drawer instead of a splitter column.
+_WIDE_LAYOUT_MIN_WIDTH = 620
+_DRAWER_MAX_WIDTH = 250
+_DRAWER_WIDTH_RATIO = 0.72
+
+_BINARY_SUMMARY_MAX_ATTEMPTS = 20
+
+# Upper bound on one drain pass of a finished runner. The queue holds at most
+# 500 events, so this empties it without risking an unbounded loop.
+_MAX_DRAIN_EVENTS = 1000
+
+_PLACEHOLDER_IDLE = "Ask about this binary\u2026"
+_PLACEHOLDER_RUNNING = "Rikugan is working\u2026 press Enter to queue a follow-up."
+_PLACEHOLDER_APPROVAL = "Use the Approve/Reject buttons above to continue."
+
+
+def should_use_drawer(width: int) -> bool:
+    """Whether the chat list should float over the chat instead of sharing it."""
+    return width < _WIDE_LAYOUT_MIN_WIDTH
+
 
 _SANITIZER_TAG_RE = re.compile(
     r"^\[The following is (?:a tool execution result|output from an EXTERNAL MCP server)"
@@ -356,9 +371,15 @@ class ChatThreadRow(QWidget):
 
 
 class ChatThreadList(QWidget):
-    """Sidebar list for chat sessions and their live state."""
+    """Chat list shown as an overlay drawer (narrow) or a splitter column (wide).
+
+    Per-chat actions live in the row's context menu and the header overflow
+    menu rather than a button row: at sidebar width four buttons clip their own
+    labels.
+    """
 
     _ROLE_TAB_ID = 32
+    _UNGROUPED = ""
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -367,50 +388,29 @@ class ChatThreadList(QWidget):
         self._delete_callback: Callable[[str], None] | None = None
         self._fork_callback: Callable[[str], None] | None = None
         self._export_callback: Callable[[str], None] | None = None
+        self._close_callback: Callable[[], None] | None = None
         self._items: dict[str, QListWidgetItem] = {}
         self._rows: dict[str, ChatThreadRow] = {}
         self._titles: dict[str, str] = {}
         self._details: dict[str, str] = {}
         self._statuses: dict[str, str] = {}
+        self._groups: dict[str, str] = {}
+        self._group_order: list[str] = []
+        self._group_members: dict[str, list[str]] = {}
+        self._group_items: dict[str, QListWidgetItem] = {}
         self._selected_tab_id: str | None = None
         self._suppress_select = False
         self.setObjectName("chat_sidebar")
+        self.setProperty("drawer", "false")
+        # A plain QWidget ignores a stylesheet background unless it is told to
+        # style its own background — as an overlay it must be opaque.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        header = QWidget(self)
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8, 6, 8, 4)
-        title = QLabel("Chats", header)
-        title.setObjectName("chat_sidebar_title")
-        header_layout.addWidget(title)
-        header_layout.addStretch()
-        self._new_btn = self._make_action_button("New", "New chat", self._on_new, parent=header)
-        self._new_btn.setObjectName("chat_sidebar_new")
-        header_layout.addWidget(self._new_btn)
-        layout.addWidget(header)
-
-        actions = QWidget(self)
-        actions_layout = QHBoxLayout(actions)
-        actions_layout.setContentsMargins(8, 0, 8, 6)
-        actions_layout.setSpacing(4)
-        self._fork_btn = self._make_action_button("Fork", "Fork selected chat", self._on_fork_selected)
-        self._export_btn = self._make_action_button("Export", "Export selected chat", self._on_export_selected)
-        self._delete_btn = self._make_action_button(
-            "Delete",
-            "Delete selected chat",
-            self._on_delete_selected,
-            danger=True,
-        )
-        self._settings_btn = self._make_action_button("Settings", "Open settings", self._on_settings)
-        actions_layout.addWidget(self._fork_btn)
-        actions_layout.addWidget(self._export_btn)
-        actions_layout.addWidget(self._delete_btn)
-        actions_layout.addWidget(self._settings_btn)
-        actions_layout.addStretch()
-        layout.addWidget(actions)
+        layout.addWidget(self._build_header())
 
         self._search = QLineEdit(self)
         self._search.setObjectName("chat_search")
@@ -427,22 +427,81 @@ class ChatThreadList(QWidget):
         self._list.customContextMenuRequested.connect(self._show_menu)
         layout.addWidget(self._list, 1)
 
+        layout.addWidget(self._build_footer())
+
         self.setMinimumWidth(224)
         self.setMaximumWidth(340)
-        self.setStyleSheet(build_chat_sidebar_stylesheet(self))
+        self.refresh_theme()
 
-    def _make_action_button(
+    def _build_header(self) -> QWidget:
+        header = QWidget(self)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(8, 7, 6, 4)
+        header_layout.setSpacing(4)
+        title = QLabel("Chats", header)
+        title.setObjectName("chat_sidebar_title")
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        self._new_btn = self._make_icon_button("+", "New chat", self._on_new, parent=header)
+        header_layout.addWidget(self._new_btn)
+        self._close_btn = self._make_icon_button("\u00d7", "Close chat list", self._on_close, parent=header)
+        self._close_btn.setVisible(False)
+        header_layout.addWidget(self._close_btn)
+        return header
+
+    def _build_footer(self) -> QWidget:
+        footer = QWidget(self)
+        footer.setObjectName("chat_sidebar_footer")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(6, 5, 6, 6)
+        footer_layout.setSpacing(4)
+        self._settings_btn = self._make_chip_button("Settings", "Open settings", self._on_settings, footer)
+        self._export_btn = self._make_chip_button(
+            "Export",
+            "Export the selected chat",
+            self._on_export_selected,
+            footer,
+        )
+        footer_layout.addWidget(self._settings_btn, 1)
+        footer_layout.addWidget(self._export_btn, 1)
+        return footer
+
+    def refresh_theme(self) -> None:
+        """Re-derive the list's colors from the live host palette.
+
+        The drawer rules must be applied together with the base sheet: Qt takes
+        the last setStyleSheet call wholesale, so applying only one of the two
+        silently drops the other (including the drawer's opaque background).
+        """
+        self.setStyleSheet(build_chat_sidebar_stylesheet(self) + build_chat_drawer_stylesheet(self))
+
+    def _make_icon_button(
         self,
         text: str,
         tooltip: str,
         callback: Callable[[], None],
         parent: QWidget | None = None,
-        danger: bool = False,
     ) -> QToolButton:
         button = QToolButton(parent or self)
+        button.setObjectName("header_icon")
         button.setText(text)
         button.setToolTip(tooltip)
-        button.setStyleSheet(build_mini_tool_button_stylesheet(self, danger=danger))
+        button.setFixedSize(24, 24)
+        button.setStyleSheet(build_panel_header_stylesheet(self))
+        button.clicked.connect(callback)
+        return button
+
+    def _make_chip_button(
+        self,
+        text: str,
+        tooltip: str,
+        callback: Callable[[], None],
+        parent: QWidget | None = None,
+    ) -> QToolButton:
+        button = QToolButton(parent or self)
+        button.setObjectName("drawer_chip")
+        button.setText(text)
+        button.setToolTip(tooltip)
         button.clicked.connect(callback)
         return button
 
@@ -460,7 +519,19 @@ class ChatThreadList(QWidget):
         self._fork_callback = fork
         self._export_callback = export
 
-    def add_chat(self, tab_id: str, title: str, detail: str = "") -> None:
+    def set_close_callback(self, callback: Callable[[], None] | None) -> None:
+        self._close_callback = callback
+
+    def set_drawer_mode(self, drawer: bool) -> None:
+        """Show the close button and drawer edge when floating over the chat."""
+        self.setProperty("drawer", "true" if drawer else "false")
+        self._close_btn.setVisible(drawer)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    # --- chat entries ---------------------------------------------------
+
+    def add_chat(self, tab_id: str, title: str, detail: str = "", group: str = "") -> None:
         item = QListWidgetItem()
         item.setData(self._ROLE_TAB_ID, tab_id)
         row = ChatThreadRow(self._list)
@@ -469,7 +540,8 @@ class ChatThreadList(QWidget):
         self._titles[tab_id] = title
         self._details[tab_id] = detail
         self._statuses.setdefault(tab_id, "idle")
-        self._list.addItem(item)
+        self._groups[tab_id] = group
+        self._list.insertItem(self._register_in_group(tab_id, group), item)
         self._list.setItemWidget(item, row)
         self._refresh_item(tab_id)
 
@@ -479,6 +551,7 @@ class ChatThreadList(QWidget):
         self._titles.pop(tab_id, None)
         self._details.pop(tab_id, None)
         self._statuses.pop(tab_id, None)
+        group = self._groups.pop(tab_id, self._UNGROUPED)
         if item is None:
             return
         if row_widget is not None:
@@ -486,6 +559,7 @@ class ChatThreadList(QWidget):
         row = self._list.row(item)
         if row >= 0:
             self._list.takeItem(row)
+        self._unregister_from_group(tab_id, group)
 
     def clear(self) -> None:
         """Remove every chat entry (e.g. when switching databases)."""
@@ -512,6 +586,64 @@ class ChatThreadList(QWidget):
         self._statuses[tab_id] = f"{status}:{pending}" if pending else status
         self._refresh_item(tab_id)
 
+    # --- grouping -------------------------------------------------------
+
+    def _register_in_group(self, tab_id: str, group: str) -> int:
+        """Add *tab_id* to *group* and return the list row it belongs at."""
+        if group not in self._group_members:
+            self._group_members[group] = []
+            self._group_order.append(group)
+            if group != self._UNGROUPED:
+                self._insert_group_header(group)
+        self._group_members[group].append(tab_id)
+        return self._group_end_row(group)
+
+    def _insert_group_header(self, group: str) -> None:
+        header_item = QListWidgetItem()
+        header_item.setFlags(Qt.ItemFlag.NoItemFlags)
+        label = QLabel(group, self._list)
+        label.setObjectName("chat_group_header")
+        label.setToolTip(group)
+        header_item.setSizeHint(QSize(0, 22))
+        self._group_items[group] = header_item
+        self._list.insertItem(self._group_start_row(group), header_item)
+        self._list.setItemWidget(header_item, label)
+
+    def _group_start_row(self, group: str) -> int:
+        row = 0
+        for name in self._group_order:
+            if name == group:
+                return row
+            row += len(self._group_members.get(name, ()))
+            if name != self._UNGROUPED:
+                row += 1  # its header
+        return row
+
+    def _group_end_row(self, group: str) -> int:
+        row = self._group_start_row(group) + len(self._group_members.get(group, ()))
+        if group != self._UNGROUPED:
+            row += 1  # its header
+        return max(0, row - 1)
+
+    def _unregister_from_group(self, tab_id: str, group: str) -> None:
+        members = self._group_members.get(group)
+        if members is None:
+            return
+        if tab_id in members:
+            members.remove(tab_id)
+        if members:
+            return
+        header_item = self._group_items.pop(group, None)
+        if header_item is not None:
+            header_row = self._list.row(header_item)
+            if header_row >= 0:
+                self._list.takeItem(header_row)
+        self._group_members.pop(group, None)
+        if group in self._group_order:
+            self._group_order.remove(group)
+
+    # --- rendering ------------------------------------------------------
+
     def _refresh_item(self, tab_id: str) -> None:
         item = self._items.get(tab_id)
         if item is None:
@@ -532,20 +664,35 @@ class ChatThreadList(QWidget):
         item.setText("")
         item.setToolTip(title)
         row = self._rows.get(tab_id)
+        height = ChatThreadRow.HEIGHT
         if row is not None:
             row.set_chat(title, detail, badge)
-        item.setSizeHint(QSize(0, ChatThreadRow.HEIGHT))
+            # Two lines of the host font, so larger UI fonts are not clipped.
+            height = max(height, row.sizeHint().height())
+        item.setSizeHint(QSize(0, height))
         self._apply_filter()
 
     def _apply_filter(self) -> None:
         needle = self._search.text().strip().lower()
+        visible_per_group: dict[str, int] = {}
         for tab_id, item in self._items.items():
             haystack = f"{self._titles.get(tab_id, '')} {self._details.get(tab_id, '')}".lower()
-            item.setHidden(bool(needle and needle not in haystack))
+            hidden = bool(needle and needle not in haystack)
+            item.setHidden(hidden)
+            group = self._groups.get(tab_id, self._UNGROUPED)
+            visible_per_group[group] = visible_per_group.get(group, 0) + (0 if hidden else 1)
+        for group, header_item in self._group_items.items():
+            header_item.setHidden(visible_per_group.get(group, 0) == 0)
+
+    # --- actions --------------------------------------------------------
 
     def _on_new(self) -> None:
         if self._new_callback is not None:
             self._new_callback()
+
+    def _on_close(self) -> None:
+        if self._close_callback is not None:
+            self._close_callback()
 
     def _on_current_changed(self, current, _previous) -> None:
         if current is None or self._select_callback is None or self._suppress_select:
@@ -588,7 +735,10 @@ class ChatThreadList(QWidget):
         item = self._list.itemAt(pos)
         if item is None:
             return
-        tab_id = str(item.data(self._ROLE_TAB_ID))
+        tab_id = item.data(self._ROLE_TAB_ID)
+        if not tab_id:  # a group header
+            return
+        tab_id = str(tab_id)
         menu = QMenu(self)
         fork_action = menu.addAction("Fork Chat")
         export_action = menu.addAction("Export Chat")
@@ -600,6 +750,25 @@ class ChatThreadList(QWidget):
             self._export_callback(tab_id)
         elif action == delete_action and self._delete_callback is not None:
             self._delete_callback(tab_id)
+
+
+class _DrawerScrim(QWidget):
+    """Dimmed overlay behind the chat drawer; a click closes it."""
+
+    def __init__(self, parent: QWidget = None):
+        super().__init__(parent)
+        self.setObjectName("chat_drawer_scrim")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(build_chat_drawer_stylesheet(self))
+        self._callback: Callable[[], None] | None = None
+
+    def set_dismiss_callback(self, callback: Callable[[], None] | None) -> None:
+        self._callback = callback
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        if self._callback is not None:
+            self._callback()
 
 
 class RikuganPanelCore(QWidget):
@@ -614,7 +783,6 @@ class RikuganPanelCore(QWidget):
     ):
         super().__init__(parent)
         self._config = RikuganConfig.load_or_create()
-        self._use_native_host_theme = use_native_host_theme()
         self._dependency_warnings = ProviderRegistry().dependency_warnings()
         log_debug(
             f"Config loaded: provider={self._config.provider.name} model={self._config.provider.model}",
@@ -641,7 +809,22 @@ class RikuganPanelCore(QWidget):
         self._pending_restore_messages: dict[str, list] = {}
         self._chat_area_stack: QStackedWidget | None = None
         self._chat_sidebar: ChatThreadList | None = None
+        self._chat_column: QWidget | None = None
+        self._panel_header: PanelHeader | None = None
+        self._composer: Composer | None = None
+        self._scrim: _DrawerScrim | None = None
+        self._drawer_mode = False
+        self._drawer_open = False
+        self._welcome_views: dict[str, WelcomeView] = {}
+        self._binary_summary = BinarySummary()
+        self._binary_summary_loaded = False
+        self._binary_summary_attempts = 0
+        self._binary_queue: queue.Queue | None = None
+        self._binary_timer: QTimer | None = None
         self._tab_status: dict[str, str] = {}
+        # Last values pushed into each sidebar row, so the 50ms poll can
+        # skip rows that have not changed.
+        self._sidebar_rows: dict[str, tuple] = {}
         self._context_bar: ContextBar | None = None
         self._mutation_panel: MutationLogPanel | None = None
         self._skills_refresh_timer: QTimer | None = None
@@ -728,19 +911,12 @@ class RikuganPanelCore(QWidget):
         slugs = self._ctrl.skill_slugs
         if slugs:
             self._input_area.set_skill_slugs(slugs)
+            self._refresh_all_welcomes()
             self._stop_skills_refresh_timer()
             return
         if getattr(self._ctrl, "runtime_ready", False):
             # Runtime init completed but no skills found; stop polling.
             self._stop_skills_refresh_timer()
-
-    _MODE_BAR_STYLE = (
-        "QTabBar { background: #2d2d2d; border: none; border-bottom: 1px solid #3c3c3c; }"
-        "QTabBar::tab { background: #2d2d2d; color: #808080; padding: 4px 16px; "
-        "border: none; border-bottom: 2px solid transparent; font-size: 11px; }"
-        "QTabBar::tab:selected { color: #d4d4d4; border-bottom: 2px solid #4ec9b0; }"
-        "QTabBar::tab:hover:!selected { color: #d4d4d4; }"
-    )
 
     def _build_ui(self) -> None:
         self.setObjectName("rikugan_panel")
@@ -750,11 +926,24 @@ class RikuganPanelCore(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # Header: identity mark, chat switcher, new chat, overflow menu.
+        self._panel_header = PanelHeader()
+        self._panel_header.set_callbacks(
+            switcher=self._toggle_drawer,
+            new=self._on_new_tab,
+            fork=self._on_fork_current,
+            export=self._on_export_current,
+            delete=self._on_delete_current,
+            settings=self._on_settings,
+            mutations=self._on_toggle_mutation_log,
+        )
+        layout.addWidget(self._panel_header)
+
         # Top-level mode switcher: Chat | Tools.
         # Hosts may optionally provide tools in a separate form.
         self._mode_bar = QTabBar()
         self._mode_bar.setObjectName("mode_bar")
-        self._mode_bar.setStyleSheet("" if self._use_native_host_theme else self._MODE_BAR_STYLE)
+        self._mode_bar.setStyleSheet(build_mode_bar_stylesheet(self._mode_bar))
         self._mode_bar.setExpanding(False)
         self._mode_bar.setDrawBase(False)
         self._mode_bar.addTab("Chat")
@@ -799,6 +988,10 @@ class RikuganPanelCore(QWidget):
         self._context_bar = ContextBar()
         self._context_bar.set_model(self._config.provider.model)
         layout.addWidget(self._context_bar)
+        if self._composer is not None:
+            self._composer.set_model(self._config.provider.model)
+        self._apply_responsive_layout()
+        QTimer.singleShot(0, self._load_binary_summary)
 
         if self._ui_hooks_factory is not None:
             try:
@@ -855,9 +1048,12 @@ class RikuganPanelCore(QWidget):
         )
         self._main_splitter.addWidget(self._chat_sidebar)
         # Re-apply with the now-established parent palette (IDA may have set it after __init__)
-        self._chat_sidebar.setStyleSheet(build_chat_sidebar_stylesheet(self._chat_sidebar))
+        self._chat_sidebar.refresh_theme()
+
+        self._chat_sidebar.set_close_callback(self._close_drawer)
 
         chat_column = QWidget()
+        self._chat_column = chat_column
         chat_column_layout = QVBoxLayout(chat_column)
         chat_column_layout.setContentsMargins(0, 0, 0, 0)
         chat_column_layout.setSpacing(0)
@@ -869,6 +1065,12 @@ class RikuganPanelCore(QWidget):
         chat_column_layout.addWidget(self._chat_area_stack, 1)
         chat_column_layout.addWidget(self._build_input_section())
         self._main_splitter.addWidget(chat_column)
+
+        # Overlay scrim for the drawer; a child of the chat column so it never
+        # covers the header or the composer's own column.
+        self._scrim = _DrawerScrim(chat_column)
+        self._scrim.set_dismiss_callback(self._close_drawer)
+        self._scrim.setVisible(False)
 
         self._mutation_panel = MutationLogPanel()
         self._mutation_panel.undo_requested.connect(self._on_undo_requested)
@@ -882,27 +1084,130 @@ class RikuganPanelCore(QWidget):
         layout.addWidget(self._main_splitter, 1)
 
     def _build_placeholder(self) -> QWidget:
-        """Build the 'no chat open' screen shown when auto-load is disabled."""
-        placeholder = QWidget()
-        layout = QVBoxLayout(placeholder)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(12)
+        """Build the 'no chat open' screen shown when auto-load is disabled.
 
-        label = QLabel("Please select a chat or create a new one")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet(maybe_host_stylesheet("color: #808080; font-size: 13px;"))
-        layout.addWidget(label)
-
-        new_btn = QPushButton("New Chat")
-        new_btn.setFixedWidth(120)
-        new_btn.setStyleSheet(maybe_host_stylesheet(_SMALL_BTN_STYLE))
-        new_btn.clicked.connect(self._on_new_tab)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_row.addWidget(new_btn)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
+        It is the same welcome screen an empty chat shows; picking a starting
+        point fills the composer and submitting it opens a fresh chat.
+        """
+        placeholder = WelcomeView()
+        placeholder.set_activated_callback(self._on_suggestion_activated)
+        self._welcome_views["__placeholder__"] = placeholder
+        self._refresh_welcome(placeholder)
         return placeholder
+
+    def _make_welcome(self, tab_id: str) -> WelcomeView:
+        """Create the empty-chat welcome for a tab."""
+        welcome = WelcomeView()
+        welcome.set_activated_callback(self._on_suggestion_activated)
+        self._refresh_welcome(welcome)
+        self._welcome_views[tab_id] = welcome
+        return welcome
+
+    def _refresh_welcome(self, welcome: WelcomeView) -> None:
+        """Push the current binary card and starting points into one welcome."""
+        welcome.set_binary_summary(self._binary_summary)
+        welcome.set_suggestions(build_suggestions(self._ctrl.skill_slugs, get_current_address()))
+
+    def _refresh_all_welcomes(self) -> None:
+        for welcome in list(self._welcome_views.values()):
+            try:
+                self._refresh_welcome(welcome)
+            except RuntimeError as e:  # widget already destroyed with its tab
+                log_debug(f"Welcome refresh skipped: {e}")
+
+    def _on_suggestion_activated(self, prompt: str) -> None:
+        """Fill the composer from a welcome suggestion, leaving send to the user."""
+        if self._is_shutdown or self._composer is None:
+            return
+        self._composer.set_text(prompt)
+
+    def _load_binary_summary(self) -> None:
+        """Collect the welcome card's binary facts once the runtime is ready."""
+        if self._binary_summary_loaded or self._is_shutdown:
+            return
+        if not getattr(self._ctrl, "runtime_ready", False):
+            self._binary_summary_attempts += 1
+            if self._binary_summary_attempts <= _BINARY_SUMMARY_MAX_ATTEMPTS:
+                QTimer.singleShot(500, self._load_binary_summary)
+            return
+        self._binary_summary_loaded = True
+        self._binary_queue = queue.Queue()
+        threading.Thread(
+            target=self._collect_binary_summary,
+            daemon=True,
+            name="rikugan-binary-summary",
+        ).start()
+        self._ensure_binary_poll_timer()
+
+    def _collect_binary_summary(self) -> None:
+        """Background worker: run the two info tools and post a summary.
+
+        Both handlers are marshalled to the main thread by ``@idasync`` in IDA
+        and are thread-safe in Binary Ninja, so the string probe (which can be
+        slow on a large database) never blocks first paint.
+        """
+        raw_info = ""
+        string_count: int | None = None
+        try:
+            registry = self._ctrl.get_tool_registry()
+            info_defn = registry.get("get_binary_info")
+            if info_defn is not None and info_defn.handler is not None:
+                raw_info = info_defn.handler() or ""
+            strings_defn = registry.get("list_strings")
+            if strings_defn is not None and strings_defn.handler is not None:
+                string_count = parse_total_count(strings_defn.handler(offset=0, limit=1) or "")
+        except Exception as e:  # defensive: a missing tool must not kill the thread
+            log_debug(f"Binary summary collection failed: {e}")
+        if self._binary_queue is not None:
+            self._binary_queue.put(build_binary_summary(raw_info, string_count))
+
+    def _ensure_binary_poll_timer(self) -> None:
+        if self._binary_timer is not None:
+            return
+        self._binary_timer = QTimer(self)
+        self._binary_timer.setInterval(100)
+        self._binary_timer.timeout.connect(self._poll_binary_summary)
+        self._binary_timer.start()
+
+    def _stop_binary_poll_timer(self) -> None:
+        if self._binary_timer is None:
+            return
+        self._binary_timer.stop()
+        try:
+            self._binary_timer.timeout.disconnect(self._poll_binary_summary)
+        except (RuntimeError, TypeError) as e:
+            log_debug(f"binary summary timer disconnect failed: {e}")
+        self._binary_timer.deleteLater()
+        self._binary_timer = None
+
+    def _poll_binary_summary(self) -> None:
+        if self._is_shutdown or self._binary_queue is None:
+            self._stop_binary_poll_timer()
+            return
+        try:
+            summary = self._binary_queue.get_nowait()
+        except queue.Empty:
+            return
+        self._stop_binary_poll_timer()
+        self._binary_queue = None
+        self._binary_summary = summary
+        self._refresh_all_welcomes()
+
+    def _chat_group(self, tab_id: str) -> str:
+        """Group label for a chat: the binary it belongs to."""
+        session = self._ctrl.get_session(tab_id)
+        path = getattr(session, "idb_path", "") if session is not None else ""
+        path = path or self._ctrl._idb_path
+        if not path or not isinstance(path, str):
+            return ""
+        return os.path.basename(path)
+
+    def _sync_header_title(self, tab_id: str | None = None) -> None:
+        """Show the active chat's label on the header switcher."""
+        if self._panel_header is None:
+            return
+        tab_id = tab_id or self._ctrl.active_tab_id
+        self._panel_header.set_chat_title(self._ctrl.tab_label(tab_id))
 
     def _show_placeholder(self) -> None:
         """Show the 'no chat open' placeholder in the chat area."""
@@ -915,49 +1220,99 @@ class RikuganPanelCore(QWidget):
             self._chat_area_stack.setCurrentIndex(0)
 
     def _build_input_section(self) -> QWidget:
-        """Build the bottom input area with text field and action buttons."""
-        self._input_container = QWidget()
-        input_layout = QHBoxLayout(self._input_container)
-        input_layout.setContentsMargins(8, 4, 8, 4)
-
-        self._input_area = InputArea(self._input_container)
-        self._input_area.set_submit_callback(self._on_submit)
-        self._input_area.set_cancel_callback(self._on_cancel)
-        self._input_area.set_skill_slugs(self._ctrl.skill_slugs)
-        self._ensure_skills_refresh_timer()
-        input_layout.addWidget(self._input_area, 1)
-        input_layout.addLayout(self._build_action_buttons())
-        return self._input_container
-
-    def _build_action_buttons(self) -> QVBoxLayout:
-        """Build the lean composer action stack."""
-        btn_layout = QVBoxLayout()
-        btn_layout.setSpacing(4)
-
-        self._send_btn = QPushButton("Send")
-        self._send_btn.setObjectName("send_button")
-        self._send_btn.setFixedWidth(64)
-        self._send_btn.setStyleSheet(maybe_host_stylesheet(_SMALL_BTN_STYLE))
-        self._send_btn.clicked.connect(self._on_send_clicked)
-        btn_layout.addWidget(self._send_btn)
-        self._cancel_btn = QPushButton("Stop")
-        self._cancel_btn.setObjectName("cancel_button")
-        self._cancel_btn.setFixedWidth(64)
-        self._cancel_btn.setStyleSheet(maybe_host_stylesheet(_CANCEL_BTN_STYLE))
-        self._cancel_btn.setVisible(False)
-        self._cancel_btn.clicked.connect(self._on_cancel)
-        btn_layout.addWidget(self._cancel_btn)
+        """Build the composer: input frame with an inline control row."""
+        self._composer = Composer()
+        self._composer.set_submit_callback(self._on_submit)
+        self._composer.set_cancel_callback(self._on_cancel)
+        self._composer.set_send_callback(self._on_send_clicked)
+        self._composer.set_skill_slugs(self._ctrl.skill_slugs)
+        # Alias kept so the rest of the panel can keep talking to the editor.
+        self._input_area = self._composer.input_area
         self._mutations_btn = None
         self._tools_btn = None
+        self._ensure_skills_refresh_timer()
+        return self._composer
 
-        if self._use_native_host_theme:
-            default_btn_style = build_small_button_stylesheet(self)
-            danger_btn_style = build_small_button_stylesheet(self, danger=True)
-            self._send_btn.setStyleSheet(default_btn_style)
-            self._cancel_btn.setStyleSheet(danger_btn_style)
+    # --- responsive chat list -------------------------------------------
 
-        btn_layout.addStretch()
-        return btn_layout
+    def _apply_responsive_layout(self) -> None:
+        """Move the chat list between splitter column and overlay drawer."""
+        if self._chat_sidebar is None or self._chat_column is None:
+            return
+        drawer = should_use_drawer(self.width())
+        if drawer == self._drawer_mode:
+            if drawer and self._drawer_open:
+                self._layout_drawer()
+            return
+        self._drawer_mode = drawer
+        try:
+            if drawer:
+                self._chat_sidebar.setParent(self._chat_column)
+                self._chat_sidebar.setVisible(False)
+                self._drawer_open = False
+                if self._scrim is not None:
+                    self._scrim.setVisible(False)
+            else:
+                self._main_splitter.insertWidget(0, self._chat_sidebar)
+                self._main_splitter.setStretchFactor(0, 0)
+                self._chat_sidebar.setVisible(True)
+                self._drawer_open = False
+                if self._scrim is not None:
+                    self._scrim.setVisible(False)
+            self._chat_sidebar.set_drawer_mode(drawer)
+        except RuntimeError as e:
+            log_debug(f"Responsive layout switch failed: {e}")
+
+    def _layout_drawer(self) -> None:
+        """Size the floating drawer and its scrim to the chat column."""
+        if self._chat_sidebar is None or self._chat_column is None:
+            return
+        height = self._chat_column.height()
+        width = min(_DRAWER_MAX_WIDTH, max(200, int(self._chat_column.width() * _DRAWER_WIDTH_RATIO)))
+        self._chat_sidebar.setGeometry(0, 0, width, height)
+        if self._scrim is not None:
+            self._scrim.setGeometry(0, 0, self._chat_column.width(), height)
+
+    def _toggle_drawer(self) -> None:
+        """Header switcher: open/close the drawer, or hide/show the column."""
+        if self._chat_sidebar is None:
+            return
+        if not self._drawer_mode:
+            self._chat_sidebar.setVisible(not self._chat_sidebar.isVisible())
+            return
+        if self._drawer_open:
+            self._close_drawer()
+        else:
+            self._open_drawer()
+
+    def _open_drawer(self) -> None:
+        if self._chat_sidebar is None or not self._drawer_mode:
+            return
+        self._layout_drawer()
+        if self._scrim is not None:
+            self._scrim.setVisible(True)
+            self._scrim.raise_()
+        self._chat_sidebar.setVisible(True)
+        self._chat_sidebar.raise_()
+        self._drawer_open = True
+
+    def _close_drawer(self) -> None:
+        if self._chat_sidebar is None or not self._drawer_mode:
+            return
+        self._chat_sidebar.setVisible(False)
+        if self._scrim is not None:
+            self._scrim.setVisible(False)
+        self._drawer_open = False
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
+    def showEvent(self, event) -> None:
+        # A panel docked straight at sidebar width may never get a resize event,
+        # so settle the layout the first time it is shown as well.
+        super().showEvent(event)
+        self._apply_responsive_layout()
 
     # --- Tab management ---
 
@@ -975,6 +1330,7 @@ class RikuganPanelCore(QWidget):
         chat_view.setProperty("tab_id", tab_id)  # O(1) lookup in _tab_id_at_index
         chat_view.set_tool_approval_callback(self._on_tool_approval)
         chat_view.set_user_answer_callback(self._on_user_answer_submitted)
+        chat_view.set_welcome_widget(self._make_welcome(tab_id))
         self._chat_views[tab_id] = chat_view
         index = self._tab_widget.addTab(chat_view, label)
         # Re-apply with the now-established parent palette
@@ -984,9 +1340,11 @@ class RikuganPanelCore(QWidget):
             self._show_chat_area()
         if self._chat_sidebar is not None:
             if add_to_sidebar:
-                self._chat_sidebar.add_chat(tab_id, label, self._chat_detail(tab_id))
+                self._chat_sidebar.add_chat(tab_id, label, self._chat_detail(tab_id), self._chat_group(tab_id))
             if select:
                 self._chat_sidebar.select_chat(tab_id)
+        if select:
+            self._sync_header_title(tab_id)
         self._update_tab_bar_visibility()
         return chat_view
 
@@ -999,7 +1357,12 @@ class RikuganPanelCore(QWidget):
         """
         self._pending_restore_messages[tab_id] = session.messages
         if self._chat_sidebar is not None:
-            self._chat_sidebar.add_chat(tab_id, self._ctrl.tab_label(tab_id), self._chat_detail(tab_id))
+            self._chat_sidebar.add_chat(
+                tab_id,
+                self._ctrl.tab_label(tab_id),
+                self._chat_detail(tab_id),
+                self._chat_group(tab_id),
+            )
 
     def _on_new_tab(self) -> None:
         """Create a fresh independent chat tab."""
@@ -1010,6 +1373,14 @@ class RikuganPanelCore(QWidget):
         self._create_tab(tab_id, "Untitled")
         self._update_token_display(0)
         self._set_running(False, tab_id=tab_id)
+
+    def _on_fork_current(self) -> None:
+        """Fork the active chat (header overflow menu)."""
+        self._fork_chat(self._ctrl.active_tab_id)
+
+    def _on_delete_current(self) -> None:
+        """Delete the active chat (header overflow menu)."""
+        self._delete_chat(self._ctrl.active_tab_id)
 
     def _on_fork_tab(self, index: int) -> None:
         """Fork (duplicate) a session into a new tab."""
@@ -1052,6 +1423,8 @@ class RikuganPanelCore(QWidget):
         self._set_running(self._ctrl.is_tab_running(tab_id), tab_id=tab_id)
         if self._chat_sidebar is not None:
             self._chat_sidebar.select_chat(tab_id)
+        self._sync_header_title(tab_id)
+        self._close_drawer()
 
     def _delete_chat(self, tab_id: str) -> None:
         if self._is_shutdown:
@@ -1068,6 +1441,7 @@ class RikuganPanelCore(QWidget):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
+        self._welcome_views.pop(tab_id, None)
         cv = self._chat_views.pop(tab_id, None)
         if cv is not None:
             for i in range(self._tab_widget.count()):
@@ -1078,6 +1452,7 @@ class RikuganPanelCore(QWidget):
             cv.deleteLater()
         if self._chat_sidebar is not None:
             self._chat_sidebar.remove_chat(tab_id)
+        self._sidebar_rows.pop(tab_id, None)
         self._pending_restore_messages.pop(tab_id, None)
         self._ctrl.delete_tab(tab_id)
         active = self._ctrl.active_tab_id
@@ -1105,10 +1480,12 @@ class RikuganPanelCore(QWidget):
         if tab_id is None:
             return
         self._ctrl.close_tab(tab_id)
+        self._welcome_views.pop(tab_id, None)
         chat_view = self._chat_views.pop(tab_id, None)
         self._tab_widget.removeTab(index)
         if self._chat_sidebar is not None:
             self._chat_sidebar.remove_chat(tab_id)
+        self._sidebar_rows.pop(tab_id, None)
         if chat_view:
             chat_view.shutdown()
             chat_view.deleteLater()
@@ -1238,6 +1615,7 @@ class RikuganPanelCore(QWidget):
         self._update_token_display()
         if self._chat_sidebar is not None:
             self._chat_sidebar.select_chat(tab_id)
+        self._sync_header_title(tab_id)
         self._set_running(self._ctrl.is_tab_running(tab_id), tab_id=tab_id)
 
     def _tab_id_at_index(self, index: int) -> str | None:
@@ -1294,6 +1672,8 @@ class RikuganPanelCore(QWidget):
                 break
         if self._chat_sidebar is not None:
             self._chat_sidebar.update_chat(tab_id, label, self._chat_detail(tab_id))
+        if tab_id == self._ctrl.active_tab_id:
+            self._sync_header_title(tab_id)
 
     def _chat_detail(self, tab_id: str) -> str:
         session = self._ctrl.get_session(tab_id)
@@ -1307,17 +1687,29 @@ class RikuganPanelCore(QWidget):
         return detail
 
     def _refresh_chat_sidebar(self) -> None:
+        """Push label/detail/status into the chat list, skipping unchanged rows.
+
+        This runs on every 50ms poll tick. Rewriting each row unconditionally
+        cost two full rebuilds per tab per tick — four labels, a sizeHint
+        recompute and a whole-list filter pass each — 40 list relayouts a second
+        of work that almost always changed nothing.
+        """
         if self._chat_sidebar is None:
             return
         for tab_id in self._chat_views:
-            self._chat_sidebar.update_chat(tab_id, self._ctrl.tab_label(tab_id), self._chat_detail(tab_id))
             pending = self._ctrl.tab_pending_count(tab_id)
             if tab_id in self._awaiting_approval_tabs:
-                self._chat_sidebar.set_status(tab_id, "approval")
+                status, pending = "approval", 0
             elif self._ctrl.is_tab_running(tab_id):
-                self._chat_sidebar.set_status(tab_id, "queued" if pending else "running", pending)
+                status = "queued" if pending else "running"
             else:
-                self._chat_sidebar.set_status(tab_id, self._tab_status.get(tab_id, "idle"))
+                status, pending = self._tab_status.get(tab_id, "idle"), 0
+            row = (self._ctrl.tab_label(tab_id), self._chat_detail(tab_id), status, pending)
+            if self._sidebar_rows.get(tab_id) == row:
+                continue
+            self._sidebar_rows[tab_id] = row
+            self._chat_sidebar.update_chat(tab_id, row[0], row[1])
+            self._chat_sidebar.set_status(tab_id, status, pending)
 
     # --- Public API ---
 
@@ -1341,6 +1733,7 @@ class RikuganPanelCore(QWidget):
             self._stop_poll_timer()
             self._stop_skills_refresh_timer()
             self._stop_restore_poll_timer()
+            self._stop_binary_poll_timer()
             _SharedSpinnerTimer.shutdown()
             if self._context_bar:
                 self._context_bar.stop()
@@ -1382,6 +1775,14 @@ class RikuganPanelCore(QWidget):
                 w.deleteLater()
         self._chat_views.clear()
         self._pending_restore_messages.clear()
+        placeholder = self._welcome_views.get("__placeholder__")
+        self._welcome_views = {"__placeholder__": placeholder} if placeholder is not None else {}
+        self._binary_summary = BinarySummary()
+        self._binary_summary_loaded = False
+        self._binary_summary_attempts = 0
+        self._refresh_all_welcomes()
+        QTimer.singleShot(0, self._load_binary_summary)
+        self._sidebar_rows.clear()
         if self._chat_sidebar is not None:
             self._chat_sidebar.clear()
         # Show the default tab (or placeholder) and try to restore saved sessions
@@ -1461,6 +1862,8 @@ class RikuganPanelCore(QWidget):
                 self._ctrl.reload_mcp()
                 if self._context_bar is not None:
                     self._context_bar.set_model(self._config.provider.model)
+                if self._composer is not None:
+                    self._composer.set_model(self._config.provider.model)
                 log_info(f"Settings updated: {self._config.provider.name}/{self._config.provider.model}")
             dlg.setParent(None)
         except Exception as e:
@@ -1561,13 +1964,27 @@ class RikuganPanelCore(QWidget):
                     container.setUpdatesEnabled(True)
             for tab_id in list(self._chat_views):
                 runner = self._ctrl.get_runner_for_tab(tab_id)
-                if runner is not None and not runner.agent_loop.is_running:
+                if runner is None or runner.agent_loop.is_running:
+                    continue
+                # The loop stops "running" before its thread has flushed the
+                # last events, so only retire the runner once it is drained —
+                # otherwise the tail of the final answer dies with the queue.
+                self._drain_runner(tab_id, runner)
+                if runner.is_drained():
                     self._on_agent_finished(tab_id)
-            if not self._ctrl.any_agent_running:
+            if not self._ctrl.has_runners:
                 self._stop_poll_timer()
             self._refresh_chat_sidebar()
         finally:
             self._polling = False
+
+    def _drain_runner(self, tab_id: str, runner) -> None:
+        """Dispatch whatever a finished runner still has queued."""
+        for _ in range(_MAX_DRAIN_EVENTS):
+            event = runner.get_event(timeout=0)
+            if event is None:
+                return
+            self._on_event(tab_id, event)
 
     def _on_event(self, tab_id: str, event: TurnEvent) -> None:
         if self._is_shutdown:
@@ -1606,6 +2023,8 @@ class RikuganPanelCore(QWidget):
             self._tab_status[tab_id] = "error"
         elif event.type == TurnEventType.CANCELLED:
             self._tab_status[tab_id] = "cancelled"
+        elif event.type == TurnEventType.NOTICE:
+            pass  # informational — the turn is still healthy
         else:
             self._tab_status[tab_id] = "running"
         if event.type == TurnEventType.MUTATION_RECORDED:
@@ -2228,20 +2647,21 @@ class RikuganPanelCore(QWidget):
         self._awaiting_button_approval = active_tab_id in self._awaiting_approval_tabs
         # Keep input enabled so users can queue follow-up messages while
         # running — UNLESS we're waiting for a button-only approval.
-        if self._awaiting_button_approval:
-            self._input_area.set_enabled(False)
-            self._input_area.setPlaceholderText("Use the Approve/Reject buttons above to continue.")
-        else:
-            self._input_area.set_enabled(True)
-            if active_running:
-                self._input_area.setPlaceholderText(
-                    "Rikugan is thinking... press Enter (or Queue) to queue a follow-up."
-                )
+        if self._composer is not None:
+            # set_input_enabled resets the placeholder, so order matters here.
+            self._composer.set_input_enabled(not self._awaiting_button_approval)
+            if self._awaiting_button_approval:
+                self._composer.set_placeholder(_PLACEHOLDER_APPROVAL)
             else:
-                self._input_area.setPlaceholderText("Ask about this binary... (/ for skills, /modify to patch)")
+                self._composer.set_placeholder(_PLACEHOLDER_RUNNING if active_running else _PLACEHOLDER_IDLE)
+            self._composer.set_running(active_running)
 
-        self._send_btn.setVisible(True)
-        self._send_btn.setEnabled(not self._awaiting_button_approval)
-        self._send_btn.setText("Queue" if active_running else "Send")
-        self._cancel_btn.setVisible(active_running)
+        if self._context_bar is not None:
+            if active_running:
+                state = "running"
+            elif self._tab_status.get(active_tab_id) == "error":
+                state = "error"
+            else:
+                state = "idle"
+            self._context_bar.set_state(state)
         self._refresh_chat_sidebar()

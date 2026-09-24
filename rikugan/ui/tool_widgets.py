@@ -142,31 +142,34 @@ for _t in (
     _TOOL_COLORS[_t] = "#4ec9b0"  # teal/cyan
 
 # Modification -> magenta/purple
-for _t in (
-    "rename_function",
-    "rename_variable",
-    "rename_address",
-    "set_type",
-    "set_function_prototype",
-    "set_comment",
-    "set_function_comment",
-    "create_struct",
-    "create_enum",
-    "nop_microcode",
-    "install_microcode_optimizer",
-    "redecompile_function",
-    "apply_struct_to_address",
-    "rename_single_variable",
-    "rename_multi_variables",
-    "retype_variable",
-    "define_types",
-    "declare_c_type",
-    "rename_data",
-    "set_local_variable_type",
-    "make_function_at",
-    "delete_comment",
-    "delete_function_comment",
-):
+_MUTATING_TOOLS = frozenset(
+    (
+        "rename_function",
+        "rename_variable",
+        "rename_address",
+        "set_type",
+        "set_function_prototype",
+        "set_comment",
+        "set_function_comment",
+        "create_struct",
+        "create_enum",
+        "nop_microcode",
+        "install_microcode_optimizer",
+        "redecompile_function",
+        "apply_struct_to_address",
+        "rename_single_variable",
+        "rename_multi_variables",
+        "retype_variable",
+        "define_types",
+        "declare_c_type",
+        "rename_data",
+        "set_local_variable_type",
+        "make_function_at",
+        "delete_comment",
+        "delete_function_comment",
+    )
+)
+for _t in _MUTATING_TOOLS:
     _TOOL_COLORS[_t] = "#c586c0"  # magenta/purple
 
 # Exploration -> gold/amber
@@ -190,6 +193,66 @@ _TOOL_GROUP_LABELS: dict[str, tuple[str, str]] = {
     "search_functions_by_name": ("Searched", "function"),
     "read_file": ("Read", "file"),
 }
+
+
+_PAGE_TOTAL_RE = _re.compile(r"^([A-Za-z][A-Za-z ]*?)\s+\d+[-\u2013]\d+\s+of\s+(\d+)\s*:")
+_PAGE_NOUNS = {
+    "functions": "fns",
+    "xrefs": "refs",
+    "cross references": "refs",
+    "imports": "imports",
+    "exports": "exports",
+    "strings": "strings",
+    "segments": "segs",
+    "sections": "sects",
+}
+_LINE_COUNT_TOOLS = frozenset(
+    (
+        "decompile_function",
+        "read_disassembly",
+        "read_function_disassembly",
+        "fetch_disassembly",
+        "get_microcode",
+        "get_il",
+        "get_il_block",
+        "hexdump_address",
+    )
+)
+_CHECK = "\u2713"
+_CROSS = "\u2717"
+
+
+def _format_result_chip(tool_name: str, result: str, is_error: bool = False) -> str:
+    """Summarize a tool result as a short status chip for the call row.
+
+    Keeps the row one line tall: the shape of the result ("3 refs",
+    "148 lines") is what the reader needs; the payload stays behind the
+    expander.
+    """
+    if is_error:
+        return _CROSS
+
+    short_name = _strip_mcp_prefix(tool_name)
+    text = result or ""
+
+    page = _PAGE_TOTAL_RE.match(text.lstrip())
+    if page:
+        title = page.group(1).strip().lower()
+        try:
+            total = int(page.group(2))
+        except ValueError:
+            total = 0
+        noun = _PAGE_NOUNS.get(title, title)
+        return f"{total:,} {noun}"
+
+    if short_name in _MUTATING_TOOLS:
+        return f"{_CHECK} undoable"
+
+    if short_name in _LINE_COUNT_TOOLS and text.strip():
+        lines = text.count("\n") + 1
+        return f"{lines:,} lines"
+
+    return _CHECK
 
 
 def _tool_color(name: str) -> str:
@@ -507,6 +570,7 @@ class ToolCallWidget(QFrame):
         self._is_error = False
         self._expanded = False
         self._spin_idx = 0
+        self._result_done = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
@@ -635,7 +699,8 @@ class ToolCallWidget(QFrame):
         self.setUpdatesEnabled(False)
         self._expanded = not self._expanded
         self._detail_widget.setVisible(self._expanded)
-        self._preview_label.setVisible(not self._expanded and bool(self._args_text))
+        has_preview = bool(self._preview_label.text())
+        self._preview_label.setVisible(not self._expanded and has_preview)
         self._toggle_btn.setText("\u25bc" if self._expanded else "\u25b6")
         self.setUpdatesEnabled(True)
 
@@ -645,10 +710,13 @@ class ToolCallWidget(QFrame):
         summary = _format_tool_summary(self._tool_name, args_text)
         if summary:
             self._summary_label.setText(summary)
-        # Preview (truncated)
-        if args_text.strip():
+        # Preview (truncated) — only for tools whose args have no one-line
+        # summary, otherwise the row repeats itself over three lines.
+        if args_text.strip() and not summary:
             self._preview_label.setText(_truncate_preview(args_text.strip()))
             self._preview_label.setVisible(not self._expanded)
+        else:
+            self._preview_label.setVisible(False)
         # Full args in detail area
         display = args_text[:_MAX_ARGS_DISPLAY] + "..." if len(args_text) > _MAX_ARGS_DISPLAY else args_text
         self._args_label.setText(display)
@@ -672,7 +740,7 @@ class ToolCallWidget(QFrame):
                     f"color: #f44747; {_native_text_style(size=11, monospace=True)}",
                 )
             )
-            self._status_label.setText("\u2717")
+            self._status_label.setText(_format_result_chip(self._tool_name, result, True))
             self._status_label.setStyleSheet(
                 host_stylesheet(
                     "color: #f44747; font-size: 10px;",
@@ -691,18 +759,20 @@ class ToolCallWidget(QFrame):
             self._preview_label.setVisible(False)
             self._toggle_btn.setText("\u25bc")
         else:
-            self._status_label.setText("\u2713")
+            self._status_label.setText(_format_result_chip(self._tool_name, result, False))
             self._status_label.setStyleSheet(
                 host_stylesheet(
                     "color: #4ec9b0; font-size: 10px;",
                     f"color: #4ec9b0; {_native_text_style(size=10, bold=True)}",
                 )
             )
+        self._result_done = True
 
     def mark_done(self) -> None:
         self._stop_spinner()
-        if self._status_label.text() not in ("\u2713", "\u2717"):
-            self._status_label.setText("\u2713")
+        if not self._result_done:
+            self._result_done = True
+            self._status_label.setText(_CHECK)
             self._status_label.setStyleSheet(
                 host_stylesheet(
                     "color: #4ec9b0; font-size: 10px;",
@@ -930,6 +1000,7 @@ class ToolGroupWidget(QFrame):
         self._count = 0
         self._done = 0
         self._errors = 0
+        self._spin_idx = 0
         self._tool_names: list[str] = []
 
         layout = QVBoxLayout(self)
@@ -982,12 +1053,26 @@ class ToolGroupWidget(QFrame):
         self._tool_names.append(tool_name)
         self._body_layout.addWidget(widget)
         self._update_label()
+        # The group is collapsed by default, which hides every child's spinner.
+        # Without its own the panel showed no sign of life for the whole
+        # multi-tool phase — often the longest part of a turn.
+        _SharedSpinnerTimer.get().register(self)
+        self._update_status()
 
     def notify_result(self, is_error: bool = False) -> None:
         """Called when a tool inside this group finishes."""
         self._done += 1
         if is_error:
             self._errors += 1
+        if self._done >= self._count:
+            _SharedSpinnerTimer.get().unregister(self)
+        self._update_status()
+
+    def _spin_tick(self) -> None:
+        """Animate the header while calls are still in flight."""
+        if self._done >= self._count:
+            return
+        self._spin_idx = (self._spin_idx + 1) % len(ToolCallWidget._SPINNER_FRAMES)
         self._update_status()
 
     def _update_label(self) -> None:
@@ -1013,7 +1098,8 @@ class ToolGroupWidget(QFrame):
                     )
                 )
         else:
-            self._status_label.setText(f"{self._done}/{self._count}")
+            frame = ToolCallWidget._SPINNER_FRAMES[self._spin_idx]
+            self._status_label.setText(f"{frame} {self._done}/{self._count}")
             self._status_label.setStyleSheet(
                 host_stylesheet(
                     "color: #dcdcaa; font-size: 10px;",

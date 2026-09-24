@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from tests.qt_stubs import ensure_pyside6_stubs
+
 ensure_pyside6_stubs()
 
 sys.modules.pop("rikugan.ui.input_area", None)
@@ -17,6 +18,7 @@ from rikugan.ui.input_area import InputArea, _SkillPopup  # noqa: E402
 # ---------------------------------------------------------------------------
 # _SkillPopup — pure list logic
 # ---------------------------------------------------------------------------
+
 
 def _make_popup() -> _SkillPopup:
     popup = object.__new__(_SkillPopup)
@@ -89,6 +91,7 @@ class TestSkillPopupMoveSelection(unittest.TestCase):
 # InputArea — pure logic methods
 # ---------------------------------------------------------------------------
 
+
 def _make_input() -> InputArea:
     area = object.__new__(InputArea)
     area._enabled = True
@@ -98,6 +101,8 @@ def _make_input() -> InputArea:
     area._cancel_callback = None
     area._applying_theme = False
     area._theme_css = ""
+    area._flat = False
+    area._focus_callback = None
     area.setStyleSheet = MagicMock()
     return area
 
