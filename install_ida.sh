@@ -196,12 +196,27 @@ _extract_python_version() {
     return 1
 }
 
+# A framework dylib such as
+#   .../Python.framework/Versions/3.14/Python
+# carries the executable bit, so testing -x alone accepted a shared library as
+# the interpreter and the install died with "cannot execute binary file".
+# Ask the candidate to behave like Python instead of trusting its mode bits.
+_is_python_interpreter() {
+    local candidate="${1:-}"
+    [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]] || return 1
+    # Require real output, not just a zero exit: a wrapper script that ignores
+    # its arguments would otherwise pass and take the dependencies with it.
+    local marker
+    marker="$("$candidate" -c 'import sys; print("RIKUGAN_PY%d" % sys.version_info[0])' 2>/dev/null)" || return 1
+    [[ "$marker" == "RIKUGAN_PY3" ]]
+}
+
 _python_target_to_interpreter() {
     # Given the configured Python shared library path, find the matching interpreter.
     local target="$1"
     [[ -n "$target" ]] || return 1
 
-    if [[ -x "$target" ]]; then
+    if _is_python_interpreter "$target"; then
         echo "$target"
         return 0
     fi
@@ -243,7 +258,7 @@ _python_target_to_interpreter() {
 
     local pybin
     for pybin in "${candidates[@]}"; do
-        if [[ -x "$pybin" ]]; then
+        if _is_python_interpreter "$pybin"; then
             echo "$pybin"
             return 0
         fi
