@@ -13,7 +13,7 @@ from ...core.sanitize import sanitize_skill_body
 from ...core.types import Message, Role, UserDecision, parse_approval
 from ..plan_mode import parse_plan as _parse_plan_impl
 from ..turn import TurnEvent
-from .turn_helpers import execute_single_turn, finish_reason_notice
+from .turn_helpers import execute_single_turn, finish_reason_event
 
 if TYPE_CHECKING:
     from ..loop import AgentLoop
@@ -65,9 +65,9 @@ def _generate_plan_text(
 
     if plan_text:
         yield TurnEvent.text_done(plan_text)
-    notice = finish_reason_notice(finish_reason)
-    if notice:
-        yield TurnEvent.error_event(notice)
+    stop_notice = finish_reason_event(finish_reason)
+    if stop_notice is not None:
+        yield stop_notice
     loop.session.add_message(Message(role=Role.ASSISTANT, content=plan_text, token_usage=usage))
     yield TurnEvent.turn_end(1)
     return plan_text

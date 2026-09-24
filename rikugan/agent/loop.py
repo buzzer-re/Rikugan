@@ -1668,3 +1668,16 @@ class BackgroundAgentRunner:
             return self.event_queue.get(timeout=timeout)
         except queue.Empty:
             return None
+
+    def is_drained(self) -> bool:
+        """True once the producer has exited and every event has been consumed.
+
+        ``AgentLoop.is_running`` goes false in the loop's ``finally`` block,
+        while the runner thread is still flushing its last buffered text and the
+        sentinel. Dropping the runner on ``is_running`` alone therefore throws
+        the tail of the final answer away with the queue; wait for this instead.
+        """
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            return False
+        return self.event_queue.empty()
