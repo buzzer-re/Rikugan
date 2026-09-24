@@ -18,7 +18,9 @@ from ..mcp.client import MCPClient
 from ..mcp.config import MCPServerConfig
 
 SERVER_NAME = "binaryninja"
-DEFAULT_URL = "http://127.0.0.1:9009/mcp"
+# Where Binary Ninja 6.0's MCP plugin listens, as it reports on startup:
+#   [MCP] Binary Ninja MCP server listening at http://127.0.0.1:24642/mcp
+DEFAULT_URL = "http://127.0.0.1:24642/mcp"
 
 # The probe runs on a background thread, but a server that is not there should
 # fail fast rather than hold the offer back.

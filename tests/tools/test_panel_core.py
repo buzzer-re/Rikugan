@@ -349,6 +349,7 @@ def _make_panel():
     panel._native_mcp_available = False
     panel._native_mcp_active = False
     panel._native_mcp_probe = None
+    panel._native_mcp_user_initiated = False
     panel._native_mcp_timer = None
     panel._panel_header = MagicMock()
     panel._tab_approval = {}
@@ -852,6 +853,42 @@ class TestNativeMcpConsent(unittest.TestCase):
         panel._start_native_mcp.assert_not_called()
         # Still offered on the toggle, so a "no" is never a dead end.
         self.assertTrue(panel._native_mcp_available)
+
+    def test_clicking_the_toggle_reprobes_when_nothing_was_found(self):
+        """The server is a plugin; it can be enabled after Rikugan starts."""
+        panel = self._panel()
+        panel._native_mcp_available = False
+        panel._native_mcp_active = False
+        panel._detect_native_mcp = MagicMock()
+        panel._toggle_native_mcp()
+        panel._detect_native_mcp.assert_called_once_with(user_initiated=True)
+
+    def test_a_user_initiated_find_connects_without_asking(self):
+        panel = self._panel()
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_user_initiated = True
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=True, url="u", tool_count=7, error=""
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._ask_native_mcp_consent = MagicMock()
+        panel._start_native_mcp = MagicMock()
+        panel._poll_native_mcp()
+        panel._ask_native_mcp_consent.assert_not_called()
+        panel._start_native_mcp.assert_called_once()
+        self.assertTrue(panel._config.binja_mcp_consent["db-1"])
+
+    def test_a_user_initiated_miss_says_so(self):
+        panel = self._panel()
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_user_initiated = True
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=False, url="http://127.0.0.1:24642/mcp", tool_count=0, error="refused"
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._report_native_mcp_missing = MagicMock()
+        panel._poll_native_mcp()
+        panel._report_native_mcp_missing.assert_called_once()
 
     def test_no_server_means_no_prompt_and_no_toggle(self):
         panel = self._panel()

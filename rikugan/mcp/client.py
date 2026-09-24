@@ -132,7 +132,8 @@ class MCPClient:
 
         Blocks until the server is ready or the timeout expires.
         """
-        log_info(f"MCP[{self.name}]: starting server: {self.config.command} {self.config.args}")
+        target = self.config.url or f"{self.config.command} {self.config.args}"
+        log_info(f"MCP[{self.name}]: starting server: {target}")
 
         self._running = True
         self._ready.clear()
