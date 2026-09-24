@@ -87,6 +87,7 @@ _GUI_NAMES = [
     "QPalette",
     "QSyntaxHighlighter",
     "QTextCharFormat",
+    "QTextDocument",
 ]
 
 

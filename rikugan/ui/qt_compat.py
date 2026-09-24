@@ -68,6 +68,7 @@ if QT_BINDING == "PySide6":
         QPalette,
         QSyntaxHighlighter,
         QTextCharFormat,
+        QTextDocument,
     )
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -119,6 +120,7 @@ else:
         QPalette,
         QSyntaxHighlighter,
         QTextCharFormat,
+        QTextDocument,
     )
     from PyQt5.QtWidgets import (  # type: ignore[no-redef]  # noqa: F401
         QAbstractItemView,

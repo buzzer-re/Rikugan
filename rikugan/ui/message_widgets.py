@@ -14,6 +14,7 @@ from .qt_compat import (
     QPushButton,
     QSizePolicy,
     Qt,
+    QTextDocument,
     QTimer,
     QToolButton,
     QVBoxLayout,
@@ -253,12 +254,22 @@ class _HeightCachedLabel(QLabel):
     def measured_height(self, width: int) -> int:
         """Height this label's text occupies at *width*.
 
-        This is the same figure QLabel lays itself out with, verified against a
-        QTextDocument (with a zero document margin) for wrapped prose, wide code
-        blocks and wide tables alike — so the pin is only ever wrong when it is
-        taken at the wrong *width*, which is what the callers guard against.
+        Measured on a standalone document rather than via
+        ``QLabel.heightForWidth``. QLabel clamps that against its own minimum
+        and maximum height, which ``setFixedHeight`` has already pinned — so
+        once a height was pinned at a too-narrow width (session restore sets the
+        text before the label is in a layout), every later measurement returned
+        the stale, too-tall value and the message kept an empty band under it.
+
+        A zero document margin makes this match QLabel's own layout exactly, for
+        wrapped prose, wide code blocks and tables alike.
         """
-        return QLabel.heightForWidth(self, width)
+        doc = QTextDocument()
+        doc.setDefaultFont(self.font())
+        doc.setDocumentMargin(0)
+        doc.setHtml(self.text())
+        doc.setTextWidth(width)
+        return int(doc.size().height() + 0.5)
 
     def pin_height(self) -> None:
         """Fix the widget height to what its current text needs."""
