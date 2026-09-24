@@ -39,6 +39,15 @@ no_error_summary = true
 module = ["rikugan.core.*", "rikugan.providers.*"]
 disallow_untyped_defs = true
 
+# Don't resolve the Qt bindings. qt_compat imports PySide6 with a PyQt5
+# fallback, which is a redefinition by design, and the UI package is outside
+# the type-checked surface anyway. Without this, results would depend on
+# whether Qt happens to be installed — which it now is, for the render checks.
+[[tool.mypy.overrides]]
+module = ["PySide6.*", "PyQt5.*", "shiboken6.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
 [dependency-groups]
 dev = [
     "desloppify==0.9.3",
