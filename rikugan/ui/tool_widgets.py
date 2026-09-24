@@ -22,14 +22,24 @@ from .qt_compat import (
     QWidget,
     qt_flags,
 )
-from .styles import host_stylesheet, use_native_host_theme
+from .styles import blend_theme_color, get_chat_color_tokens, host_stylesheet, use_native_host_theme
 
 _MAX_ARGS_DISPLAY = 2000
 _MAX_RESULT_DISPLAY = 3000
 _TOOL_PREVIEW_LINES = 3
+# Fallbacks only: the live host palette is used whenever one is available, so a
+# tool row is not a black bar in IDA's light theme.
 _MUTED_TEXT = "#a8a8a8"
 _TOOL_BG = "#252526"
 _TOOL_BORDER = "#3c3c3c"
+
+
+def _muted_text(source=None) -> str:
+    """Secondary text color for the tool card, from the host palette."""
+    try:
+        return get_chat_color_tokens(source)["muted"]
+    except Exception:
+        return _MUTED_TEXT
 
 
 def _tool_card_css(
@@ -40,9 +50,13 @@ def _tool_card_css(
     radius: int = 6,
     object_name: str = "message_tool",
 ) -> str:
-    del source
-    border = accent or _TOOL_BORDER
-    bg = background or _TOOL_BG
+    try:
+        colors = get_chat_color_tokens(source)
+        default_border, default_bg = colors["border"], colors["tool_bg"]
+    except Exception:
+        default_border, default_bg = _TOOL_BORDER, _TOOL_BG
+    border = accent or default_border
+    bg = background or default_bg
     return f"QFrame#{object_name} {{ background-color: {bg}; border: 1px solid {border}; border-radius: {radius}px; }}"
 
 
@@ -255,9 +269,29 @@ def _format_result_chip(tool_name: str, result: str, is_error: bool = False) -> 
     return _CHECK
 
 
-def _tool_color(name: str) -> str:
-    """Look up tool color by base name (MCP prefix stripped)."""
-    return _TOOL_COLORS.get(_strip_mcp_prefix(name), _DEFAULT_TOOL_COLOR)
+def _tool_color(name: str, source=None) -> str:
+    """Category color for a tool, darkened for light host themes.
+
+    The palette is chosen for a dark background. On IDA's light default the
+    same teal or gold washes out against the card, so it is blended toward the
+    text color — keeping the category legible without changing its identity.
+    """
+    base = _TOOL_COLORS.get(_strip_mcp_prefix(name), _DEFAULT_TOOL_COLOR)
+    try:
+        colors = get_chat_color_tokens(source)
+    except Exception:
+        return base
+    if _is_light_surface(colors["tool_bg"]):
+        return blend_theme_color(base, "#000000", 0.45)
+    return base
+
+
+def _is_light_surface(color: str) -> bool:
+    value = color.lstrip("#")
+    if len(value) != 6:
+        return False
+    r, g, b = (int(value[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) >= 0.5
 
 
 def _format_tool_group_label(tool_names: list[str]) -> str:
@@ -584,7 +618,7 @@ class ToolCallWidget(QFrame):
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle bullet name summary status."""
         display_name = _strip_mcp_prefix(tool_name)
-        color = _tool_color(tool_name)
+        color = _tool_color(tool_name, self)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -619,8 +653,8 @@ class ToolCallWidget(QFrame):
         self._summary_label = QLabel("")
         self._summary_label.setStyleSheet(
             host_stylesheet(
-                "color: #a8a8a8; font-size: 11px; margin-left: 6px;",
-                f"color: {_MUTED_TEXT}; {_native_text_style(size=11)}",
+                f"color: {_muted_text(self)}; font-size: 11px; margin-left: 6px;",
+                f"color: {_muted_text(self)}; {_native_text_style(size=11)}",
             )
         )
         header_layout.addWidget(self._summary_label, 1)
@@ -663,8 +697,8 @@ class ToolCallWidget(QFrame):
         self._result_header = QLabel("Result:")
         self._result_header.setStyleSheet(
             host_stylesheet(
-                "color: #a8a8a8; font-size: 10px; font-weight: bold;",
-                f"color: {_MUTED_TEXT}; {_native_text_style(size=10, bold=True)}",
+                f"color: {_muted_text(self)}; font-size: 10px; font-weight: bold;",
+                f"color: {_muted_text(self)}; {_native_text_style(size=10, bold=True)}",
             )
         )
         self._result_header.setVisible(False)
@@ -821,7 +855,7 @@ class ToolBatchWidget(QFrame):
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle bullet name count status."""
         display_name = _strip_mcp_prefix(tool_name)
-        color = _tool_color(tool_name)
+        color = _tool_color(tool_name, self)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -856,8 +890,8 @@ class ToolBatchWidget(QFrame):
         self._count_label = QLabel("")
         self._count_label.setStyleSheet(
             host_stylesheet(
-                "color: #a8a8a8; font-size: 11px; margin-left: 6px;",
-                f"color: {_MUTED_TEXT}; {_native_text_style(size=11)}",
+                f"color: {_muted_text(self)}; font-size: 11px; margin-left: 6px;",
+                f"color: {_muted_text(self)}; {_native_text_style(size=11)}",
             )
         )
         header_layout.addWidget(self._count_label, 1)
