@@ -32,12 +32,24 @@ class ToolRegistry:
         pass ``idasync`` here; standalone/test environments omit it.
     """
 
-    def __init__(self, dispatch_wrapper: Callable | None = None) -> None:
+    def __init__(
+        self,
+        dispatch_wrapper: Callable | None = None,
+        marshal_policy: Callable[[ToolDefinition], bool] | None = None,
+    ) -> None:
+        """Create a registry.
+
+        *dispatch_wrapper* marshals a handler onto the host's main thread.
+        *marshal_policy* decides which tools need it; the default wraps every
+        tool, which is what IDA requires. A host whose analysis API is
+        thread-safe can narrow it so read-only work does not block the UI.
+        """
         self._tools: dict[str, ToolDefinition] = {}
         self._schema_cache: list[dict[str, Any]] | None = None
         self._result_cache = ToolResultCache()
         self._capabilities: dict[str, bool] = {}
         self._dispatch_wrapper = dispatch_wrapper
+        self._marshal_policy = marshal_policy
 
     @staticmethod
     def _coerce_arguments(defn: ToolDefinition, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -157,7 +169,7 @@ class ToolRegistry:
         timeout = defn.timeout if defn.timeout is not None else _DEFAULT_TOOL_TIMEOUT
 
         handler = defn.handler
-        if self._dispatch_wrapper is not None:
+        if self._dispatch_wrapper is not None and (self._marshal_policy is None or self._marshal_policy(defn)):
             handler = self._dispatch_wrapper(handler)
 
         try:

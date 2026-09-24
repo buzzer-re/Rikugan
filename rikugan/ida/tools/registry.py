@@ -35,8 +35,13 @@ _TOOL_MODULES = (
 )
 
 
-def create_default_registry() -> ToolRegistry:
-    """Create a registry with all built-in IDA tools."""
+def create_default_registry(config=None) -> ToolRegistry:
+    """Create a registry with all built-in IDA tools.
+
+    *config* is accepted for a uniform factory signature and ignored: IDA
+    requires every API call on the main thread, so all tools are marshalled.
+    """
+    del config
     registry = ToolRegistry(dispatch_wrapper=idasync)
     registry.set_capabilities({"hexrays": HAS_HEXRAYS})
     for mod in _TOOL_MODULES:

@@ -50,6 +50,12 @@ class RikuganConfig:
     dont_auto_load_chats: bool = False
     session_storage_dir: str = ""
     approve_mutations: bool = False  # require approval for mutating tools (rename, retype, etc.)
+    # Binary Ninja only. Its BinaryView API is thread-safe, so read-only tools
+    # run on the agent's background thread; marshalling them onto the UI thread
+    # froze the whole window for the length of every decompile. Mutations and
+    # UI-driving tools are still marshalled either way. Set False to send
+    # everything back through the main thread.
+    binja_background_tools: bool = True
     exploration_turn_limit: int = 100  # max turns in exploration phase before forcing transition
     max_retries: int = 3  # max retries on rate-limit / transient API errors
     silent_retry_mode: bool = False  # show loading indicator instead of error messages on retry
@@ -184,6 +190,7 @@ class RikuganConfig:
             "dont_auto_load_chats",
             "session_storage_dir",
             "approve_mutations",
+            "binja_background_tools",
             "exploration_turn_limit",
             "max_retries",
             "silent_retry_mode",
