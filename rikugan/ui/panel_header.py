@@ -23,6 +23,7 @@ from .styles import build_panel_header_stylesheet
 _CHEVRON = "▾"
 _PLUS = "+"
 _OVERFLOW = "\u2026"
+_SIDEBAR = "\u2630"  # trigram for heaven, reads as a list/menu glyph
 _MAX_TITLE_CHARS = 26
 
 
@@ -52,6 +53,9 @@ class PanelHeader(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 7, 8, 7)
         layout.setSpacing(8)
+
+        self._sidebar_btn = self._make_icon_button(_SIDEBAR, "Show chat list", self._on_switcher)
+        layout.addWidget(self._sidebar_btn)
 
         self._switcher = QToolButton(self)
         self._switcher.setObjectName("chat_switcher")
@@ -100,6 +104,11 @@ class PanelHeader(QWidget):
         """Show the active chat's name on the switcher button."""
         self._switcher.setText(f"{elide_title(title)}  {_CHEVRON}")
         self._switcher.setToolTip(title or "Untitled")
+
+    def set_sidebar_open(self, is_open: bool) -> None:
+        """Reflect whether the chat list is showing."""
+        self._sidebar_btn.setToolTip("Hide chat list" if is_open else "Show chat list")
+        self._sidebar_btn.setDown(is_open)
 
     def set_switcher_enabled(self, enabled: bool) -> None:
         """Hide the switcher chevron affordance when there is nothing to switch to."""

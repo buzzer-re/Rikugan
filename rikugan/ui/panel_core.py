@@ -444,8 +444,15 @@ class ChatThreadList(QWidget):
         header_layout.addStretch()
         self._new_btn = self._make_icon_button("+", "New chat", self._on_new, parent=header)
         header_layout.addWidget(self._new_btn)
-        self._close_btn = self._make_icon_button("\u00d7", "Close chat list", self._on_close, parent=header)
-        self._close_btn.setVisible(False)
+        # Always offered, in both layouts: collapsing the list used to be
+        # possible only through the header's chat name, which reads as a
+        # switcher rather than a hide control.
+        self._close_btn = self._make_icon_button(
+            "\u00ab",
+            "Hide chat list",
+            self._on_close,
+            parent=header,
+        )
         header_layout.addWidget(self._close_btn)
         return header
 
@@ -523,9 +530,8 @@ class ChatThreadList(QWidget):
         self._close_callback = callback
 
     def set_drawer_mode(self, drawer: bool) -> None:
-        """Show the close button and drawer edge when floating over the chat."""
+        """Draw the drawer edge when floating over the chat."""
         self.setProperty("drawer", "true" if drawer else "false")
-        self._close_btn.setVisible(drawer)
         self.style().unpolish(self)
         self.style().polish(self)
 
@@ -814,7 +820,9 @@ class RikuganPanelCore(QWidget):
         self._composer: Composer | None = None
         self._scrim: _DrawerScrim | None = None
         self._drawer_mode = False
-        self._drawer_open = False
+        # The chat list starts collapsed and only the user opens it, at any
+        # panel width. It used to appear on its own whenever the panel grew.
+        self._sidebar_open = False
         self._welcome_views: dict[str, WelcomeView] = {}
         self._binary_summary = BinarySummary()
         self._binary_summary_loaded = False
@@ -1236,32 +1244,50 @@ class RikuganPanelCore(QWidget):
     # --- responsive chat list -------------------------------------------
 
     def _apply_responsive_layout(self) -> None:
-        """Move the chat list between splitter column and overlay drawer."""
+        """Move the chat list between splitter column and overlay drawer.
+
+        Widening the panel must not reveal the list on its own: whether it is
+        open is the user's choice (``_sidebar_open``), and only the width
+        decides *how* it is shown.
+        """
         if self._chat_sidebar is None or self._chat_column is None:
             return
         drawer = should_use_drawer(self.width())
         if drawer == self._drawer_mode:
-            if drawer and self._drawer_open:
+            if drawer and self._sidebar_open:
                 self._layout_drawer()
             return
         self._drawer_mode = drawer
         try:
             if drawer:
                 self._chat_sidebar.setParent(self._chat_column)
-                self._chat_sidebar.setVisible(False)
-                self._drawer_open = False
-                if self._scrim is not None:
-                    self._scrim.setVisible(False)
             else:
                 self._main_splitter.insertWidget(0, self._chat_sidebar)
                 self._main_splitter.setStretchFactor(0, 0)
-                self._chat_sidebar.setVisible(True)
-                self._drawer_open = False
-                if self._scrim is not None:
-                    self._scrim.setVisible(False)
             self._chat_sidebar.set_drawer_mode(drawer)
+            self._apply_sidebar_visibility()
         except RuntimeError as e:
             log_debug(f"Responsive layout switch failed: {e}")
+
+    def _apply_sidebar_visibility(self) -> None:
+        """Show or hide the chat list to match the user's choice."""
+        if self._chat_sidebar is None:
+            return
+        want = self._sidebar_open
+        if self._drawer_mode and want:
+            self._layout_drawer()
+        self._chat_sidebar.setVisible(want)
+        if self._drawer_mode and want:
+            self._chat_sidebar.raise_()
+        if self._scrim is not None:
+            # The scrim only belongs under a floating drawer, never under the
+            # docked column.
+            self._scrim.setVisible(want and self._drawer_mode)
+            if want and self._drawer_mode:
+                self._scrim.raise_()
+                self._chat_sidebar.raise_()
+        if self._panel_header is not None:
+            self._panel_header.set_sidebar_open(want)
 
     def _layout_drawer(self) -> None:
         """Size the floating drawer and its scrim to the chat column."""
@@ -1274,35 +1300,23 @@ class RikuganPanelCore(QWidget):
             self._scrim.setGeometry(0, 0, self._chat_column.width(), height)
 
     def _toggle_drawer(self) -> None:
-        """Header switcher: open/close the drawer, or hide/show the column."""
+        """Open or close the chat list, in whichever form it currently takes."""
         if self._chat_sidebar is None:
             return
-        if not self._drawer_mode:
-            self._chat_sidebar.setVisible(not self._chat_sidebar.isVisible())
-            return
-        if self._drawer_open:
-            self._close_drawer()
-        else:
-            self._open_drawer()
+        self._sidebar_open = not self._sidebar_open
+        self._apply_sidebar_visibility()
 
     def _open_drawer(self) -> None:
-        if self._chat_sidebar is None or not self._drawer_mode:
+        if self._chat_sidebar is None:
             return
-        self._layout_drawer()
-        if self._scrim is not None:
-            self._scrim.setVisible(True)
-            self._scrim.raise_()
-        self._chat_sidebar.setVisible(True)
-        self._chat_sidebar.raise_()
-        self._drawer_open = True
+        self._sidebar_open = True
+        self._apply_sidebar_visibility()
 
     def _close_drawer(self) -> None:
-        if self._chat_sidebar is None or not self._drawer_mode:
+        if self._chat_sidebar is None:
             return
-        self._chat_sidebar.setVisible(False)
-        if self._scrim is not None:
-            self._scrim.setVisible(False)
-        self._drawer_open = False
+        self._sidebar_open = False
+        self._apply_sidebar_visibility()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
