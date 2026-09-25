@@ -7,13 +7,18 @@ full tool sets on every turn, which is what made the API refuse the request.
 
 from __future__ import annotations
 
+import re
 import unittest
 
 from rikugan.binja import native_mcp
+from rikugan.constants import MCP_TOOL_PREFIX
 from rikugan.mcp.bridge import _MAX_TOOL_DESCRIPTION, _MAX_TOOL_NAME, describe_payload, register_mcp_tools
 from rikugan.mcp.config import MCPServerConfig
 from rikugan.tools.base import ToolDefinition
 from rikugan.tools.registry import ToolRegistry
+
+# The API reserves "mcp_", so the real prefix is what these must exercise.
+PREFIX = f"{MCP_TOOL_PREFIX}binaryninja_"
 
 
 def _defn(name: str, mutating: bool = False) -> ToolDefinition:
@@ -84,7 +89,7 @@ class TestSupersededBuiltins(unittest.TestCase):
         registry.register(_defn("list_functions"))
         registry.register(_defn("rename_function", mutating=True))
         registry.register(_defn("execute_python", mutating=True))
-        registry.register(_defn("mcp_binaryninja_bn_function_list"))
+        registry.register(_defn(f"{PREFIX}bn_function_list"))
 
         superseded = native_mcp.superseded_builtins(registry)
 
@@ -97,7 +102,7 @@ class TestSupersededBuiltins(unittest.TestCase):
 
     def test_the_host_server_never_supersedes_itself(self):
         registry = ToolRegistry()
-        registry.register(_defn("mcp_binaryninja_bn_function_list"))
+        registry.register(_defn(f"{PREFIX}bn_function_list"))
         self.assertEqual(native_mcp.superseded_builtins(registry), [])
 
     def test_the_declaration_falls_back_to_the_host_set_alone(self):
@@ -107,7 +112,7 @@ class TestSupersededBuiltins(unittest.TestCase):
         for i in range(10):
             registry.register(_defn(f"write_{i}", mutating=True))
         for i in range(75):
-            registry.register(_defn(f"mcp_binaryninja_bn_{i}"))
+            registry.register(_defn(f"{PREFIX}bn_{i}"))
 
         both = len(registry.to_provider_format())
         registry.set_shadowed(native_mcp.superseded_builtins(registry))
@@ -121,8 +126,8 @@ class TestBridgePayload(unittest.TestCase):
     def test_a_long_description_is_clipped(self):
         registry = ToolRegistry()
         client = _FakeClient([_FakeTool("bn_info", "word " * 400)])
-        register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
-        defn = registry.get("mcp_binaryninja_bn_info")
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        defn = registry.get(f"{PREFIX}bn_info")
         assert defn is not None
         # Every declared tool is re-sent each turn, so a server's prose is a
         # per-turn cost; the prefix leaves room for it.
@@ -132,8 +137,8 @@ class TestBridgePayload(unittest.TestCase):
     def test_a_short_description_is_left_alone(self):
         registry = ToolRegistry()
         client = _FakeClient([_FakeTool("bn_info", "Return binary metadata.")])
-        register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
-        defn = registry.get("mcp_binaryninja_bn_info")
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        defn = registry.get(f"{PREFIX}bn_info")
         assert defn is not None
         self.assertTrue(defn.description.endswith("Return binary metadata."))
 
@@ -141,16 +146,16 @@ class TestBridgePayload(unittest.TestCase):
         registry = ToolRegistry()
         long_name = "bn_" + "x" * _MAX_TOOL_NAME
         client = _FakeClient([_FakeTool(long_name, "x"), _FakeTool("bn_ok", "x")])
-        count = register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
+        count = register_mcp_tools(client, registry, prefix=PREFIX)
         self.assertEqual(count, 1)
-        self.assertEqual(registry.list_names(), ["mcp_binaryninja_bn_ok"])
+        self.assertEqual(registry.list_names(), [f"{PREFIX}bn_ok"])
 
     def test_a_name_with_illegal_characters_is_skipped(self):
         # Both Anthropic and OpenAI accept only [a-zA-Z0-9_-]; relaying one
         # through would fail the whole request, not just that tool.
         registry = ToolRegistry()
         client = _FakeClient([_FakeTool("bn.info", "x"), _FakeTool("bn ok", "x"), _FakeTool("bn_ok", "x")])
-        count = register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
+        count = register_mcp_tools(client, registry, prefix=PREFIX)
         self.assertEqual(count, 1)
 
     def test_a_type_outside_json_schema_falls_back(self):
@@ -158,8 +163,8 @@ class TestBridgePayload(unittest.TestCase):
         registry = ToolRegistry()
         schema = {"properties": {"addr": {"type": "any"}, "n": {"type": "integer"}}}
         client = _FakeClient([_FakeTool("bn_read", "x", schema)])
-        register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
-        props = registry.get("mcp_binaryninja_bn_read").to_json_schema()["properties"]
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        props = registry.get(f"{PREFIX}bn_read").to_json_schema()["properties"]
         self.assertEqual(props["addr"]["type"], "string")
         self.assertEqual(props["n"]["type"], "integer")
 
@@ -167,8 +172,8 @@ class TestBridgePayload(unittest.TestCase):
         registry = ToolRegistry()
         client = _FakeClient([_FakeTool("bn_info", "word " * 200)])
         client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp", description_limit=30)
-        register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
-        defn = registry.get("mcp_binaryninja_bn_info")
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        defn = registry.get(f"{PREFIX}bn_info")
         assert defn is not None
         self.assertLess(len(defn.description), 80)
 
@@ -178,14 +183,14 @@ class TestBridgePayload(unittest.TestCase):
         registry = ToolRegistry()
         client = _FakeClient([_FakeTool(f"bn_{i}", "x") for i in range(75)])
         client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp", max_tools=10)
-        count = register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
+        count = register_mcp_tools(client, registry, prefix=PREFIX)
         self.assertEqual(count, 10)
 
     def test_no_cap_exposes_everything(self):
         registry = ToolRegistry()
         client = _FakeClient([_FakeTool(f"bn_{i}", "x") for i in range(75)])
         client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp")
-        self.assertEqual(register_mcp_tools(client, registry, prefix="mcp_binaryninja_"), 75)
+        self.assertEqual(register_mcp_tools(client, registry, prefix=PREFIX), 75)
 
     def test_describe_payload_reports_what_is_sent(self):
         registry = ToolRegistry()
@@ -195,3 +200,35 @@ class TestBridgePayload(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReservedToolNamePrefix(unittest.TestCase):
+    """The API reserves "mcp_" for its own MCP connector.
+
+    A tool declared under that prefix is billed as a premium connector and the
+    request is refused outright on a subscription token — with a message about
+    extra usage that never mentions tool names. Verified against the live API:
+    "mcp_x" is refused; "mcp__x", "MCP_x", "mcp-x" and "bn_mcp_x" are accepted.
+    """
+
+    def test_the_bridge_prefix_avoids_the_reserved_one(self):
+        self.assertIsNone(
+            re.match(r"^mcp_[^_]", MCP_TOOL_PREFIX),
+            f"{MCP_TOOL_PREFIX!r} matches the prefix the API reserves",
+        )
+
+    def test_registered_tool_names_avoid_it_too(self):
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool("bn_info", "x"), _FakeTool("bn_read", "x")])
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        for name in registry.list_names():
+            with self.subTest(name=name):
+                self.assertIsNone(re.match(r"^mcp_[^_]", name))
+
+    def test_the_prompt_prefix_matches_the_bridge(self):
+        # The prompt keys its Binary Ninja section off this prefix; a mismatch
+        # would silently stop the guidance ever being included.
+        from rikugan.agent.prompts.binja import NATIVE_MCP_TOOL_PREFIX
+
+        self.assertEqual(NATIVE_MCP_TOOL_PREFIX, PREFIX)
+        self.assertEqual(native_mcp.tool_prefix(), PREFIX)

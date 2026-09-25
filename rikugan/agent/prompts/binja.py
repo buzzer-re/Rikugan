@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ...constants import MCP_TOOL_PREFIX
 from .base import SHARED_CAPABILITIES_BULLETS, assemble_system_prompt
 
 _BINJA_INTRO = """\
@@ -58,7 +59,7 @@ BINJA_BASE_PROMPT = assemble_system_prompt(_BINJA_INTRO, _BINJA_TOOL_USAGE, _BIN
 # Rikugan connects to Binary Ninja's own MCP server when the user allows it.
 # That server talks to the live BinaryView through the host's own API, so where
 # the two overlap it is the more authoritative source.
-NATIVE_MCP_TOOL_PREFIX = "mcp_binaryninja_"
+NATIVE_MCP_TOOL_PREFIX = f"{MCP_TOOL_PREFIX}binaryninja_"
 
 NATIVE_MCP_SECTION = """
 ## Binary Ninja's own MCP tools

@@ -390,9 +390,21 @@ class TestModelLimits(unittest.TestCase):
 
 
 class TestOAuthHeaders(unittest.TestCase):
-    def test_the_client_is_identified(self):
+    def test_the_oauth_beta_flags_are_sent(self):
         from rikugan.providers.anthropic_provider import AnthropicProvider
 
         headers = AnthropicProvider._oauth_headers()
-        self.assertEqual(headers["x-app"], "cli")
         self.assertIn("oauth-2025-04-20", headers["anthropic-beta"])
+
+    def test_the_client_is_not_disguised(self):
+        """No x-app / User-Agent spoofing: it was never what was wrong.
+
+        The 400 came from tool names under the reserved "mcp_" prefix, which
+        the API bills as its own MCP connector. Renaming them fixes it, so
+        there is nothing to gain by claiming to be a different client.
+        """
+        from rikugan.providers.anthropic_provider import AnthropicProvider
+
+        headers = AnthropicProvider._oauth_headers()
+        self.assertNotIn("x-app", headers)
+        self.assertNotIn("User-Agent", headers)

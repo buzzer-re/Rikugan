@@ -190,17 +190,8 @@ class AnthropicProvider(LLMProvider):
 
     @staticmethod
     def _oauth_headers() -> dict[str, str]:
-        """Headers a subscription token is accepted with.
-
-        Only sent on the OAuth path; an API key needs none of them and is
-        billed to API credits either way.
-        """
-        return {
-            "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
-            # Identifies which client the request came from. The API reads it
-            # when deciding what the usage is billed against.
-            "x-app": "cli",
-        }
+        """Headers an OAuth token is sent with."""
+        return {"anthropic-beta": "oauth-2025-04-20,claude-code-20250219"}
 
     @property
     def name(self) -> str:

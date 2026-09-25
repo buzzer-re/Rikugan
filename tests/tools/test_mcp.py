@@ -18,6 +18,7 @@ from rikugan.mcp.protocol import (
     encode_jsonrpc_request,
     decode_jsonrpc_response,
 )
+from rikugan.constants import MCP_TOOL_PREFIX
 from rikugan.mcp.bridge import _mcp_schema_to_parameters, register_mcp_tools
 from rikugan.mcp.client import MCPClient
 from rikugan.mcp.manager import MCPManager
@@ -222,11 +223,11 @@ class TestMCPBridge(unittest.TestCase):
         self.assertEqual(count, 2)
 
         names = registry.list_names()
-        self.assertIn("mcp_test_server_read_data", names)
-        self.assertIn("mcp_test_server_write_data", names)
+        self.assertIn(f"{MCP_TOOL_PREFIX}test_server_read_data", names)
+        self.assertIn(f"{MCP_TOOL_PREFIX}test_server_write_data", names)
 
         # Check tool definitions are properly formed
-        read_tool = registry.get("mcp_test_server_read_data")
+        read_tool = registry.get(f"{MCP_TOOL_PREFIX}test_server_read_data")
         self.assertIsNotNone(read_tool)
         self.assertIn("[MCP:test-server]", read_tool.description)
         self.assertEqual(read_tool.category, "mcp:test-server")

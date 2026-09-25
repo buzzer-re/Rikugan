@@ -12,6 +12,7 @@ import traceback
 from collections.abc import Generator
 from typing import Any
 
+from ..constants import MCP_TOOL_PREFIX
 from ..core.config import RikuganConfig
 from ..core.errors import (
     CancellationError,
@@ -635,7 +636,7 @@ class AgentLoop:
         """Show MCP server health and status."""
         # Access the MCP manager via the tool registry's registered tools
         # We check for MCP-prefixed tools and try to reach the manager
-        mcp_tools = [n for n in self.tools.list_names() if n.startswith("mcp_")]
+        mcp_tools = [n for n in self.tools.list_names() if n.startswith(MCP_TOOL_PREFIX)]
         if not mcp_tools:
             yield TurnEvent.text_done("No MCP servers configured or connected.")
             return
