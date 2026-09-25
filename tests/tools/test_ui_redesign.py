@@ -221,11 +221,12 @@ class TestElideTitle(unittest.TestCase):
 class TestNativeMcpControl(unittest.TestCase):
     """The control swaps the agent's tool set, so it has to say so."""
 
-    def test_the_label_names_the_protocol(self):
-        # A bare hexagon gave no clue what it governed.
+    def test_the_label_names_the_host_not_just_the_protocol(self):
+        # A bare hexagon gave no clue what it governed, and "MCP" alone could
+        # be any of the servers Rikugan can connect to.
         for active in (True, False):
             with self.subTest(active=active):
-                self.assertIn("MCP", mcp_label(active))
+                self.assertIn("Binary Ninja MCP", mcp_label(active))
 
     def test_the_label_shows_which_state_it_is_in(self):
         self.assertNotEqual(mcp_label(True), mcp_label(False))
@@ -234,8 +235,18 @@ class TestNativeMcpControl(unittest.TestCase):
         self.assertIn("Click", mcp_tooltip(True))
         self.assertIn("Click", mcp_tooltip(False))
 
-    def test_the_on_state_warns_that_builtins_stand_down(self):
-        self.assertIn("stand down", mcp_tooltip(True))
+    def test_both_states_warn_that_all_rikugan_tools_switch_off(self):
+        # The swap costs patching, scripting and /undo tracking, which is
+        # worth knowing before flipping it rather than after.
+        for active in (True, False):
+            with self.subTest(active=active):
+                self.assertIn("all of rikugan's tools", mcp_tooltip(active).lower())
+
+    def test_the_off_state_names_what_is_given_up(self):
+        tip = mcp_tooltip(False)
+        for cost in ("patching", "scripting", "/undo"):
+            with self.subTest(cost=cost):
+                self.assertIn(cost, tip)
 
 
 # ---------------------------------------------------------------------------

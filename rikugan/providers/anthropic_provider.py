@@ -391,7 +391,7 @@ class AnthropicProvider(LLMProvider):
             return ""
         return (
             f"\n\nThis request declared {count} tools (~{size // 1024} KB), sent again on every turn. "
-            "If the host's own MCP server is on, turning it off shrinks the request considerably."
+            "If Binary Ninja's own MCP server is on, switching back to Rikugan's tools shrinks it."
         )
 
     def _handle_api_error(self, e: Exception) -> NoReturn:

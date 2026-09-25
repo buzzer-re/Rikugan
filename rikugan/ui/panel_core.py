@@ -1343,9 +1343,10 @@ class RikuganPanelCore(QWidget):
             self._panel_header.set_native_mcp_active(True)
 
     def _on_native_mcp_ready(self, count: int) -> None:
-        """Hand the host's tools the jobs our own read-only ones were doing.
+        """Hand the host's tools the jobs ours were doing.
 
-        Declaring both sets would send two ways to do each job on every request.
+        Declaring both sets sends two ways to do each job on every request,
+        which is what the model provider was refusing.
         """
         from ..binja import native_mcp
         from ..mcp.bridge import describe_payload
@@ -1354,9 +1355,7 @@ class RikuganPanelCore(QWidget):
         if count > 0 and self._config.binja_mcp_replaces_builtins:
             superseded = native_mcp.superseded_builtins(registry)
             registry.set_shadowed(superseded)
-            log_info(
-                f"Binary Ninja MCP: {count} tools available, {len(superseded)} built-in read-only tools stood down"
-            )
+            log_info(f"Binary Ninja MCP: {count} tools available, {len(superseded)} Rikugan tools switched off")
         else:
             log_info(f"Binary Ninja MCP: {count} tools available")
         log_info(f"Binary Ninja MCP: {describe_payload(registry)}")

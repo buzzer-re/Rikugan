@@ -27,6 +27,10 @@ _SIDEBAR = "\u2630"  # trigram for heaven, reads as a list/menu glyph
 _DOT_ON = "\u25cf"
 _DOT_OFF = "\u25cb"
 _MAX_TITLE_CHARS = 26
+# Naming the host on the MCP chip costs the header about half its width, so
+# the chat title gives way while that chip is showing rather than pushing the
+# buttons off the end of a sidebar-width panel.
+_MAX_TITLE_CHARS_WITH_MCP = 13
 
 
 def elide_title(title: str, limit: int = _MAX_TITLE_CHARS) -> str:
@@ -40,22 +44,33 @@ def elide_title(title: str, limit: int = _MAX_TITLE_CHARS) -> str:
 def mcp_label(active: bool) -> str:
     """Text on the host-MCP control.
 
-    It reads "MCP" rather than wearing an icon: the control swaps which tool
-    set the agent works with, and no shape on its own says that.
+    It names Binary Ninja, not just the protocol: "MCP" alone could be any of
+    the servers Rikugan can connect to, and this one swaps out the agent's
+    entire tool set.
     """
-    return f"{_DOT_ON if active else _DOT_OFF} MCP"
+    return f"{_DOT_ON if active else _DOT_OFF} Binary Ninja MCP"
 
 
 def mcp_tooltip(active: bool) -> str:
-    """The sentence behind the control, naming what changes either way."""
+    """The sentence behind the control, naming what it trades away.
+
+    Declaring both tool sets at once is what made the API refuse the request,
+    so this is one or the other — and the swap costs undo tracking, which is
+    worth knowing before flipping it rather than after.
+    """
     if active:
         return (
-            "Binary Ninja's own MCP tools are in use.\n"
-            "Rikugan's read-only tools stand down while they are.\n"
-            "Click to go back to Rikugan's own tools."
+            "Using Binary Ninja's own MCP tools.\n\n"
+            "All of Rikugan's tools are switched off while these are in use, "
+            "so edits are not recorded for /undo.\n\n"
+            "Click to switch back to Rikugan's tools."
         )
     return (
-        "Binary Ninja is offering its own analysis tools over MCP.\nClick to let Rikugan use them instead of its own."
+        "Using Rikugan's own tools.\n\n"
+        "Binary Ninja is offering its analysis tools over MCP. Switching to "
+        "them turns all of Rikugan's tools off \u2014 including patching, "
+        "scripting and /undo tracking.\n\n"
+        "Click to switch to Binary Ninja's tools."
     )
 
 
@@ -74,6 +89,7 @@ class PanelHeader(QWidget):
         self._settings_callback: Callable[[], None] | None = None
         self._mutations_callback: Callable[[], None] | None = None
         self._mcp_callback: Callable[[], None] | None = None
+        self._chat_title = "Untitled"
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 7, 8, 7)
@@ -138,8 +154,13 @@ class PanelHeader(QWidget):
 
     def set_chat_title(self, title: str) -> None:
         """Show the active chat's name on the switcher button."""
-        self._switcher.setText(f"{elide_title(title)}  {_CHEVRON}")
-        self._switcher.setToolTip(title or "Untitled")
+        self._chat_title = title or "Untitled"
+        self._sync_chat_title()
+
+    def _sync_chat_title(self) -> None:
+        limit = _MAX_TITLE_CHARS_WITH_MCP if self._mcp_btn.isVisible() else _MAX_TITLE_CHARS
+        self._switcher.setText(f"{elide_title(self._chat_title, limit)}  {_CHEVRON}")
+        self._switcher.setToolTip(self._chat_title)
 
     def set_native_mcp_callback(self, callback: Callable[[], None] | None) -> None:
         self._mcp_callback = callback
@@ -147,6 +168,7 @@ class PanelHeader(QWidget):
     def set_native_mcp_available(self, available: bool) -> None:
         """Show the toggle only when the host actually offers MCP tools."""
         self._mcp_btn.setVisible(available)
+        self._sync_chat_title()
 
     def set_native_mcp_active(self, active: bool) -> None:
         """Say in words which tool set the agent is working with."""

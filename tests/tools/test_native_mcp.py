@@ -80,19 +80,21 @@ class TestPromptGuidance(unittest.TestCase):
             host_name="Binary Ninja",
             tool_names=["decompile_function", f"{NATIVE_MCP_TOOL_PREFIX}get_function"],
         )
-        self.assertIn("Prefer them over Rikugan's built-in equivalents", prompt)
+        self.assertIn("they are the only tools you have", prompt)
 
     def test_nothing_is_said_when_they_are_absent(self):
         prompt = build_system_prompt(host_name="Binary Ninja", tool_names=["decompile_function"])
-        self.assertNotIn("Prefer them over Rikugan's built-in equivalents", prompt)
+        self.assertNotIn("they are the only tools you have", prompt)
 
-    def test_the_agent_is_told_when_to_fall_back(self):
+    def test_the_agent_is_told_what_to_do_about_a_gap(self):
+        # Rikugan's tools are switched off, so a missing capability has a
+        # remedy the agent can name instead of something to guess around.
         prompt = build_system_prompt(
             host_name="Binary Ninja",
             tool_names=[f"{NATIVE_MCP_TOOL_PREFIX}get_function"],
         )
-        self.assertIn("when a call", prompt)
-        self.assertIn("patching", prompt)
+        self.assertIn("no equivalent here", prompt)
+        self.assertIn("do not guess", prompt)
 
 
 if __name__ == "__main__":

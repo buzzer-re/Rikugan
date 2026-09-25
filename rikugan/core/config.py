@@ -63,8 +63,9 @@ class RikuganConfig:
     binja_mcp_consent: dict[str, bool] = field(default_factory=dict)
     # Binary Ninja names its MCP tools bn_*, so they collide with none of ours:
     # left alone, turning the server on declares two full tool sets on every
-    # request. Its tools read the same database, so ours that only read stand
-    # down while it is on. Writers stay — they carry the records /undo needs.
+    # request, which is what the model provider refuses. So it is one set or
+    # the other — all of Rikugan's tools switch off while the host server runs,
+    # at the cost of patching, scripting and /undo tracking.
     binja_mcp_replaces_builtins: bool = True
     exploration_turn_limit: int = 100  # max turns in exploration phase before forcing transition
     max_retries: int = 3  # max retries on rate-limit / transient API errors

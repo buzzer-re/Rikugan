@@ -64,11 +64,12 @@ NATIVE_MCP_SECTION = """
 ## Binary Ninja's own MCP tools
 
 The `mcp_binaryninja_*` tools come from Binary Ninja's own MCP server, running
-inside the host. Prefer them over Rikugan's built-in equivalents whenever both
-can answer a question: they read the same analysis database the user is looking
-at, so their view of names, types and cross-references is the authoritative one.
+inside the host. They read the same analysis database the user is looking at,
+so their view of names, types and cross-references is the authoritative one.
 
-Use Rikugan's built-in tools when the MCP server has no equivalent, when a call
-to it fails, or for anything it does not cover (patching, scripting, microcode).
-Do not call both for the same fact just to compare them.
+While the server is on they are the only tools you have: the user has chosen
+them over Rikugan's own, which stand down so that one tool set rather than two
+is declared on every turn. If something you need has no equivalent here, say so
+and tell the user that turning the Binary Ninja MCP toggle off restores
+Rikugan's own tools — do not guess at a missing capability.
 """

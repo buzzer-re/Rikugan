@@ -78,7 +78,7 @@ class TestShadowing(unittest.TestCase):
 
 
 class TestSupersededBuiltins(unittest.TestCase):
-    def test_only_read_only_builtins_stand_down(self):
+    def test_every_rikugan_tool_stands_down(self):
         registry = ToolRegistry()
         registry.register(_defn("list_functions"))
         registry.register(_defn("rename_function", mutating=True))
@@ -87,14 +87,19 @@ class TestSupersededBuiltins(unittest.TestCase):
 
         superseded = native_mcp.superseded_builtins(registry)
 
-        self.assertEqual(superseded, ["list_functions"])
-        # Writers keep the pre-state capture and reverse records /undo needs,
-        # and the MCP server's own tools are never their own replacement.
-        self.assertNotIn("rename_function", superseded)
-        self.assertNotIn("execute_python", superseded)
-        self.assertNotIn("mcp_binaryninja_bn_function_list", superseded)
+        # It is one tool set or the other: declaring both on every request is
+        # what made the API refuse it.
+        self.assertEqual(
+            sorted(superseded),
+            ["execute_python", "list_functions", "rename_function"],
+        )
 
-    def test_it_halves_the_declaration_when_both_sets_are_present(self):
+    def test_the_host_server_never_supersedes_itself(self):
+        registry = ToolRegistry()
+        registry.register(_defn("mcp_binaryninja_bn_function_list"))
+        self.assertEqual(native_mcp.superseded_builtins(registry), [])
+
+    def test_the_declaration_falls_back_to_the_host_set_alone(self):
         registry = ToolRegistry()
         for i in range(30):
             registry.register(_defn(f"read_{i}"))
@@ -108,7 +113,7 @@ class TestSupersededBuiltins(unittest.TestCase):
         after = len(registry.to_provider_format())
 
         self.assertEqual(both, 115)
-        self.assertEqual(after, 85)
+        self.assertEqual(after, 75)
 
 
 class TestBridgePayload(unittest.TestCase):
