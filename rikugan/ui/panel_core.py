@@ -597,6 +597,9 @@ class ChatThreadList(QWidget):
         self._list.insertItem(self._register_in_group(tab_id, group), item)
         self._list.setItemWidget(item, row)
         self._refresh_item(tab_id)
+        # Rows arrive one at a time during restore; without this a chat added
+        # into a folded folder shows up anyway, and the folder reads as open.
+        self._apply_filter()
 
     def remove_chat(self, tab_id: str) -> None:
         item = self._items.pop(tab_id, None)
@@ -649,6 +652,8 @@ class ChatThreadList(QWidget):
             self._group_members[group] = []
             self._group_order.append(group)
             if group != self._UNGROUPED:
+                if self._current_group and group != self._current_group:
+                    self._collapsed.add(group)
                 self._insert_group_header(group)
         self._group_members[group].append(tab_id)
         return self._group_end_row(group)
