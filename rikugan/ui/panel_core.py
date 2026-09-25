@@ -2456,6 +2456,13 @@ class RikuganPanelCore(QWidget):
                     cv.shutdown()
                     cv.deleteLater()
                     del self._chat_views[tid]
+                    # Its sidebar row has to go with it. Left behind, the
+                    # empty "Untitled" chat stays listed and selecting it does
+                    # nothing: there is no view to show and no session to load.
+                    if self._chat_sidebar is not None:
+                        self._chat_sidebar.remove_chat(tid)
+                    self._sidebar_rows.pop(tid, None)
+                    self._pending_restore_messages.pop(tid, None)
 
             for tab_id, session in restored:
                 label = self._ctrl.tab_label(tab_id)
