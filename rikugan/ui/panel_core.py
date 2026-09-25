@@ -1338,7 +1338,7 @@ class RikuganPanelCore(QWidget):
         url = self._config.binja_mcp_url or native_mcp.DEFAULT_URL
         registry = self._ctrl.get_tool_registry()
         self._ctrl._mcp_manager.start_server(
-            native_mcp.server_config(url),
+            native_mcp.server_config(url, max_tools=self._config.binja_mcp_max_tools),
             registry,
             on_complete=lambda name, count: self._on_native_mcp_ready(count),
         )

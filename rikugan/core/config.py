@@ -67,6 +67,9 @@ class RikuganConfig:
     # the other — all of Rikugan's tools switch off while the host server runs,
     # at the cost of patching, scripting and /undo tracking.
     binja_mcp_replaces_builtins: bool = True
+    # Expose only the first N of Binary Ninja's MCP tools. 0 means all. Set it
+    # to find out whether a provider is refusing a request over its size.
+    binja_mcp_max_tools: int = 0
     exploration_turn_limit: int = 100  # max turns in exploration phase before forcing transition
     max_retries: int = 3  # max retries on rate-limit / transient API errors
     silent_retry_mode: bool = False  # show loading indicator instead of error messages on retry
@@ -205,6 +208,7 @@ class RikuganConfig:
             "binja_mcp_url",
             "binja_mcp_consent",
             "binja_mcp_replaces_builtins",
+            "binja_mcp_max_tools",
             "exploration_turn_limit",
             "max_retries",
             "silent_retry_mode",

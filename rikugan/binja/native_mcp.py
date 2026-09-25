@@ -32,8 +32,13 @@ def tool_prefix() -> str:
     return f"{MCP_TOOL_PREFIX}{SERVER_NAME.replace('-', '_').replace('.', '_')}_"
 
 
-def server_config(url: str, timeout: float = 30.0) -> MCPServerConfig:
-    return MCPServerConfig(name=SERVER_NAME, url=url or DEFAULT_URL, timeout=timeout)
+def server_config(url: str, timeout: float = 30.0, max_tools: int = 0) -> MCPServerConfig:
+    return MCPServerConfig(
+        name=SERVER_NAME,
+        url=url or DEFAULT_URL,
+        timeout=timeout,
+        max_tools=max_tools,
+    )
 
 
 @dataclass

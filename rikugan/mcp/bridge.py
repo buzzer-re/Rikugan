@@ -111,6 +111,10 @@ def register_mcp_tools(client: MCPClient, registry: ToolRegistry, prefix: str = 
         prefix = f"{MCP_TOOL_PREFIX}{safe_name}_"
 
     tools = client.get_tools()
+    cap = getattr(getattr(client, "config", None), "max_tools", 0)
+    if cap and len(tools) > cap:
+        log_warning(f"MCP[{client.name}]: exposing {cap} of {len(tools)} tools (max_tools)")
+        tools = tools[:cap]
     count = 0
     skipped: list[str] = []
 

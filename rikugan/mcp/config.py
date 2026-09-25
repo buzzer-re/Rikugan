@@ -36,6 +36,10 @@ class MCPServerConfig:
     # re-sent on every turn, so a verbose server is a standing cost; 0 means
     # use the bridge's default.
     description_limit: int = 0
+    # Expose only the first N of the server's tools. 0 means all. A way to
+    # find out whether a provider is refusing a request over its size without
+    # having to guess: halve it and see.
+    max_tools: int = 0
 
     @property
     def is_remote(self) -> bool:
@@ -79,6 +83,7 @@ def load_mcp_config(path: str = "") -> list[MCPServerConfig]:
             timeout=float(cfg.get("timeout", 30.0)),
             url=cfg.get("url", ""),
             description_limit=int(cfg.get("description_limit", 0)),
+            max_tools=int(cfg.get("max_tools", 0)),
         )
         if server.command or server.url:
             servers.append(server)
@@ -108,6 +113,8 @@ def save_mcp_config(servers: list[MCPServerConfig], path: str = "") -> None:
             entry["timeout"] = s.timeout
         if s.description_limit:
             entry["description_limit"] = s.description_limit
+        if s.max_tools:
+            entry["max_tools"] = s.max_tools
         servers_dict[s.name] = entry
 
     data = {"mcpServers": servers_dict}

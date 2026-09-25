@@ -172,6 +172,21 @@ class TestBridgePayload(unittest.TestCase):
         assert defn is not None
         self.assertLess(len(defn.description), 80)
 
+    def test_a_cap_exposes_only_the_first_n_tools(self):
+        # Halving the tool set is how you find out whether a provider is
+        # refusing a request over its size, without having to guess.
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool(f"bn_{i}", "x") for i in range(75)])
+        client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp", max_tools=10)
+        count = register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
+        self.assertEqual(count, 10)
+
+    def test_no_cap_exposes_everything(self):
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool(f"bn_{i}", "x") for i in range(75)])
+        client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp")
+        self.assertEqual(register_mcp_tools(client, registry, prefix="mcp_binaryninja_"), 75)
+
     def test_describe_payload_reports_what_is_sent(self):
         registry = ToolRegistry()
         registry.register(_defn("a"))
