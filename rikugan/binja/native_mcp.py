@@ -67,3 +67,22 @@ def probe(url: str = "") -> ProbeResult:
             client.stop()
         except Exception as e:  # pragma: no cover - teardown of a failed probe
             log_debug(f"Binary Ninja MCP probe cleanup: {e}")
+
+
+def superseded_builtins(registry) -> list[str]:
+    """Rikugan's own tools that the host server makes redundant.
+
+    Binary Ninja names its tools ``bn_*``, so nothing collides with ours and
+    turning the server on would otherwise *add* a second full tool set rather
+    than replace one — declared again on every request, and two ways to do each
+    job for the model to choose between.
+
+    The host server reads the same analysis database we do, so its inspection
+    tools supersede our read-only ones. Everything that writes stays: those
+    carry the pre-state capture and reverse records ``/undo`` depends on, which
+    an external server knows nothing about. ``execute_python`` is a writer and
+    so is kept by the same rule.
+    """
+    return [
+        defn.name for defn in registry.list_tools() if not defn.mutating and not defn.name.startswith(MCP_TOOL_PREFIX)
+    ]

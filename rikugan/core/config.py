@@ -61,6 +61,11 @@ class RikuganConfig:
     # database instance id, so a binary is never asked twice.
     binja_mcp_url: str = ""
     binja_mcp_consent: dict[str, bool] = field(default_factory=dict)
+    # Binary Ninja names its MCP tools bn_*, so they collide with none of ours:
+    # left alone, turning the server on declares two full tool sets on every
+    # request. Its tools read the same database, so ours that only read stand
+    # down while it is on. Writers stay — they carry the records /undo needs.
+    binja_mcp_replaces_builtins: bool = True
     exploration_turn_limit: int = 100  # max turns in exploration phase before forcing transition
     max_retries: int = 3  # max retries on rate-limit / transient API errors
     silent_retry_mode: bool = False  # show loading indicator instead of error messages on retry
@@ -198,6 +203,7 @@ class RikuganConfig:
             "binja_background_tools",
             "binja_mcp_url",
             "binja_mcp_consent",
+            "binja_mcp_replaces_builtins",
             "exploration_turn_limit",
             "max_retries",
             "silent_retry_mode",

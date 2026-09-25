@@ -2,14 +2,36 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
 from ..constants import MCP_TOOL_PREFIX
-from ..core.logging import log_info
+from ..core.logging import log_info, log_warning
 from ..tools.base import ParameterSchema, ToolDefinition
 from ..tools.registry import ToolRegistry
 from .client import MCPClient
+
+# Every declared tool is re-sent on every request, so a server's documentation
+# is a per-turn cost. Servers written for a chat client often ship paragraphs;
+# keep enough to choose the tool and drop the rest.
+_MAX_TOOL_DESCRIPTION = 400
+_MAX_PARAM_DESCRIPTION = 150
+
+# Both Anthropic and OpenAI reject tool names longer than this.
+_MAX_TOOL_NAME = 64
+
+
+def _clip(text: str, limit: int) -> str:
+    """Shorten *text* to *limit* characters on a word boundary where possible."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space > limit // 2:
+        cut = cut[:space]
+    return cut.rstrip(" .,;:") + "\u2026"
 
 
 def _mcp_schema_to_parameters(input_schema: dict[str, Any]) -> list[ParameterSchema]:
@@ -28,7 +50,7 @@ def _mcp_schema_to_parameters(input_schema: dict[str, Any]) -> list[ParameterSch
         ps = ParameterSchema(
             name=name,
             type=json_type,
-            description=prop.get("description", ""),
+            description=_clip(prop.get("description", ""), _MAX_PARAM_DESCRIPTION),
             required=name in required,
             default=prop.get("default"),
             enum=prop.get("enum"),
@@ -62,10 +84,14 @@ def register_mcp_tools(client: MCPClient, registry: ToolRegistry, prefix: str = 
 
     tools = client.get_tools()
     count = 0
+    skipped: list[str] = []
 
     for mcp_tool in tools:
         rikugan_name = f"{prefix}{mcp_tool.name}"
-        description = f"[MCP:{client.name}] {mcp_tool.description}"
+        if len(rikugan_name) > _MAX_TOOL_NAME:
+            skipped.append(mcp_tool.name)
+            continue
+        description = f"[MCP:{client.name}] {_clip(mcp_tool.description, _MAX_TOOL_DESCRIPTION)}"
         parameters = _mcp_schema_to_parameters(mcp_tool.input_schema)
         handler = _make_mcp_handler(client, mcp_tool.name)
 
@@ -79,5 +105,18 @@ def register_mcp_tools(client: MCPClient, registry: ToolRegistry, prefix: str = 
         registry.register(defn)
         count += 1
 
-    log_info(f"Registered {count} MCP tools from {client.name} (prefix={prefix})")
+    if skipped:
+        log_warning(f"MCP[{client.name}]: skipped {len(skipped)} tools whose names exceed {_MAX_TOOL_NAME} chars")
+    log_info(f"Registered {count} MCP tools from {client.name} (prefix={prefix}); {describe_payload(registry)}")
     return count
+
+
+def describe_payload(registry: ToolRegistry) -> str:
+    """Size of the tool declaration the model is sent on every request.
+
+    Worth a log line: a large tool set is charged again on each turn, and it is
+    otherwise invisible when a provider rejects the request for being too big.
+    """
+    schemas = registry.to_provider_format()
+    size = len(json.dumps(schemas))
+    return f"{len(schemas)} tools declared, ~{size // 1024} KB (~{size // 4} tokens) per request"

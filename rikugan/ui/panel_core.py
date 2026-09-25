@@ -1332,25 +1332,47 @@ class RikuganPanelCore(QWidget):
         from ..binja import native_mcp
 
         url = self._config.binja_mcp_url or native_mcp.DEFAULT_URL
+        registry = self._ctrl.get_tool_registry()
         self._ctrl._mcp_manager.start_server(
             native_mcp.server_config(url),
-            self._ctrl.get_tool_registry(),
-            on_complete=lambda name, count: log_info(f"Binary Ninja MCP: {count} tools available"),
+            registry,
+            on_complete=lambda name, count: self._on_native_mcp_ready(count),
         )
         self._native_mcp_active = True
         if self._panel_header is not None:
             self._panel_header.set_native_mcp_active(True)
+
+    def _on_native_mcp_ready(self, count: int) -> None:
+        """Hand the host's tools the jobs our own read-only ones were doing.
+
+        Declaring both sets would send two ways to do each job on every request.
+        """
+        from ..binja import native_mcp
+        from ..mcp.bridge import describe_payload
+
+        registry = self._ctrl.get_tool_registry()
+        if count > 0 and self._config.binja_mcp_replaces_builtins:
+            superseded = native_mcp.superseded_builtins(registry)
+            registry.set_shadowed(superseded)
+            log_info(
+                f"Binary Ninja MCP: {count} tools available, {len(superseded)} built-in read-only tools stood down"
+            )
+        else:
+            log_info(f"Binary Ninja MCP: {count} tools available")
+        log_info(f"Binary Ninja MCP: {describe_payload(registry)}")
 
     def _stop_native_mcp(self) -> None:
         if not self._native_mcp_active:
             return
         from ..binja import native_mcp
 
+        registry = self._ctrl.get_tool_registry()
         self._ctrl._mcp_manager.stop_server(
             native_mcp.SERVER_NAME,
-            self._ctrl.get_tool_registry(),
+            registry,
             native_mcp.tool_prefix(),
         )
+        registry.clear_shadowed()
         self._native_mcp_active = False
         if self._panel_header is not None:
             self._panel_header.set_native_mcp_active(False)
