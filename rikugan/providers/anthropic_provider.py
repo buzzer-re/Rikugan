@@ -371,6 +371,29 @@ class AnthropicProvider(LLMProvider):
             token_usage=usage,
         )
 
+    # A tool set this large is worth naming when the API turns a request away:
+    # it is re-sent every turn and is otherwise invisible from the message.
+    _BIG_TOOL_SET = 80
+
+    def _oversized_request_hint(self, message: str) -> str:
+        """Name the tool payload when a rejection may be about request size.
+
+        Anthropic answers a subscription request it will not bill with a
+        message about usage, which says nothing about what made this request
+        different from the last one that worked. Declaring a second host tool
+        set does, so say so — as a lead, not a diagnosis.
+        """
+        lowered = message.lower()
+        if not any(word in lowered for word in ("usage", "limit", "credit", "balance", "quota")):
+            return ""
+        count, size = getattr(self, "_last_tool_payload", (0, 0))
+        if count < self._BIG_TOOL_SET:
+            return ""
+        return (
+            f"\n\nThis request declared {count} tools (~{size // 1024} KB), sent again on every turn. "
+            "If the host's own MCP server is on, turning it off shrinks the request considerably."
+        )
+
     def _handle_api_error(self, e: Exception) -> NoReturn:
         """Raise the appropriate Rikugan error from an Anthropic API error."""
         try:
@@ -395,7 +418,7 @@ class AnthropicProvider(LLMProvider):
             msg = str(e)
             if "context" in msg.lower() or "token" in msg.lower():
                 raise ContextLengthError(str(e), provider="anthropic") from e
-            raise ProviderError(str(e), provider="anthropic") from e
+            raise ProviderError(msg + self._oversized_request_hint(msg), provider="anthropic") from e
         raise ProviderError(str(e), provider="anthropic") from e
 
     def _build_request_kwargs(
@@ -436,6 +459,7 @@ class AnthropicProvider(LLMProvider):
 
         if tools:
             formatted_tools = self._format_tools(tools)
+            self._last_tool_payload = (len(formatted_tools), len(json.dumps(formatted_tools)))
             # Mark the last tool with cache_control so the full tool list is cached
             if formatted_tools:
                 formatted_tools[-1]["cache_control"] = {"type": "ephemeral"}

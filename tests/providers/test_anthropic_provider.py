@@ -241,3 +241,38 @@ class TestAnthropicAuthResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOversizedRequestHint(unittest.TestCase):
+    """A rejection about usage says nothing about what made the request big.
+
+    Turning on the host's own MCP server declares a second full tool set on
+    every turn; when the API then refuses the request, that is the difference
+    worth naming.
+    """
+
+    def _provider(self, tool_payload=None):
+        p = _make_provider()
+        if tool_payload is not None:
+            p._last_tool_payload = tool_payload
+        return p
+
+    def test_a_large_tool_set_is_named_on_a_usage_rejection(self):
+        p = self._provider((137, 60000))
+        hint = p._oversized_request_hint("You're out of extra usage. Add more at claude.ai/settings/usage")
+        self.assertIn("137 tools", hint)
+        self.assertIn("MCP", hint)
+
+    def test_an_unrelated_rejection_gets_no_hint(self):
+        p = self._provider((137, 60000))
+        self.assertEqual(p._oversized_request_hint("invalid model name"), "")
+
+    def test_a_small_tool_set_gets_no_hint(self):
+        # Without the second tool set the payload is not the story, and a
+        # wrong lead is worse than none.
+        p = self._provider((40, 15000))
+        self.assertEqual(p._oversized_request_hint("You're out of extra usage."), "")
+
+    def test_a_request_with_no_tools_gets_no_hint(self):
+        p = self._provider()
+        self.assertEqual(p._oversized_request_hint("You're out of extra usage."), "")
