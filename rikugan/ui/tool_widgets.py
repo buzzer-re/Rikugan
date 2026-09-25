@@ -22,7 +22,12 @@ from .qt_compat import (
     QWidget,
     qt_flags,
 )
-from .styles import blend_theme_color, get_chat_color_tokens, host_stylesheet, use_native_host_theme
+from .styles import (
+    blend_theme_color,
+    ensure_contrast,
+    get_chat_color_tokens,
+    host_stylesheet,
+)
 
 _MAX_ARGS_DISPLAY = 2000
 _MAX_RESULT_DISPLAY = 3000
@@ -1161,17 +1166,24 @@ class ToolGroupWidget(QFrame):
 class _PythonHighlighter(QSyntaxHighlighter):
     """Minimal VS Code-dark-style Python syntax highlighter."""
 
-    _RULES: ClassVar[list] = []  # built once in __init_subclass__ - see below
+    # Keyed by background: IDA drops our editor sheet on a light theme, so the
+    # same rule set has to be able to paint on either ground.
+    _RULES: ClassVar[dict[str, list]] = {}
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, background: str = "#1e1e2e"):
         super().__init__(parent)
-        if not _PythonHighlighter._RULES:
-            _PythonHighlighter._RULES = self._build_rules()
+        self._background = background
+        rules = _PythonHighlighter._RULES.get(background)
+        if rules is None:
+            rules = _PythonHighlighter._RULES[background] = self._build_rules(background)
+        self._rules = rules
 
     @staticmethod
-    def _fmt(color: str, bold: bool = False, italic: bool = False) -> QTextCharFormat:
+    def _fmt(color: str, background: str = "#1e1e2e", bold: bool = False, italic: bool = False) -> QTextCharFormat:
         f = QTextCharFormat()
-        f.setForeground(QColor(color))
+        # Code tokens are monospace and set solid, so the large-text threshold
+        # is enough and keeps the palette's hues apart.
+        f.setForeground(QColor(ensure_contrast(color, background, 3.5)))
         if bold:
             f.setFontWeight(QFont.Weight.Bold)
         if italic:
@@ -1179,9 +1191,9 @@ class _PythonHighlighter(QSyntaxHighlighter):
         return f
 
     @staticmethod
-    def _build_rules():
+    def _build_rules(background: str = "#1e1e2e"):
         rules = []
-        kw_fmt = _PythonHighlighter._fmt("#c586c0", bold=True)
+        kw_fmt = _PythonHighlighter._fmt("#c586c0", background, bold=True)
         for kw in (
             "and",
             "as",
@@ -1218,7 +1230,7 @@ class _PythonHighlighter(QSyntaxHighlighter):
         ):
             rules.append((_re.compile(rf"\b{kw}\b"), kw_fmt))
         # Built-ins
-        bi_fmt = _PythonHighlighter._fmt("#dcdcaa")
+        bi_fmt = _PythonHighlighter._fmt("#dcdcaa", background)
         for bi in (
             "print",
             "len",
@@ -1247,24 +1259,24 @@ class _PythonHighlighter(QSyntaxHighlighter):
         ):
             rules.append((_re.compile(rf"\b{bi}\b"), bi_fmt))
         # Numbers
-        rules.append((_re.compile(r"\b0[xX][0-9a-fA-F]+\b"), _PythonHighlighter._fmt("#b5cea8")))
-        rules.append((_re.compile(r"\b\d+\.?\d*\b"), _PythonHighlighter._fmt("#b5cea8")))
+        rules.append((_re.compile(r"\b0[xX][0-9a-fA-F]+\b"), _PythonHighlighter._fmt("#b5cea8", background)))
+        rules.append((_re.compile(r"\b\d+\.?\d*\b"), _PythonHighlighter._fmt("#b5cea8", background)))
         # Strings (single/double, including f/r/b prefixes)
-        str_fmt = _PythonHighlighter._fmt("#ce9178")
+        str_fmt = _PythonHighlighter._fmt("#ce9178", background)
         rules.append((_re.compile(r'[brfu]?""".*?"""', _re.DOTALL), str_fmt))
         rules.append((_re.compile(r"[brfu]?'''.*?'''", _re.DOTALL), str_fmt))
         rules.append((_re.compile(r'[brfu]?"[^"\n]*"'), str_fmt))
         rules.append((_re.compile(r"[brfu]?'[^'\n]*'"), str_fmt))
         # Comments
-        rules.append((_re.compile(r"#[^\n]*"), _PythonHighlighter._fmt("#6a9955", italic=True)))
+        rules.append((_re.compile(r"#[^\n]*"), _PythonHighlighter._fmt("#6a9955", background, italic=True)))
         # Decorators
-        rules.append((_re.compile(r"@\w+"), _PythonHighlighter._fmt("#dcdcaa")))
+        rules.append((_re.compile(r"@\w+"), _PythonHighlighter._fmt("#dcdcaa", background)))
         # self
-        rules.append((_re.compile(r"\bself\b"), _PythonHighlighter._fmt("#9cdcfe", italic=True)))
+        rules.append((_re.compile(r"\bself\b"), _PythonHighlighter._fmt("#9cdcfe", background, italic=True)))
         return rules
 
     def highlightBlock(self, text: str) -> None:
-        for pattern, fmt in _PythonHighlighter._RULES:
+        for pattern, fmt in self._rules:
             for m in pattern.finditer(text):
                 self.setFormat(m.start(), m.end() - m.start(), fmt)
 
@@ -1345,26 +1357,29 @@ class ToolApprovalWidget(QFrame):
         self._code_edit = QPlainTextEdit()
         self._code_edit.setReadOnly(True)
         self._code_edit.setPlainText(code)
+        # The preview owns its background in every host: left to IDA's native
+        # theme the editor comes out white while the highlighter paints in the
+        # dark palette, which is the one surface where unreadable code is also
+        # a safety question — this is the script the user is approving.
+        theme = get_chat_color_tokens(self)
+        code_bg = theme["code_bg"]
         self._code_edit.setStyleSheet(
-            host_stylesheet(
-                "QPlainTextEdit { "
-                "  color: #d4d4d4; background: #1e1e2e; "
-                "  font-family: 'Consolas', 'Monaco', 'Courier New', monospace; "
-                "  font-size: 11px; border: 1px solid #3c3c3c; border-radius: 4px; "
-                "  padding: 4px; "
-                "}"
-                "QScrollBar:vertical { width: 8px; background: #1e1e2e; }"
-                "QScrollBar::handle:vertical { background: #3c3c3c; border-radius: 4px; }"
-                "QScrollBar:horizontal { height: 8px; background: #1e1e2e; }"
-                "QScrollBar::handle:horizontal { background: #3c3c3c; border-radius: 4px; }"
-            )
+            "QPlainTextEdit { "
+            f"  color: {theme['text']}; background: {code_bg}; "
+            "  font-family: 'Consolas', 'Monaco', 'Courier New', monospace; "
+            f"  font-size: 11px; border: 1px solid {theme['border']}; border-radius: 4px; "
+            "  padding: 4px; "
+            "}"
+            f"QScrollBar:vertical {{ width: 8px; background: {code_bg}; }}"
+            f"QScrollBar::handle:vertical {{ background: {theme['border']}; border-radius: 4px; }}"
+            f"QScrollBar:horizontal {{ height: 8px; background: {code_bg}; }}"
+            f"QScrollBar::handle:horizontal {{ background: {theme['border']}; border-radius: 4px; }}"
         )
         self._code_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         visible_lines = min(len(lines), 15)
         line_height = self._code_edit.fontMetrics().lineSpacing()
         self._code_edit.setFixedHeight(line_height * visible_lines + 16)
-        if not use_native_host_theme():
-            self._highlighter = _PythonHighlighter(self._code_edit.document())
+        self._highlighter = _PythonHighlighter(self._code_edit.document(), background=code_bg)
         return self._code_edit
 
     def _build_approval_buttons(self) -> QHBoxLayout:

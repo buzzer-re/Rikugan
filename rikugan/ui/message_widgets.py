@@ -21,7 +21,7 @@ from .qt_compat import (
     QWidget,
     qt_flags,
 )
-from .styles import blend_theme_color, get_chat_color_tokens, host_stylesheet
+from .styles import blend_theme_color, ensure_contrast, get_chat_color_tokens, host_stylesheet
 
 _THINKING_PHRASES = [
     "analyzing binary structure...",
@@ -69,6 +69,15 @@ def _ensure_readable(fg: str, bg: str) -> str:
     if abs(_color_luminance(fg) - _color_luminance(bg)) >= 0.4:
         return fg
     return "#ececec" if _color_luminance(bg) < 0.5 else "#1a1a1a"
+
+
+def _role_color(color: str, source=None) -> str:
+    """A role label sits directly on the chat canvas, so resolve it there.
+
+    The two role hues come from a dark editor palette; on a light host theme
+    they land a shade or two above the background and read as a smudge.
+    """
+    return ensure_contrast(color, _theme_colors(source)["chat_canvas"], 4.5)
 
 
 def _theme_colors(source=None) -> dict[str, str]:
@@ -377,8 +386,8 @@ class UserMessageWidget(QFrame):
         self._role_label = QLabel("You")
         self._role_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_USER_ROLE}; font-weight: bold; font-size: 11px;",
-                f"color: {_USER_ROLE}; {_native_text_style(size=11, bold=True)}",
+                f"color: {_role_color(_USER_ROLE, parent or self)}; font-weight: bold; font-size: 11px;",
+                f"color: {_role_color(_USER_ROLE, parent or self)}; {_native_text_style(size=11, bold=True)}",
             )
         )
         layout.addWidget(self._role_label)
@@ -644,8 +653,8 @@ class AssistantMessageWidget(QFrame):
         self._role_label = QLabel("Rikugan")
         self._role_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_ASSISTANT_ROLE}; font-weight: bold; font-size: 11px;",
-                f"color: {_ASSISTANT_ROLE}; {_native_text_style(size=11, bold=True)}",
+                f"color: {_role_color(_ASSISTANT_ROLE, parent or self)}; font-weight: bold; font-size: 11px;",
+                f"color: {_role_color(_ASSISTANT_ROLE, parent or self)}; {_native_text_style(size=11, bold=True)}",
             )
         )
         layout.addWidget(self._role_label)
@@ -886,8 +895,8 @@ class ThinkingWidget(QFrame):
         self._star_label = QLabel(self._STAR_FRAMES[0])
         self._star_label.setStyleSheet(
             host_stylesheet(
-                "color: #dcdcaa; font-size: 14px;",
-                f"color: #dcdcaa; {_native_text_style(size=14)}",
+                f"color: {_role_color('#dcdcaa', parent or self)}; font-size: 14px;",
+                f"color: {_role_color('#dcdcaa', parent or self)}; {_native_text_style(size=14)}",
             )
         )
         self._star_label.setFixedWidth(18)
@@ -953,8 +962,8 @@ class QueuedMessageWidget(QFrame):
         self._role_label = QLabel("You")
         self._role_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_USER_ROLE}; font-weight: bold; font-size: 11px;",
-                f"color: {_USER_ROLE}; {_native_text_style(size=11, bold=True)}",
+                f"color: {_role_color(_USER_ROLE, parent or self)}; font-weight: bold; font-size: 11px;",
+                f"color: {_role_color(_USER_ROLE, parent or self)}; {_native_text_style(size=11, bold=True)}",
             )
         )
         content_layout.addWidget(self._role_label)
@@ -1348,8 +1357,8 @@ class ErrorMessageWidget(QFrame):
         self._header = QLabel("Error")
         self._header.setStyleSheet(
             host_stylesheet(
-                "color: #f44747; font-weight: bold; font-size: 11px;",
-                f"color: #f44747; {_native_text_style(size=11, bold=True)}",
+                f"color: {_role_color('#f44747', parent or self)}; font-weight: bold; font-size: 11px;",
+                f"color: {_role_color('#f44747', parent or self)}; {_native_text_style(size=11, bold=True)}",
             )
         )
         layout.addWidget(self._header)
@@ -1364,8 +1373,8 @@ class ErrorMessageWidget(QFrame):
         )
         self._content.setStyleSheet(
             host_stylesheet(
-                "color: #f44747; font-size: 12px;",
-                f"color: #f44747; {_native_text_style(size=12)}",
+                f"color: {_role_color('#f44747', parent or self)}; font-size: 12px;",
+                f"color: {_role_color('#f44747', parent or self)}; {_native_text_style(size=12)}",
             )
         )
         layout.addWidget(self._content)

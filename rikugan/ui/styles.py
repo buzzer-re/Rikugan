@@ -289,6 +289,12 @@ def host_stylesheet(custom_css: str, native_css: str = "") -> str:
     return native_css if use_native_host_theme() else custom_css
 
 
+# Stop / error accents are the one hue that cannot be derived from the host
+# palette — a host has no "danger" role — so the base tone is fixed here and
+# resolved against whatever surface it lands on.
+DANGER_RED = "#e05252"
+
+
 # Qt resolves the first family that exists; Menlo covers macOS, DejaVu Sans Mono
 # Linux, and Consolas Windows. Courier New is deliberately absent — it is what
 # the old "Consolas, Courier New" stack fell back to on macOS.
@@ -711,6 +717,45 @@ QTextEdit {
 # ---------------------------------------------------------------------------
 
 
+def _srgb_luminance(color: str) -> float:
+    """Relative luminance per WCAG, which weights the channels by eye response."""
+    h = color.lstrip("#")
+    if len(h) != 6:
+        return 0.5
+    out = []
+    for i in (0, 2, 4):
+        c = int(h[i : i + 2], 16) / 255.0
+        out.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]
+
+
+def contrast_ratio(fg: str, bg: str) -> float:
+    """WCAG contrast ratio between two colors, from 1.0 (equal) to 21.0."""
+    a, b = _srgb_luminance(fg), _srgb_luminance(bg)
+    hi, lo = max(a, b), min(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def ensure_contrast(fg: str, bg: str, minimum: float = 4.5) -> str:
+    """Push *fg* away from *bg* until it is readable on it.
+
+    Secondary text is derived by blending the host's text color toward its
+    background, which keeps a hierarchy on a dark theme but collapses on a
+    light one: the same blend that reads as dim grey on black becomes pale
+    grey on white. Rather than pick per-theme constants, walk the color back
+    toward black or white until it clears the threshold.
+    """
+    if contrast_ratio(fg, bg) >= minimum:
+        return fg
+    target = "#000000" if _srgb_luminance(bg) > 0.5 else "#ffffff"
+    candidate = fg
+    for step in range(1, 21):
+        candidate = blend_theme_color(fg, target, step / 20.0)
+        if contrast_ratio(candidate, bg) >= minimum:
+            return candidate
+    return target
+
+
 def _extended_tokens(source=None) -> dict[str, str]:
     """Chat tokens plus the extra shades and type sizes these surfaces need."""
     tokens = dict(get_chat_color_tokens(source))
@@ -726,6 +771,14 @@ def _extended_tokens(source=None) -> dict[str, str]:
         tokens["border_soft"] = blend_theme_color(tokens["border"], panel, 0.45)
         tokens["accent_soft"] = blend_theme_color(tokens["accent"], panel, 0.62)
         tokens["accent_deep"] = blend_theme_color(tokens["accent"], panel, 0.30)
+    # A light host collapses the blended shades: enforce a readable floor
+    # rather than trusting the blend. 4.5 is the WCAG threshold for body text;
+    # the faintest tier is held to the large-text threshold since it only ever
+    # carries short labels.
+    canvas = tokens["chat_canvas"]
+    tokens["muted"] = ensure_contrast(tokens["muted"], canvas, 4.5)
+    tokens["subtle"] = ensure_contrast(tokens["subtle"], canvas, 4.5)
+    tokens["faint"] = ensure_contrast(tokens["faint"], canvas, 3.5)
     tokens.update(get_host_font_tokens(source))
     return tokens
 
@@ -777,7 +830,8 @@ def build_chat_drawer_stylesheet(source=None) -> str:
         f"QLabel#chat_group_header {{ color: {t['faint']}; font-size: {t['font_small']}; "
         "background: transparent; padding: 6px 4px 3px 4px; }"
         f"QWidget#chat_sidebar_footer {{ border-top: 1px solid {t['border_soft']}; }}"
-        f"QToolButton#drawer_chip {{ background-color: {t['surface']}; color: {t['muted']}; "
+        f"QToolButton#drawer_chip {{ background-color: {t['surface']}; "
+        f"color: {ensure_contrast(t['muted'], t['surface'])}; "
         f"border: 1px solid {t['border']}; border-radius: 4px; padding: 4px 8px; "
         f"font-size: {t['font_small']}; }}"
         f"QToolButton#drawer_chip:hover {{ background-color: {t['surface_hi']}; color: {t['text']}; }}"
@@ -819,6 +873,8 @@ def build_welcome_stylesheet(source=None) -> str:
 def build_composer_stylesheet(source=None) -> str:
     """Return the stylesheet for the composer frame and its control row."""
     t = _extended_tokens(source)
+    send_glyph = ensure_contrast(t["accent_text"], t["accent"])
+    stop_glyph = ensure_contrast(DANGER_RED, t["surface_hi"])
     return (
         f"QWidget#composer {{ background-color: {_container_bg(t['panel'])}; }}"
         f"QFrame#composer_frame {{ background-color: {t['input_bg']}; border: 1px solid {t['border']}; "
@@ -830,15 +886,18 @@ def build_composer_stylesheet(source=None) -> str:
         f"QToolButton#composer_chip:hover {{ background-color: {t['surface_hi']}; color: {t['text']}; }}"
         f"QLabel#composer_model {{ color: {t['muted']}; font-size: {t['font_small']}; "
         f"background: transparent; font-family: {t['mono']}; }}"
-        f"QToolButton#composer_send {{ background-color: {t['accent_deep']}; color: {t['accent']}; "
-        f"border: 1px solid {t['accent_soft']}; border-radius: 4px; font-size: {t['font_base']}; }}"
-        f"QToolButton#composer_send:hover {{ background-color: {t['accent_soft']}; "
-        f"color: {t['accent_text']}; }}"
+        # The arrow sits on the accent itself, so its color has to be resolved
+        # against that fill: the old pairing put accent on a 70% accent ground,
+        # which all but vanished on a light host.
+        f"QToolButton#composer_send {{ background-color: {t['accent']}; color: {send_glyph}; "
+        f"border: 1px solid {t['accent']}; border-radius: 4px; font-size: {t['font_base']}; }}"
+        f"QToolButton#composer_send:hover {{ background-color: {t['accent_deep']}; "
+        f"color: {ensure_contrast(send_glyph, t['accent_deep'])}; }}"
         f"QToolButton#composer_send:disabled {{ background-color: {t['surface']}; color: {t['faint']}; "
         f"border-color: {t['border']}; }}"
-        f"QToolButton#composer_stop {{ background-color: {t['surface_hi']}; color: #f87171; "
-        f"border: 1px solid #6b3a3a; border-radius: 4px; font-size: {t['font_base']}; }}"
-        "QToolButton#composer_stop:hover { background-color: #6b3a3a; color: #ffffff; }"
+        f"QToolButton#composer_stop {{ background-color: {t['surface_hi']}; color: {stop_glyph}; "
+        f"border: 1px solid {stop_glyph}; border-radius: 4px; font-size: {t['font_base']}; }}"
+        f"QToolButton#composer_stop:hover {{ background-color: {stop_glyph}; color: {t['panel']}; }}"
     )
 
 
@@ -858,6 +917,7 @@ def build_context_bar_stylesheet(source=None) -> str:
         "background: transparent; }"
         f'QLabel#context_dot[state="running"] {{ color: #d7ba7d; font-size: {t["font_small"]}; '
         "background: transparent; }"
-        f'QLabel#context_dot[state="error"] {{ color: #f87171; font-size: {t["font_small"]}; '
+        f'QLabel#context_dot[state="error"] {{ color: {ensure_contrast(DANGER_RED, t["panel"], 3.5)}; '
+        f"font-size: {t['font_small']}; "
         "background: transparent; }"
     )
