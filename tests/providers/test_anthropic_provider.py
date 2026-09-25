@@ -387,3 +387,12 @@ class TestModelLimits(unittest.TestCase):
     def test_an_unknown_model_stays_conservative(self):
         # Guessing high would have the context manager overrun the window.
         self.assertEqual(self._limits("claude-something-new"), (200000, 8192))
+
+
+class TestOAuthHeaders(unittest.TestCase):
+    def test_the_client_is_identified(self):
+        from rikugan.providers.anthropic_provider import AnthropicProvider
+
+        headers = AnthropicProvider._oauth_headers()
+        self.assertEqual(headers["x-app"], "cli")
+        self.assertIn("oauth-2025-04-20", headers["anthropic-beta"])

@@ -181,14 +181,26 @@ class AnthropicProvider(LLMProvider):
             kwargs["timeout"] = 120.0  # 2min vs SDK default 10min
             if self._auth_type == "oauth":
                 kwargs["auth_token"] = self.api_key
-                kwargs["default_headers"] = {
-                    "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
-                }
+                kwargs["default_headers"] = self._oauth_headers()
                 self._client = anthropic.Anthropic(**kwargs)
             else:
                 kwargs["api_key"] = self.api_key
                 self._client = anthropic.Anthropic(**kwargs)
         return self._client
+
+    @staticmethod
+    def _oauth_headers() -> dict[str, str]:
+        """Headers a subscription token is accepted with.
+
+        Only sent on the OAuth path; an API key needs none of them and is
+        billed to API credits either way.
+        """
+        return {
+            "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
+            # Identifies which client the request came from. The API reads it
+            # when deciding what the usage is billed against.
+            "x-app": "cli",
+        }
 
     @property
     def name(self) -> str:
