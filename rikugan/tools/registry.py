@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
@@ -32,12 +32,25 @@ class ToolRegistry:
         pass ``idasync`` here; standalone/test environments omit it.
     """
 
-    def __init__(self, dispatch_wrapper: Callable | None = None) -> None:
+    def __init__(
+        self,
+        dispatch_wrapper: Callable | None = None,
+        marshal_policy: Callable[[ToolDefinition], bool] | None = None,
+    ) -> None:
+        """Create a registry.
+
+        *dispatch_wrapper* marshals a handler onto the host's main thread.
+        *marshal_policy* decides which tools need it; the default wraps every
+        tool, which is what IDA requires. A host whose analysis API is
+        thread-safe can narrow it so read-only work does not block the UI.
+        """
         self._tools: dict[str, ToolDefinition] = {}
+        self._shadowed: set[str] = set()
         self._schema_cache: list[dict[str, Any]] | None = None
         self._result_cache = ToolResultCache()
         self._capabilities: dict[str, bool] = {}
         self._dispatch_wrapper = dispatch_wrapper
+        self._marshal_policy = marshal_policy
 
     @staticmethod
     def _coerce_arguments(defn: ToolDefinition, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -108,6 +121,24 @@ class ToolRegistry:
             log_debug(f"Unregistered {len(to_remove)} tools with prefix {prefix!r}")
         return len(to_remove)
 
+    def set_shadowed(self, names: Iterable[str]) -> None:
+        """Hide *names* from the model while leaving them callable.
+
+        Every tool we declare is re-sent on every request, so a second tool set
+        covering the same ground is paid for on each turn. Shadowing drops the
+        superseded ones from the declaration without breaking a skill or a
+        replayed session that still names them.
+        """
+        wanted = {name for name in names if name in self._tools}
+        if wanted == self._shadowed:
+            return
+        self._shadowed = wanted
+        self._schema_cache = None
+        log_debug(f"Shadowing {len(wanted)} tools from the model")
+
+    def clear_shadowed(self) -> None:
+        self.set_shadowed(())
+
     def set_capabilities(self, capabilities: dict[str, bool]) -> None:
         """Declare which host capabilities are available (e.g. hexrays, ida_struct)."""
         self._capabilities.update(capabilities)
@@ -120,6 +151,10 @@ class ToolRegistry:
                 return False
         return True
 
+    def _visible(self, defn: ToolDefinition) -> bool:
+        """Whether the model is told about this tool."""
+        return defn.name not in self._shadowed and self._available(defn)
+
     def get(self, name: str) -> ToolDefinition | None:
         return self._tools.get(name)
 
@@ -127,11 +162,12 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def list_names(self) -> list[str]:
-        return list(self._tools.keys())
+        """Names the model can see — shadowed tools stay callable but unlisted."""
+        return [name for name in self._tools if name not in self._shadowed]
 
     def to_provider_format(self) -> list[dict[str, Any]]:
         if self._schema_cache is None:
-            self._schema_cache = [t.to_provider_format() for t in self._tools.values() if self._available(t)]
+            self._schema_cache = [t.to_provider_format() for t in self._tools.values() if self._visible(t)]
         return self._schema_cache
 
     def execute(self, name: str, arguments: dict[str, Any]) -> str:
@@ -157,7 +193,7 @@ class ToolRegistry:
         timeout = defn.timeout if defn.timeout is not None else _DEFAULT_TOOL_TIMEOUT
 
         handler = defn.handler
-        if self._dispatch_wrapper is not None:
+        if self._dispatch_wrapper is not None and (self._marshal_policy is None or self._marshal_policy(defn)):
             handler = self._dispatch_wrapper(handler)
 
         try:

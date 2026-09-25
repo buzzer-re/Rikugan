@@ -58,6 +58,48 @@ def _read_oauth_from_keychain() -> str | None:
         return None
 
 
+def _merge_adjacent_roles(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold runs of same-role messages into one, as the API requires.
+
+    Messages have to alternate user/assistant. A turn that fails leaves its
+    user message in the history with no reply, so a few failures in a row
+    build a run of user messages and every later request carries a malformed
+    conversation — a second, self-inflicted failure on top of the first.
+
+    Repairing it here rather than in the session keeps the user's own text on
+    screen: nothing is dropped, adjacent messages are joined.
+    """
+    merged: list[dict[str, Any]] = []
+    for msg in messages:
+        if merged and merged[-1]["role"] == msg["role"]:
+            merged[-1]["content"] = _join_content(merged[-1]["content"], msg["content"])
+            continue
+        merged.append({"role": msg["role"], "content": msg["content"]})
+    return merged
+
+
+def _join_content(left: Any, right: Any) -> Any:
+    """Join two message bodies, keeping block form when either side uses it."""
+    if isinstance(left, str) and isinstance(right, str):
+        return f"{left}\n\n{right}"
+    as_blocks = [
+        block if isinstance(block, dict) else {"type": "text", "text": str(block)}
+        for side in (left, right)
+        for block in (side if isinstance(side, list) else [{"type": "text", "text": side}])
+    ]
+    return as_blocks
+
+
+def _cache_marks(content: Any) -> int:
+    """How many cache_control breakpoints a message carries.
+
+    The API allows a fixed number per request, so the count is worth seeing.
+    """
+    if not isinstance(content, list):
+        return 0
+    return sum(1 for block in content if isinstance(block, dict) and block.get("cache_control"))
+
+
 def resolve_anthropic_auth(
     api_key: str = "",
     allow_keychain: bool = True,
@@ -139,14 +181,17 @@ class AnthropicProvider(LLMProvider):
             kwargs["timeout"] = 120.0  # 2min vs SDK default 10min
             if self._auth_type == "oauth":
                 kwargs["auth_token"] = self.api_key
-                kwargs["default_headers"] = {
-                    "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
-                }
+                kwargs["default_headers"] = self._oauth_headers()
                 self._client = anthropic.Anthropic(**kwargs)
             else:
                 kwargs["api_key"] = self.api_key
                 self._client = anthropic.Anthropic(**kwargs)
         return self._client
+
+    @staticmethod
+    def _oauth_headers() -> dict[str, str]:
+        """Headers an OAuth token is sent with."""
+        return {"anthropic-beta": "oauth-2025-04-20,claude-code-20250219"}
 
     @property
     def name(self) -> str:
@@ -178,8 +223,22 @@ class AnthropicProvider(LLMProvider):
 
     @staticmethod
     def _model_limits(model_id: str) -> tuple[int, int]:
-        """Return conservative provider-owned context/output limits."""
+        """Return the model's context window and output cap.
+
+        An unknown model used to fall through to 200K/8192, which is wrong in
+        both directions for the Claude 5 family: it holds a megatoken of
+        context and writes up to 128K. Under-reporting the window makes the
+        context manager compact a conversation that had six times the room it
+        thought, and the output cap truncated every long answer at 8K.
+        """
         model = model_id.lower()
+        # Claude 5 family: 1M context, 128K output.
+        if any(tag in model for tag in ("fable-5", "mythos-5", "opus-5", "sonnet-5")):
+            return 1000000, 128000
+        if "haiku-4-5" in model:
+            return 200000, 64000
+        if "sonnet-4-6" in model or "opus-4-6" in model or "opus-4-7" in model or "opus-4-8" in model:
+            return 1000000, 128000
         if "sonnet-4" in model or "3-7-sonnet" in model:
             return 200000, 64000
         if "opus-4" in model:
@@ -321,7 +380,7 @@ class AnthropicProvider(LLMProvider):
                         }
                     )
 
-        return formatted
+        return _merge_adjacent_roles(formatted)
 
     def _format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert OpenAI-style tool schemas to Anthropic format."""
@@ -371,8 +430,11 @@ class AnthropicProvider(LLMProvider):
             token_usage=usage,
         )
 
+    # A tool set this large is worth naming when the API turns a request away:
+    # it is re-sent every turn and is otherwise invisible from the message.
     def _handle_api_error(self, e: Exception) -> NoReturn:
         """Raise the appropriate Rikugan error from an Anthropic API error."""
+        self.dump_failed_request(str(e))
         try:
             anthropic = importlib.import_module("anthropic")
         except ImportError:
@@ -395,7 +457,7 @@ class AnthropicProvider(LLMProvider):
             msg = str(e)
             if "context" in msg.lower() or "token" in msg.lower():
                 raise ContextLengthError(str(e), provider="anthropic") from e
-            raise ProviderError(str(e), provider="anthropic") from e
+            raise ProviderError(msg, provider="anthropic") from e
         raise ProviderError(str(e), provider="anthropic") from e
 
     def _build_request_kwargs(
@@ -457,7 +519,66 @@ class AnthropicProvider(LLMProvider):
                     }
                 ]
 
+        self._last_request = kwargs
         return kwargs
+
+    def dump_failed_request(self, error: str, directory: str = "") -> str:
+        """Write the request that just failed, so it can be read rather than guessed at.
+
+        An API rejection names a symptom; what actually went over the wire is
+        the only thing that settles why. Tools go in verbatim because that is
+        usually what differs between a request that works and one that does
+        not. Message bodies are summarised: they carry the analysed binary's
+        contents, which is a lot of data and none of it is the question.
+        """
+        request = getattr(self, "_last_request", None)
+        if not request:
+            return ""
+        try:
+            if not directory:
+                from ..core.config import _default_config_dir
+
+                directory = _default_config_dir()
+            path = os.path.join(directory, "last_failed_request.json")
+            system = request.get("system") or []
+            payload = {
+                "error": error,
+                "model": request.get("model"),
+                "max_tokens": request.get("max_tokens"),
+                "auth_type": self._auth_type,
+                "system_blocks": [
+                    {
+                        "chars": len(b.get("text", "")),
+                        "cache_control": b.get("cache_control"),
+                        "head": b.get("text", "")[:200],
+                    }
+                    for b in system
+                ]
+                if isinstance(system, list)
+                else [{"chars": len(str(system)), "head": str(system)[:200]}],
+                "messages": [
+                    {
+                        "role": m.get("role"),
+                        "blocks": [c.get("type", "text") for c in m["content"]]
+                        if isinstance(m.get("content"), list)
+                        else ["str"],
+                        "chars": len(json.dumps(m.get("content", ""))),
+                        "cache_control": _cache_marks(m.get("content")),
+                    }
+                    for m in request.get("messages", [])
+                ],
+                "tool_count": len(request.get("tools", [])),
+                "tool_bytes": len(json.dumps(request.get("tools", []))),
+                "tools": request.get("tools", []),
+            }
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, default=str)
+            log_error(f"Wrote the failing request to {path}")
+            return path
+        except OSError as e:
+            log_debug(f"Could not write the failed request: {e}")
+            return ""
 
     def _call_api(self, client: Any, kwargs: dict[str, Any]) -> Any:
         """Invoke the Anthropic messages.create API."""

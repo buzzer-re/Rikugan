@@ -14,6 +14,15 @@ from .qt_compat import (
 )
 from .styles import build_input_area_stylesheet, host_stylesheet, use_native_host_theme
 
+PLACEHOLDER_IDLE = "Ask about this binary\u2026"
+PLACEHOLDER_BUSY = "Rikugan is thinking\u2026"
+
+# The composer starts one line tall and grows to this before it scrolls.
+_MIN_VISIBLE_LINES = 1
+_MAX_VISIBLE_LINES = 5
+# Vertical breathing room inside the editor, on top of the document margins.
+_INPUT_PADDING = 8
+
 
 class _SkillPopup(QFrame):
     """Lightweight autocomplete popup for /skill slugs.
@@ -102,10 +111,12 @@ class InputArea(QPlainTextEdit):
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("input_area")
-        self.setPlaceholderText("Ask about this binary... (/ for skills, /modify to patch)")
-        self.setMaximumHeight(100)
-        self.setMinimumHeight(40)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setPlaceholderText(PLACEHOLDER_IDLE)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Grow with the text instead of always reserving the maximum. An empty
+        # composer used to hold ~150px of a 420px-tall panel.
+        self.document().contentsChanged.connect(self._sync_height)
         self._enabled = True
         self._skill_slugs: list[str] = []
         self._popup: _SkillPopup | None = None
@@ -113,7 +124,24 @@ class InputArea(QPlainTextEdit):
         self._cancel_callback = None  # Callable[[], None]
         self._applying_theme = False
         self._theme_css = ""
+        self._flat = False
+        self._focus_callback = None  # Callable[[bool], None]
         self._apply_theme()
+        self._sync_height()
+
+    def _sync_height(self) -> None:
+        """Size the editor to its content, between one and a few lines."""
+        doc = self.document()
+        # QPlainTextDocumentLayout reports its height in lines, not pixels.
+        lines = max(_MIN_VISIBLE_LINES, int(doc.size().height()))
+        lines = min(lines, _MAX_VISIBLE_LINES)
+        frame = int(doc.documentMargin() * 2) + 2 * self.frameWidth() + _INPUT_PADDING
+        self.setFixedHeight(lines * self.fontMetrics().lineSpacing() + frame)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # Wrapping changes the line count, which changes the height we need.
+        self._sync_height()
 
     def set_submit_callback(self, callback) -> None:
         """Set the callback for submit (Enter key). Callback signature: (str) -> None."""
@@ -122,6 +150,28 @@ class InputArea(QPlainTextEdit):
     def set_cancel_callback(self, callback) -> None:
         """Set the callback for cancel (Escape key). Callback signature: () -> None."""
         self._cancel_callback = callback
+
+    def set_focus_callback(self, callback) -> None:
+        """Set the focus-change callback. Signature: (bool) -> None."""
+        self._focus_callback = callback
+
+    def set_flat(self, flat: bool) -> None:
+        """Drop the editor's own border so a parent frame can draw it."""
+        self._flat = flat
+        self._theme_css = ""
+        self._apply_theme()
+
+    def trigger_skill_autocomplete(self) -> None:
+        """Start a ``/`` skill command and open the autocomplete popup."""
+        if not self._enabled:
+            return
+        if not self.toPlainText().startswith("/"):
+            self.setPlainText("/")
+            cursor = self.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.setTextCursor(cursor)
+        self.setFocus()
+        self._check_autocomplete()
 
     def set_skill_slugs(self, slugs: list[str]) -> None:
         """Set the list of available skill slugs for autocomplete.
@@ -173,15 +223,22 @@ class InputArea(QPlainTextEdit):
         self._enabled = enabled
         self.setReadOnly(not enabled)
         if enabled:
-            self.setPlaceholderText("Ask about this binary... (/ for skills, /modify to patch)")
+            self.setPlaceholderText(PLACEHOLDER_IDLE)
         else:
-            self.setPlaceholderText("Rikugan is thinking...")
+            self.setPlaceholderText(PLACEHOLDER_BUSY)
 
     def _apply_theme(self) -> None:
-        """Apply host-aware styling to the text editor."""
-        if not use_native_host_theme() or self._applying_theme:
+        """Apply host-aware styling to the text editor.
+
+        Flat mode always applies its own stylesheet: the global dark theme
+        styles ``QPlainTextEdit#input_area`` with a border that would double up
+        with the composer frame's.
+        """
+        if self._applying_theme:
             return
-        css = build_input_area_stylesheet(self)
+        if not use_native_host_theme() and not self._flat:
+            return
+        css = build_input_area_stylesheet(self, flat=self._flat)
         if css == self._theme_css:
             return
         self._applying_theme = True
@@ -197,7 +254,7 @@ class InputArea(QPlainTextEdit):
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
-        if not use_native_host_theme():
+        if not use_native_host_theme() and not self._flat:
             return
         event_type = getattr(event, "type", lambda: None)()
         palette_change = getattr(QEvent, "PaletteChange", None)
@@ -205,6 +262,16 @@ class InputArea(QPlainTextEdit):
         parent_change = getattr(QEvent, "ParentChange", None)
         if event_type in {palette_change, app_palette_change, parent_change}:
             self._apply_theme()
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        if self._focus_callback is not None:
+            self._focus_callback(True)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        if self._focus_callback is not None:
+            self._focus_callback(False)
 
     # ------------------------------------------------------------------
     # Autocomplete

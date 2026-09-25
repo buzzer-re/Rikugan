@@ -13,6 +13,7 @@ from .message_widgets import (
     ErrorMessageWidget,
     ExplorationFindingWidget,
     ExplorationPhaseWidget,
+    NoticeMessageWidget,
     QueuedMessageWidget,
     ResearchNoteWidget,
     SubagentEventWidget,
@@ -38,6 +39,11 @@ _THINKING_MIN_DISPLAY_MS = 500
 # A single tool call is shown inline with its name visible;
 # only 2+ consecutive calls get grouped into a collapsible widget.
 _TOOL_GROUP_MIN_CALLS = 2
+
+# Pseudo-tools whose payload the chat renders as its own widget right after the
+# call. Showing the raw JSON arguments too made the user read the same question
+# twice, once unformatted.
+_HIDDEN_TOOL_CALLS = frozenset({"ask_user"})
 
 
 def _is_hidden_system_user_message(content: str) -> bool:
@@ -67,6 +73,13 @@ class ChatView(QScrollArea):
         self._layout.setSpacing(4)
         self._layout.addStretch()
         self.setWidget(self._container)
+
+        # Welcome screen shown while the chat has no messages yet. Its
+        # visibility is tracked explicitly: Qt's isVisible() is False for any
+        # widget whose ancestor is still hidden, so a chat restored into a
+        # background tab would never hide its welcome.
+        self._welcome: QWidget | None = None
+        self._welcome_visible = False
 
         # Track current assistant widget for streaming
         self._current_assistant: AssistantMessageWidget | None = None
@@ -106,6 +119,25 @@ class ChatView(QScrollArea):
         # Plain Python callbacks avoid extra Qt signal traffic in the hot chat path.
         self._tool_approval_callback = None
         self._user_answer_callback = None
+
+    def set_welcome_widget(self, widget: QWidget | None) -> None:
+        """Host a welcome screen above the messages.
+
+        It is hidden as soon as the first message widget is inserted and comes
+        back when the chat is cleared.
+        """
+        if self._welcome is not None:
+            self._layout.removeWidget(self._welcome)
+            self._welcome.deleteLater()
+        self._welcome = widget
+        if widget is None:
+            self._welcome_visible = False
+            return
+        # Only the trailing stretch means the chat has no messages yet.
+        self._welcome_visible = self._layout.count() <= 1
+        widget.setParent(self._container)
+        self._layout.insertWidget(0, widget)
+        widget.setVisible(self._welcome_visible)
 
     def set_tool_approval_callback(self, callback) -> None:
         self._tool_approval_callback = callback
@@ -151,7 +183,13 @@ class ChatView(QScrollArea):
 
     def _show_thinking(self) -> None:
         if self._thinking is not None:
+            # Already showing, but a deferred hide from the previous turn may
+            # still be armed — it would destroy the indicator mid-turn and leave
+            # the next turn with no progress at all.
+            self._thinking_hide_timer.stop()
+            self._thinking_shown_at = time.monotonic()
             return
+        self._thinking_hide_timer.stop()
         self._thinking = ThinkingWidget(parent=self._container)
         self._thinking_shown_at = time.monotonic()
         self._insert_widget(self._thinking)
@@ -265,29 +303,56 @@ class ChatView(QScrollArea):
         elif etype == TurnEventType.ERROR:
             self._hide_thinking()
             self._reset_tool_run()
+            # Close the in-progress bubble. A retry re-streams the answer from
+            # the start, and without this its deltas append to the partial text
+            # of the failed attempt.
+            self._current_assistant = None
             self._insert_widget(ErrorMessageWidget(event.error or "Unknown error", parent=self._container))
             self._scroll_to_bottom()
+        elif etype == TurnEventType.NOTICE:
+            # Informational only — the turn keeps going, so the thinking
+            # indicator and the current tool run are left alone.
+            self._insert_widget(NoticeMessageWidget(event.text, parent=self._container))
+            self._scroll_to_bottom()
+
+    def _new_assistant_widget(self) -> AssistantMessageWidget:
+        widget = AssistantMessageWidget(parent=self._container)
+        # Follow the typewriter reveal, which renders between deltas.
+        widget.set_render_callback(self._scroll_to_bottom)
+        self._insert_widget(widget)
+        return widget
 
     def _handle_text_event(self, event: TurnEvent) -> None:
         self._hide_thinking()
         self._reset_tool_run()
         if event.type == TurnEventType.TEXT_DELTA:
             if self._current_assistant is None:
-                self._current_assistant = AssistantMessageWidget(parent=self._container)
-                # Follow the typewriter reveal, which renders between deltas.
-                self._current_assistant.set_render_callback(self._scroll_to_bottom)
-                self._insert_widget(self._current_assistant)
+                self._current_assistant = self._new_assistant_widget()
             self._current_assistant.append_text(event.text)
             self._scroll_to_bottom()
         else:  # TEXT_DONE
-            if self._current_assistant is not None:
-                self._current_assistant.set_text(event.text)
+            if not event.text:
+                # An empty final text must not wipe what the deltas painted.
+                self._current_assistant = None
+                return
+            if self._current_assistant is None:
+                # Slash commands emit text_done with no preceding delta; without
+                # a widget to land in, their whole output used to be dropped.
+                self._current_assistant = self._new_assistant_widget()
+            self._current_assistant.set_text(event.text)
             self._current_assistant = None
+            self._scroll_to_bottom()
 
     def _handle_tool_event(self, event: TurnEvent) -> None:
         etype = event.type
         if etype == TurnEventType.TOOL_CALL_START:
             self._hide_thinking()
+            # Deliberately keep _current_assistant: a provider interleaves text
+            # and tool_use blocks within one assistant message, and the final
+            # text_done carries that whole message. Clearing it here split one
+            # message across two bubbles, each holding a fragment.
+            if event.tool_name in _HIDDEN_TOOL_CALLS:
+                return
             tw = ToolCallWidget(event.tool_name, event.tool_call_id, parent=self._container)
             self._tool_widgets[event.tool_call_id] = tw
             self._register_tool_widget(event.tool_name, event.tool_call_id, tw)
@@ -492,6 +557,8 @@ class ChatView(QScrollArea):
                     self._insert_widget(w)
 
                 for tc in msg.tool_calls:
+                    if tc.name in _HIDDEN_TOOL_CALLS:
+                        continue
                     tw = ToolCallWidget(tc.name, tc.id, parent=self._container)
                     try:
                         args_str = json.dumps(tc.arguments, indent=2)
@@ -515,6 +582,9 @@ class ChatView(QScrollArea):
     def clear_chat(self) -> None:
         self._force_hide_thinking()
         self._thinking_hide_timer.stop()
+        # Lift the welcome out of the layout so the sweep below doesn't delete it.
+        if self._welcome is not None:
+            self._layout.removeWidget(self._welcome)
         while self._layout.count() > 1:
             item = self._layout.takeAt(0)
             widget = item.widget()
@@ -525,11 +595,19 @@ class ChatView(QScrollArea):
         self._plan_view = None
         self._reset_tool_run()
         self._group_map.clear()
+        if self._welcome is not None:
+            self._layout.insertWidget(0, self._welcome)
+            self._welcome.setVisible(True)
+            self._welcome_visible = True
 
     def _insert_widget(self, widget: QWidget) -> None:
         """Insert before the stretch at the end."""
         idx = self._layout.count() - 1
         self._layout.insertWidget(idx, widget)
+        # O(1) hide: once a message exists the welcome stays gone until clear.
+        if self._welcome is not None and self._welcome_visible:
+            self._welcome.setVisible(False)
+            self._welcome_visible = False
 
     def resizeEvent(self, event) -> None:
         """Keep the container width pinned to the viewport width.
@@ -554,14 +632,25 @@ class ChatView(QScrollArea):
         sb = self.verticalScrollBar()
         self._follow_bottom = (sb.maximum() - value) <= 16
 
+    def _request_scroll(self) -> None:
+        """Arm the coalescing timer without restarting a pending one.
+
+        ``QTimer.start()`` restarts a running timer. The 30ms typewriter reveal
+        calls this continuously while streaming, so re-arming pushed the 80ms
+        deadline back forever and the view never scrolled until the stream
+        paused — the chat sat frozen while text piled up below the fold.
+        """
+        if not self._scroll_timer.isActive():
+            self._scroll_timer.start()
+
     def _scroll_to_bottom(self, force: bool = False) -> None:
         if force:
             # Explicit user action (send/queue): re-arm follow and pin to bottom.
             self._follow_bottom = True
             self._pending_force = True
-            self._scroll_timer.start()
+            self._request_scroll()
         elif self._follow_bottom:
-            self._scroll_timer.start()
+            self._request_scroll()
 
     def _set_scroll_value_silently(self, value: int) -> None:
         """setValue without it being read back as a user scroll."""

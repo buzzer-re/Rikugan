@@ -113,10 +113,11 @@ class TestProviderRequestDefaults(unittest.TestCase):
         from rikugan.core.types import Message, Role
         from rikugan.providers.anthropic_provider import AnthropicProvider
 
+        # Anthropic requires max_tokens on every request, unlike OpenAI.
         p = AnthropicProvider(api_key="test", model="claude-opus-4-7")
         kwargs = p._build_request_kwargs([Message(role=Role.USER, content="hi")], tools=None, system="")
 
-        self.assertEqual(kwargs["max_tokens"], 32000)
+        self.assertEqual(kwargs["max_tokens"], AnthropicProvider._model_limits("claude-opus-4-7")[1])
         self.assertNotIn("temperature", kwargs)
 
 

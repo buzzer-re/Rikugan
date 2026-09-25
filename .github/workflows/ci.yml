@@ -56,8 +56,12 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      # Qt needs these to start even with the offscreen platform plugin.
+      - name: Install Qt runtime libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1
+
       - name: Install deps
-        run: pip install pytest==9.0.3 tomli==2.4.1
+        run: pip install pytest==9.0.3 tomli==2.4.1 PySide6-Essentials==6.11.2
 
       - name: Run tests
         run: python -m pytest tests/ --tb=short -q

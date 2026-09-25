@@ -133,8 +133,19 @@ def md_to_html(text: str, source=None, theme: dict[str, str] | None = None) -> s
     for idx, block_html in enumerate(blocks):
         result = result.replace(f"\x00BLOCK{idx}\x00", block_html)
 
-    # Clean up runs of <br> left by paragraph joins (keep at most a blank line).
-    result = re.sub(r"(<br>\s*){3,}", "<br><br>", result)
+    return collapse_breaks(result)
+
+
+def collapse_breaks(html_text: str) -> str:
+    """Normalize runs of ``<br>`` in assembled HTML.
+
+    Streaming renders a message as a series of committed segments, so these runs
+    can straddle a segment boundary. Running this over the *joined* HTML — not
+    just each segment — is what keeps a streamed message the same height as the
+    one-shot render of the same text.
+    """
+    # Keep at most a blank line between paragraphs.
+    result = re.sub(r"(<br>\s*){3,}", "<br><br>", html_text)
     # Block-level elements (lists, tables, blockquotes, code/heading divs, rules)
     # carry their own margins, so collapse <br> runs sitting directly against
     # them to a single newline — otherwise they gain an extra blank line and the

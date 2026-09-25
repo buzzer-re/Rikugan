@@ -22,14 +22,29 @@ from .qt_compat import (
     QWidget,
     qt_flags,
 )
-from .styles import host_stylesheet, use_native_host_theme
+from .styles import (
+    blend_theme_color,
+    ensure_contrast,
+    get_chat_color_tokens,
+    host_stylesheet,
+)
 
 _MAX_ARGS_DISPLAY = 2000
 _MAX_RESULT_DISPLAY = 3000
 _TOOL_PREVIEW_LINES = 3
+# Fallbacks only: the live host palette is used whenever one is available, so a
+# tool row is not a black bar in IDA's light theme.
 _MUTED_TEXT = "#a8a8a8"
 _TOOL_BG = "#252526"
 _TOOL_BORDER = "#3c3c3c"
+
+
+def _muted_text(source=None) -> str:
+    """Secondary text color for the tool card, from the host palette."""
+    try:
+        return get_chat_color_tokens(source)["muted"]
+    except Exception:
+        return _MUTED_TEXT
 
 
 def _tool_card_css(
@@ -40,9 +55,13 @@ def _tool_card_css(
     radius: int = 6,
     object_name: str = "message_tool",
 ) -> str:
-    del source
-    border = accent or _TOOL_BORDER
-    bg = background or _TOOL_BG
+    try:
+        colors = get_chat_color_tokens(source)
+        default_border, default_bg = colors["border"], colors["tool_bg"]
+    except Exception:
+        default_border, default_bg = _TOOL_BORDER, _TOOL_BG
+    border = accent or default_border
+    bg = background or default_bg
     return f"QFrame#{object_name} {{ background-color: {bg}; border: 1px solid {border}; border-radius: {radius}px; }}"
 
 
@@ -142,31 +161,34 @@ for _t in (
     _TOOL_COLORS[_t] = "#4ec9b0"  # teal/cyan
 
 # Modification -> magenta/purple
-for _t in (
-    "rename_function",
-    "rename_variable",
-    "rename_address",
-    "set_type",
-    "set_function_prototype",
-    "set_comment",
-    "set_function_comment",
-    "create_struct",
-    "create_enum",
-    "nop_microcode",
-    "install_microcode_optimizer",
-    "redecompile_function",
-    "apply_struct_to_address",
-    "rename_single_variable",
-    "rename_multi_variables",
-    "retype_variable",
-    "define_types",
-    "declare_c_type",
-    "rename_data",
-    "set_local_variable_type",
-    "make_function_at",
-    "delete_comment",
-    "delete_function_comment",
-):
+_MUTATING_TOOLS = frozenset(
+    (
+        "rename_function",
+        "rename_variable",
+        "rename_address",
+        "set_type",
+        "set_function_prototype",
+        "set_comment",
+        "set_function_comment",
+        "create_struct",
+        "create_enum",
+        "nop_microcode",
+        "install_microcode_optimizer",
+        "redecompile_function",
+        "apply_struct_to_address",
+        "rename_single_variable",
+        "rename_multi_variables",
+        "retype_variable",
+        "define_types",
+        "declare_c_type",
+        "rename_data",
+        "set_local_variable_type",
+        "make_function_at",
+        "delete_comment",
+        "delete_function_comment",
+    )
+)
+for _t in _MUTATING_TOOLS:
     _TOOL_COLORS[_t] = "#c586c0"  # magenta/purple
 
 # Exploration -> gold/amber
@@ -192,9 +214,89 @@ _TOOL_GROUP_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
-def _tool_color(name: str) -> str:
-    """Look up tool color by base name (MCP prefix stripped)."""
-    return _TOOL_COLORS.get(_strip_mcp_prefix(name), _DEFAULT_TOOL_COLOR)
+_PAGE_TOTAL_RE = _re.compile(r"^([A-Za-z][A-Za-z ]*?)\s+\d+[-\u2013]\d+\s+of\s+(\d+)\s*:")
+_PAGE_NOUNS = {
+    "functions": "fns",
+    "xrefs": "refs",
+    "cross references": "refs",
+    "imports": "imports",
+    "exports": "exports",
+    "strings": "strings",
+    "segments": "segs",
+    "sections": "sects",
+}
+_LINE_COUNT_TOOLS = frozenset(
+    (
+        "decompile_function",
+        "read_disassembly",
+        "read_function_disassembly",
+        "fetch_disassembly",
+        "get_microcode",
+        "get_il",
+        "get_il_block",
+        "hexdump_address",
+    )
+)
+_CHECK = "\u2713"
+_CROSS = "\u2717"
+
+
+def _format_result_chip(tool_name: str, result: str, is_error: bool = False) -> str:
+    """Summarize a tool result as a short status chip for the call row.
+
+    Keeps the row one line tall: the shape of the result ("3 refs",
+    "148 lines") is what the reader needs; the payload stays behind the
+    expander.
+    """
+    if is_error:
+        return _CROSS
+
+    short_name = _strip_mcp_prefix(tool_name)
+    text = result or ""
+
+    page = _PAGE_TOTAL_RE.match(text.lstrip())
+    if page:
+        title = page.group(1).strip().lower()
+        try:
+            total = int(page.group(2))
+        except ValueError:
+            total = 0
+        noun = _PAGE_NOUNS.get(title, title)
+        return f"{total:,} {noun}"
+
+    if short_name in _MUTATING_TOOLS:
+        return f"{_CHECK} undoable"
+
+    if short_name in _LINE_COUNT_TOOLS and text.strip():
+        lines = text.count("\n") + 1
+        return f"{lines:,} lines"
+
+    return _CHECK
+
+
+def _tool_color(name: str, source=None) -> str:
+    """Category color for a tool, darkened for light host themes.
+
+    The palette is chosen for a dark background. On IDA's light default the
+    same teal or gold washes out against the card, so it is blended toward the
+    text color — keeping the category legible without changing its identity.
+    """
+    base = _TOOL_COLORS.get(_strip_mcp_prefix(name), _DEFAULT_TOOL_COLOR)
+    try:
+        colors = get_chat_color_tokens(source)
+    except Exception:
+        return base
+    if _is_light_surface(colors["tool_bg"]):
+        return blend_theme_color(base, "#000000", 0.45)
+    return base
+
+
+def _is_light_surface(color: str) -> bool:
+    value = color.lstrip("#")
+    if len(value) != 6:
+        return False
+    r, g, b = (int(value[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) >= 0.5
 
 
 def _format_tool_group_label(tool_names: list[str]) -> str:
@@ -507,6 +609,7 @@ class ToolCallWidget(QFrame):
         self._is_error = False
         self._expanded = False
         self._spin_idx = 0
+        self._result_done = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
@@ -520,7 +623,7 @@ class ToolCallWidget(QFrame):
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle bullet name summary status."""
         display_name = _strip_mcp_prefix(tool_name)
-        color = _tool_color(tool_name)
+        color = _tool_color(tool_name, self)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -555,8 +658,8 @@ class ToolCallWidget(QFrame):
         self._summary_label = QLabel("")
         self._summary_label.setStyleSheet(
             host_stylesheet(
-                "color: #a8a8a8; font-size: 11px; margin-left: 6px;",
-                f"color: {_MUTED_TEXT}; {_native_text_style(size=11)}",
+                f"color: {_muted_text(self)}; font-size: 11px; margin-left: 6px;",
+                f"color: {_muted_text(self)}; {_native_text_style(size=11)}",
             )
         )
         header_layout.addWidget(self._summary_label, 1)
@@ -599,8 +702,8 @@ class ToolCallWidget(QFrame):
         self._result_header = QLabel("Result:")
         self._result_header.setStyleSheet(
             host_stylesheet(
-                "color: #a8a8a8; font-size: 10px; font-weight: bold;",
-                f"color: {_MUTED_TEXT}; {_native_text_style(size=10, bold=True)}",
+                f"color: {_muted_text(self)}; font-size: 10px; font-weight: bold;",
+                f"color: {_muted_text(self)}; {_native_text_style(size=10, bold=True)}",
             )
         )
         self._result_header.setVisible(False)
@@ -635,7 +738,8 @@ class ToolCallWidget(QFrame):
         self.setUpdatesEnabled(False)
         self._expanded = not self._expanded
         self._detail_widget.setVisible(self._expanded)
-        self._preview_label.setVisible(not self._expanded and bool(self._args_text))
+        has_preview = bool(self._preview_label.text())
+        self._preview_label.setVisible(not self._expanded and has_preview)
         self._toggle_btn.setText("\u25bc" if self._expanded else "\u25b6")
         self.setUpdatesEnabled(True)
 
@@ -645,10 +749,13 @@ class ToolCallWidget(QFrame):
         summary = _format_tool_summary(self._tool_name, args_text)
         if summary:
             self._summary_label.setText(summary)
-        # Preview (truncated)
-        if args_text.strip():
+        # Preview (truncated) — only for tools whose args have no one-line
+        # summary, otherwise the row repeats itself over three lines.
+        if args_text.strip() and not summary:
             self._preview_label.setText(_truncate_preview(args_text.strip()))
             self._preview_label.setVisible(not self._expanded)
+        else:
+            self._preview_label.setVisible(False)
         # Full args in detail area
         display = args_text[:_MAX_ARGS_DISPLAY] + "..." if len(args_text) > _MAX_ARGS_DISPLAY else args_text
         self._args_label.setText(display)
@@ -672,7 +779,7 @@ class ToolCallWidget(QFrame):
                     f"color: #f44747; {_native_text_style(size=11, monospace=True)}",
                 )
             )
-            self._status_label.setText("\u2717")
+            self._status_label.setText(_format_result_chip(self._tool_name, result, True))
             self._status_label.setStyleSheet(
                 host_stylesheet(
                     "color: #f44747; font-size: 10px;",
@@ -691,18 +798,20 @@ class ToolCallWidget(QFrame):
             self._preview_label.setVisible(False)
             self._toggle_btn.setText("\u25bc")
         else:
-            self._status_label.setText("\u2713")
+            self._status_label.setText(_format_result_chip(self._tool_name, result, False))
             self._status_label.setStyleSheet(
                 host_stylesheet(
                     "color: #4ec9b0; font-size: 10px;",
                     f"color: #4ec9b0; {_native_text_style(size=10, bold=True)}",
                 )
             )
+        self._result_done = True
 
     def mark_done(self) -> None:
         self._stop_spinner()
-        if self._status_label.text() not in ("\u2713", "\u2717"):
-            self._status_label.setText("\u2713")
+        if not self._result_done:
+            self._result_done = True
+            self._status_label.setText(_CHECK)
             self._status_label.setStyleSheet(
                 host_stylesheet(
                     "color: #4ec9b0; font-size: 10px;",
@@ -751,7 +860,7 @@ class ToolBatchWidget(QFrame):
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle bullet name count status."""
         display_name = _strip_mcp_prefix(tool_name)
-        color = _tool_color(tool_name)
+        color = _tool_color(tool_name, self)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -786,8 +895,8 @@ class ToolBatchWidget(QFrame):
         self._count_label = QLabel("")
         self._count_label.setStyleSheet(
             host_stylesheet(
-                "color: #a8a8a8; font-size: 11px; margin-left: 6px;",
-                f"color: {_MUTED_TEXT}; {_native_text_style(size=11)}",
+                f"color: {_muted_text(self)}; font-size: 11px; margin-left: 6px;",
+                f"color: {_muted_text(self)}; {_native_text_style(size=11)}",
             )
         )
         header_layout.addWidget(self._count_label, 1)
@@ -930,6 +1039,7 @@ class ToolGroupWidget(QFrame):
         self._count = 0
         self._done = 0
         self._errors = 0
+        self._spin_idx = 0
         self._tool_names: list[str] = []
 
         layout = QVBoxLayout(self)
@@ -982,12 +1092,26 @@ class ToolGroupWidget(QFrame):
         self._tool_names.append(tool_name)
         self._body_layout.addWidget(widget)
         self._update_label()
+        # The group is collapsed by default, which hides every child's spinner.
+        # Without its own the panel showed no sign of life for the whole
+        # multi-tool phase — often the longest part of a turn.
+        _SharedSpinnerTimer.get().register(self)
+        self._update_status()
 
     def notify_result(self, is_error: bool = False) -> None:
         """Called when a tool inside this group finishes."""
         self._done += 1
         if is_error:
             self._errors += 1
+        if self._done >= self._count:
+            _SharedSpinnerTimer.get().unregister(self)
+        self._update_status()
+
+    def _spin_tick(self) -> None:
+        """Animate the header while calls are still in flight."""
+        if self._done >= self._count:
+            return
+        self._spin_idx = (self._spin_idx + 1) % len(ToolCallWidget._SPINNER_FRAMES)
         self._update_status()
 
     def _update_label(self) -> None:
@@ -1013,7 +1137,8 @@ class ToolGroupWidget(QFrame):
                     )
                 )
         else:
-            self._status_label.setText(f"{self._done}/{self._count}")
+            frame = ToolCallWidget._SPINNER_FRAMES[self._spin_idx]
+            self._status_label.setText(f"{frame} {self._done}/{self._count}")
             self._status_label.setStyleSheet(
                 host_stylesheet(
                     "color: #dcdcaa; font-size: 10px;",
@@ -1041,17 +1166,24 @@ class ToolGroupWidget(QFrame):
 class _PythonHighlighter(QSyntaxHighlighter):
     """Minimal VS Code-dark-style Python syntax highlighter."""
 
-    _RULES: ClassVar[list] = []  # built once in __init_subclass__ - see below
+    # Keyed by background: IDA drops our editor sheet on a light theme, so the
+    # same rule set has to be able to paint on either ground.
+    _RULES: ClassVar[dict[str, list]] = {}
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, background: str = "#1e1e2e"):
         super().__init__(parent)
-        if not _PythonHighlighter._RULES:
-            _PythonHighlighter._RULES = self._build_rules()
+        self._background = background
+        rules = _PythonHighlighter._RULES.get(background)
+        if rules is None:
+            rules = _PythonHighlighter._RULES[background] = self._build_rules(background)
+        self._rules = rules
 
     @staticmethod
-    def _fmt(color: str, bold: bool = False, italic: bool = False) -> QTextCharFormat:
+    def _fmt(color: str, background: str = "#1e1e2e", bold: bool = False, italic: bool = False) -> QTextCharFormat:
         f = QTextCharFormat()
-        f.setForeground(QColor(color))
+        # Code tokens are monospace and set solid, so the large-text threshold
+        # is enough and keeps the palette's hues apart.
+        f.setForeground(QColor(ensure_contrast(color, background, 3.5)))
         if bold:
             f.setFontWeight(QFont.Weight.Bold)
         if italic:
@@ -1059,9 +1191,9 @@ class _PythonHighlighter(QSyntaxHighlighter):
         return f
 
     @staticmethod
-    def _build_rules():
+    def _build_rules(background: str = "#1e1e2e"):
         rules = []
-        kw_fmt = _PythonHighlighter._fmt("#c586c0", bold=True)
+        kw_fmt = _PythonHighlighter._fmt("#c586c0", background, bold=True)
         for kw in (
             "and",
             "as",
@@ -1098,7 +1230,7 @@ class _PythonHighlighter(QSyntaxHighlighter):
         ):
             rules.append((_re.compile(rf"\b{kw}\b"), kw_fmt))
         # Built-ins
-        bi_fmt = _PythonHighlighter._fmt("#dcdcaa")
+        bi_fmt = _PythonHighlighter._fmt("#dcdcaa", background)
         for bi in (
             "print",
             "len",
@@ -1127,24 +1259,24 @@ class _PythonHighlighter(QSyntaxHighlighter):
         ):
             rules.append((_re.compile(rf"\b{bi}\b"), bi_fmt))
         # Numbers
-        rules.append((_re.compile(r"\b0[xX][0-9a-fA-F]+\b"), _PythonHighlighter._fmt("#b5cea8")))
-        rules.append((_re.compile(r"\b\d+\.?\d*\b"), _PythonHighlighter._fmt("#b5cea8")))
+        rules.append((_re.compile(r"\b0[xX][0-9a-fA-F]+\b"), _PythonHighlighter._fmt("#b5cea8", background)))
+        rules.append((_re.compile(r"\b\d+\.?\d*\b"), _PythonHighlighter._fmt("#b5cea8", background)))
         # Strings (single/double, including f/r/b prefixes)
-        str_fmt = _PythonHighlighter._fmt("#ce9178")
+        str_fmt = _PythonHighlighter._fmt("#ce9178", background)
         rules.append((_re.compile(r'[brfu]?""".*?"""', _re.DOTALL), str_fmt))
         rules.append((_re.compile(r"[brfu]?'''.*?'''", _re.DOTALL), str_fmt))
         rules.append((_re.compile(r'[brfu]?"[^"\n]*"'), str_fmt))
         rules.append((_re.compile(r"[brfu]?'[^'\n]*'"), str_fmt))
         # Comments
-        rules.append((_re.compile(r"#[^\n]*"), _PythonHighlighter._fmt("#6a9955", italic=True)))
+        rules.append((_re.compile(r"#[^\n]*"), _PythonHighlighter._fmt("#6a9955", background, italic=True)))
         # Decorators
-        rules.append((_re.compile(r"@\w+"), _PythonHighlighter._fmt("#dcdcaa")))
+        rules.append((_re.compile(r"@\w+"), _PythonHighlighter._fmt("#dcdcaa", background)))
         # self
-        rules.append((_re.compile(r"\bself\b"), _PythonHighlighter._fmt("#9cdcfe", italic=True)))
+        rules.append((_re.compile(r"\bself\b"), _PythonHighlighter._fmt("#9cdcfe", background, italic=True)))
         return rules
 
     def highlightBlock(self, text: str) -> None:
-        for pattern, fmt in _PythonHighlighter._RULES:
+        for pattern, fmt in self._rules:
             for m in pattern.finditer(text):
                 self.setFormat(m.start(), m.end() - m.start(), fmt)
 
@@ -1225,26 +1357,29 @@ class ToolApprovalWidget(QFrame):
         self._code_edit = QPlainTextEdit()
         self._code_edit.setReadOnly(True)
         self._code_edit.setPlainText(code)
+        # The preview owns its background in every host: left to IDA's native
+        # theme the editor comes out white while the highlighter paints in the
+        # dark palette, which is the one surface where unreadable code is also
+        # a safety question — this is the script the user is approving.
+        theme = get_chat_color_tokens(self)
+        code_bg = theme["code_bg"]
         self._code_edit.setStyleSheet(
-            host_stylesheet(
-                "QPlainTextEdit { "
-                "  color: #d4d4d4; background: #1e1e2e; "
-                "  font-family: 'Consolas', 'Monaco', 'Courier New', monospace; "
-                "  font-size: 11px; border: 1px solid #3c3c3c; border-radius: 4px; "
-                "  padding: 4px; "
-                "}"
-                "QScrollBar:vertical { width: 8px; background: #1e1e2e; }"
-                "QScrollBar::handle:vertical { background: #3c3c3c; border-radius: 4px; }"
-                "QScrollBar:horizontal { height: 8px; background: #1e1e2e; }"
-                "QScrollBar::handle:horizontal { background: #3c3c3c; border-radius: 4px; }"
-            )
+            "QPlainTextEdit { "
+            f"  color: {theme['text']}; background: {code_bg}; "
+            "  font-family: 'Consolas', 'Monaco', 'Courier New', monospace; "
+            f"  font-size: 11px; border: 1px solid {theme['border']}; border-radius: 4px; "
+            "  padding: 4px; "
+            "}"
+            f"QScrollBar:vertical {{ width: 8px; background: {code_bg}; }}"
+            f"QScrollBar::handle:vertical {{ background: {theme['border']}; border-radius: 4px; }}"
+            f"QScrollBar:horizontal {{ height: 8px; background: {code_bg}; }}"
+            f"QScrollBar::handle:horizontal {{ background: {theme['border']}; border-radius: 4px; }}"
         )
         self._code_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         visible_lines = min(len(lines), 15)
         line_height = self._code_edit.fontMetrics().lineSpacing()
         self._code_edit.setFixedHeight(line_height * visible_lines + 16)
-        if not use_native_host_theme():
-            self._highlighter = _PythonHighlighter(self._code_edit.document())
+        self._highlighter = _PythonHighlighter(self._code_edit.document(), background=code_bg)
         return self._code_edit
 
     def _build_approval_buttons(self) -> QHBoxLayout:

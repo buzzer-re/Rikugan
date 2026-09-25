@@ -499,6 +499,17 @@ class SettingsDialog(QDialog):
         storage_row.addWidget(self._session_storage_btn)
         behavior_form.addRow("Session storage:", storage_row)
 
+        from ..binja.native_mcp import DEFAULT_URL as _BN_MCP_DEFAULT_URL
+
+        self._binja_mcp_url_edit = QLineEdit(self._config.binja_mcp_url)
+        self._binja_mcp_url_edit.setPlaceholderText(f"Default: {_BN_MCP_DEFAULT_URL}")
+        self._binja_mcp_url_edit.setToolTip(
+            "Where Binary Ninja's own MCP server listens. Rikugan offers to use it\n"
+            "once per binary when a server actually answers at this address;\n"
+            "the toggle in the chat header turns it on and off afterwards."
+        )
+        behavior_form.addRow("Binary Ninja MCP URL:", self._binja_mcp_url_edit)
+
         self._explore_turns_spin = QSpinBox()
         self._explore_turns_spin.setRange(5, 200)
         self._explore_turns_spin.setValue(self._config.exploration_turn_limit)
@@ -929,6 +940,7 @@ class SettingsDialog(QDialog):
         self._config.restore_sessions_on_start = self._restore_sessions_cb.isChecked()
         self._config.dont_auto_load_chats = self._dont_auto_load_cb.isChecked()
         self._config.session_storage_dir = self._session_storage_edit.text().strip()
+        self._config.binja_mcp_url = self._binja_mcp_url_edit.text().strip()
         self._config.exploration_turn_limit = self._explore_turns_spin.value()
         self._config.max_retries = self._max_retries_spin.value()
         self._config.silent_retry_mode = self._silent_retry_cb.isChecked()

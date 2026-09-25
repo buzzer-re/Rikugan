@@ -25,5 +25,11 @@ SESSION_SCHEMA_VERSION = 1
 
 SKILLS_DIR_NAME = "skills"
 MCP_CONFIG_FILE = "mcp.json"
-MCP_TOOL_PREFIX = "mcp_"
+# Deliberately not "mcp_". The Anthropic API reserves names matching that
+# prefix exactly (one underscore) for its own MCP connector, which bills as a
+# premium feature — a request declaring one is refused outright on a
+# subscription token, with a message about extra usage that says nothing about
+# tool names. Verified against the live API: "mcp_x" is refused, "mcp__x",
+# "MCP_x", "mcp-x" and "bn_mcp_x" are all accepted.
+MCP_TOOL_PREFIX = "mcptool_"
 MCP_DEFAULT_TIMEOUT = 30.0

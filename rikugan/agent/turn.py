@@ -19,6 +19,10 @@ class TurnEventType(str, Enum):
     TURN_START = "turn_start"
     TURN_END = "turn_end"
     ERROR = "error"
+    # Informational: the turn produced its output and the run continues. Kept
+    # distinct from ERROR so "the answer was cut short" does not look like a
+    # failure and does not mark the tab as errored.
+    NOTICE = "notice"
     CANCELLED = "cancelled"
     USAGE_UPDATE = "usage_update"
     USER_QUESTION = "user_question"
@@ -117,6 +121,10 @@ class TurnEvent:
     @staticmethod
     def error_event(error: str) -> TurnEvent:
         return TurnEvent(type=TurnEventType.ERROR, error=error)
+
+    @staticmethod
+    def notice_event(text: str) -> TurnEvent:
+        return TurnEvent(type=TurnEventType.NOTICE, text=text)
 
     @staticmethod
     def cancelled_event() -> TurnEvent:

@@ -50,6 +50,26 @@ class RikuganConfig:
     dont_auto_load_chats: bool = False
     session_storage_dir: str = ""
     approve_mutations: bool = False  # require approval for mutating tools (rename, retype, etc.)
+    # Binary Ninja only. Its BinaryView API is thread-safe, so read-only tools
+    # run on the agent's background thread; marshalling them onto the UI thread
+    # froze the whole window for the length of every decompile. Mutations and
+    # UI-driving tools are still marshalled either way. Set False to send
+    # everything back through the main thread.
+    binja_background_tools: bool = True
+    # Binary Ninja 6.0 ships an MCP server plugin. When one is running Rikugan
+    # offers to use it, once per binary; the answer is remembered here, keyed by
+    # database instance id, so a binary is never asked twice.
+    binja_mcp_url: str = ""
+    binja_mcp_consent: dict[str, bool] = field(default_factory=dict)
+    # Binary Ninja names its MCP tools bn_*, so they collide with none of ours:
+    # left alone, turning the server on declares two full tool sets on every
+    # request, which is what the model provider refuses. So it is one set or
+    # the other — all of Rikugan's tools switch off while the host server runs,
+    # at the cost of patching, scripting and /undo tracking.
+    binja_mcp_replaces_builtins: bool = True
+    # Expose only the first N of Binary Ninja's MCP tools. 0 means all. Set it
+    # to find out whether a provider is refusing a request over its size.
+    binja_mcp_max_tools: int = 0
     exploration_turn_limit: int = 100  # max turns in exploration phase before forcing transition
     max_retries: int = 3  # max retries on rate-limit / transient API errors
     silent_retry_mode: bool = False  # show loading indicator instead of error messages on retry
@@ -184,6 +204,11 @@ class RikuganConfig:
             "dont_auto_load_chats",
             "session_storage_dir",
             "approve_mutations",
+            "binja_background_tools",
+            "binja_mcp_url",
+            "binja_mcp_consent",
+            "binja_mcp_replaces_builtins",
+            "binja_mcp_max_tools",
             "exploration_turn_limit",
             "max_retries",
             "silent_retry_mode",

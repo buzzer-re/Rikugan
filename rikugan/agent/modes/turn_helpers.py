@@ -52,22 +52,53 @@ def build_assistant_message(
     return msg
 
 
+# Terminal stop reasons that mean the turn ended normally. Both protocol
+# spellings matter: an Anthropic model ends a tool-calling turn with "tool_use"
+# and an OpenAI one with "tool_calls". Either is the happy path — reporting
+# "tool_use" as a failure put a red error under every successful turn.
+_NORMAL_STOP_REASONS = frozenset(
+    {
+        "stop",
+        "end_turn",
+        "stop_sequence",
+        "tool_use",
+        "tool_calls",
+        "function_call",
+        "completed",
+        "complete",
+        "success",
+    }
+)
+_TRUNCATED_STOP_REASONS = frozenset({"length", "max_tokens", "max_output_tokens", "output_limit"})
+_FILTERED_STOP_REASONS = frozenset({"content_filter", "safety", "blocked"})
+
+
 def finish_reason_notice(finish_reason: str | None) -> str:
     """Return a user-facing notice for non-final provider stop reasons."""
     if not finish_reason:
         return ""
     normalized = finish_reason.lower()
-    normal_reasons = {"stop", "end_turn", "tool_calls", "completed", "complete", "success"}
-    if normalized in normal_reasons:
+    if normalized in _NORMAL_STOP_REASONS:
         return ""
-    if normalized in {"length", "max_tokens", "max_output_tokens", "output_limit"}:
+    if normalized in _TRUNCATED_STOP_REASONS:
         return (
             "Model output stopped because the provider hit its output token limit. "
             "The answer may be incomplete; ask Rikugan to continue from the last point."
         )
-    if normalized in {"content_filter", "safety", "blocked"}:
+    if normalized in _FILTERED_STOP_REASONS:
         return f"Model output stopped early because the provider returned finish_reason={finish_reason!r}."
     return f"Model output stopped with provider finish_reason={finish_reason!r}."
+
+
+def finish_reason_event(finish_reason: str | None) -> TurnEvent | None:
+    """Return the event to surface for a stop reason, or None when it is normal.
+
+    These are informational: the turn produced its output and the loop carries
+    on, so they are notices rather than errors. A real failure raises
+    ``ProviderError`` and is reported separately.
+    """
+    notice = finish_reason_notice(finish_reason)
+    return TurnEvent.notice_event(notice) if notice else None
 
 
 def execute_single_turn(
@@ -96,9 +127,9 @@ def execute_single_turn(
 
     if assistant_text:
         yield TurnEvent.text_done(assistant_text)
-    notice = finish_reason_notice(finish_reason)
-    if notice:
-        yield TurnEvent.error_event(notice)
+    stop_notice = finish_reason_event(finish_reason)
+    if stop_notice is not None:
+        yield stop_notice
 
     assistant_msg = build_assistant_message(
         assistant_text,

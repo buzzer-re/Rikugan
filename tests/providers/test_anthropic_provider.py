@@ -66,8 +66,13 @@ class TestAnthropicFormatMessages(unittest.TestCase):
         self.assertEqual(content[1]["name"], "get_info")
         self.assertEqual(content[1]["input"], {"x": 1})
 
-    def test_tool_results_become_user_messages(self):
-        """Anthropic maps tool results to user messages with tool_result content."""
+    def test_tool_results_become_one_user_message(self):
+        """All results from one assistant turn belong in a single user message.
+
+        Emitting one message per result put two user messages back to back,
+        which breaks the alternation the API requires — and the prompt asks
+        the model to batch tool calls, so that was every parallel turn.
+        """
         p = _make_provider()
         msgs = [Message(
             role=Role.TOOL,
@@ -77,16 +82,15 @@ class TestAnthropicFormatMessages(unittest.TestCase):
             ],
         )]
         result = p._format_messages(msgs)
-        self.assertEqual(len(result), 2)
-        for r in result:
-            self.assertEqual(r["role"], "user")
-            self.assertIsInstance(r["content"], list)
-            self.assertEqual(r["content"][0]["type"], "tool_result")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["role"], "user")
+        blocks = result[0]["content"]
+        self.assertEqual([b["type"] for b in blocks], ["tool_result", "tool_result"])
 
-        self.assertEqual(result[0]["content"][0]["tool_use_id"], "tc_1")
-        self.assertFalse(result[0]["content"][0]["is_error"])
-        self.assertEqual(result[1]["content"][0]["tool_use_id"], "tc_2")
-        self.assertTrue(result[1]["content"][0]["is_error"])
+        self.assertEqual(blocks[0]["tool_use_id"], "tc_1")
+        self.assertFalse(blocks[0]["is_error"])
+        self.assertEqual(blocks[1]["tool_use_id"], "tc_2")
+        self.assertTrue(blocks[1]["is_error"])
 
     def test_full_conversation(self):
         p = _make_provider()
@@ -241,3 +245,166 @@ class TestAnthropicAuthResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFailedRequestDump(unittest.TestCase):
+    """An API rejection names a symptom; the request settles the cause."""
+
+    def _provider_with_request(self, tools=None):
+        p = _make_provider()
+        p._last_request = {
+            "model": "claude-test",
+            "max_tokens": 8192,
+            "system": [{"type": "text", "text": "prompt", "cache_control": {"type": "ephemeral"}}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            "tools": tools if tools is not None else [{"name": "t", "input_schema": {"type": "object"}}],
+        }
+        return p
+
+    def test_it_writes_the_tools_verbatim(self):
+        import json as _json
+        import tempfile
+
+        tools = [{"name": "mcp_x_a", "description": "d", "input_schema": {"type": "object", "properties": {}}}]
+        p = self._provider_with_request(tools)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = p.dump_failed_request("boom", directory=tmp)
+            self.assertTrue(path)
+            with open(path, encoding="utf-8") as f:
+                data = _json.load(f)
+        # Tools are what usually differ between a request that works and one
+        # that does not, so they are not summarised.
+        self.assertEqual(data["tools"], tools)
+        self.assertEqual(data["tool_count"], 1)
+        self.assertEqual(data["error"], "boom")
+
+    def test_message_bodies_are_summarised_not_copied(self):
+        import tempfile
+
+        p = self._provider_with_request()
+        p._last_request["messages"] = [
+            {"role": "user", "content": [{"type": "text", "text": "SECRET-BINARY-STRING" * 100}]}
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = p.dump_failed_request("boom", directory=tmp)
+            with open(path, encoding="utf-8") as f:
+                raw = f.read()
+        self.assertNotIn("SECRET-BINARY-STRING", raw)
+        self.assertIn('"blocks"', raw)
+
+    def test_nothing_is_written_when_no_request_was_built(self):
+        p = _make_provider()
+        self.assertEqual(p.dump_failed_request("boom"), "")
+
+
+class TestCacheMarks(unittest.TestCase):
+    def test_it_counts_breakpoints_in_a_block_list(self):
+        from rikugan.providers.anthropic_provider import _cache_marks
+
+        content = [{"type": "text"}, {"type": "text", "cache_control": {"type": "ephemeral"}}]
+        self.assertEqual(_cache_marks(content), 1)
+
+    def test_a_plain_string_carries_none(self):
+        from rikugan.providers.anthropic_provider import _cache_marks
+
+        self.assertEqual(_cache_marks("hello"), 0)
+
+
+class TestRoleAlternation(unittest.TestCase):
+    """The API requires alternating roles; failed turns break that.
+
+    A turn that errors leaves its user message in the history with no reply,
+    so a run of failures builds a run of user messages and every later
+    request carries a malformed conversation.
+    """
+
+    def _formatted(self, messages):
+        return _make_provider()._format_messages(messages)
+
+    def test_a_run_of_user_messages_is_folded_into_one(self):
+        out = self._formatted([Message(role=Role.USER, content=f"hello {i}") for i in range(6)])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["role"], "user")
+        # Nothing the user typed is discarded.
+        for i in range(6):
+            self.assertIn(f"hello {i}", out[0]["content"])
+
+    def test_alternating_history_is_untouched(self):
+        out = self._formatted(
+            [
+                Message(role=Role.USER, content="a"),
+                Message(role=Role.ASSISTANT, content="b"),
+                Message(role=Role.USER, content="c"),
+            ]
+        )
+        self.assertEqual([m["role"] for m in out], ["user", "assistant", "user"])
+
+    def test_roles_always_alternate_after_folding(self):
+        out = self._formatted(
+            [
+                Message(role=Role.USER, content="hell"),
+                Message(role=Role.USER, content="hello"),
+                Message(role=Role.ASSISTANT, content="hi"),
+                Message(role=Role.USER, content="hello"),
+                Message(role=Role.USER, content="hello"),
+                Message(role=Role.USER, content="hello"),
+            ]
+        )
+        roles = [m["role"] for m in out]
+        self.assertEqual(roles, ["user", "assistant", "user"])
+        for a, b in zip(roles, roles[1:], strict=False):
+            self.assertNotEqual(a, b)
+
+    def test_block_and_string_bodies_join_without_loss(self):
+        out = self._formatted(
+            [
+                Message(role=Role.ASSISTANT, content="text", tool_calls=[ToolCall(id="1", name="t", arguments={})]),
+                Message(role=Role.ASSISTANT, content="more"),
+            ]
+        )
+        self.assertEqual(len(out), 1)
+        kinds = [b["type"] for b in out[0]["content"]]
+        self.assertIn("tool_use", kinds)
+        self.assertIn("text", kinds)
+
+
+class TestModelLimits(unittest.TestCase):
+    """An unknown model fell through to 200K/8192, wrong in both directions."""
+
+    def _limits(self, model):
+        from rikugan.providers.anthropic_provider import AnthropicProvider
+
+        return AnthropicProvider._model_limits(model)
+
+    def test_the_claude_5_family_gets_its_real_limits(self):
+        for model in ("claude-sonnet-5", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"):
+            with self.subTest(model=model):
+                self.assertEqual(self._limits(model), (1000000, 128000))
+
+    def test_haiku_4_5_keeps_its_smaller_window(self):
+        self.assertEqual(self._limits("claude-haiku-4-5")[0], 200000)
+
+    def test_an_unknown_model_stays_conservative(self):
+        # Guessing high would have the context manager overrun the window.
+        self.assertEqual(self._limits("claude-something-new"), (200000, 8192))
+
+
+class TestOAuthHeaders(unittest.TestCase):
+    def test_the_oauth_beta_flags_are_sent(self):
+        from rikugan.providers.anthropic_provider import AnthropicProvider
+
+        headers = AnthropicProvider._oauth_headers()
+        self.assertIn("oauth-2025-04-20", headers["anthropic-beta"])
+
+    def test_the_client_is_not_disguised(self):
+        """No x-app / User-Agent spoofing: it was never what was wrong.
+
+        The 400 came from tool names under the reserved "mcp_" prefix, which
+        the API bills as its own MCP connector. Renaming them fixes it, so
+        there is nothing to gain by claiming to be a different client.
+        """
+        from rikugan.providers.anthropic_provider import AnthropicProvider
+
+        headers = AnthropicProvider._oauth_headers()
+        self.assertNotIn("x-app", headers)
+        self.assertNotIn("User-Agent", headers)

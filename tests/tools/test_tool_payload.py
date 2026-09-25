@@ -1,0 +1,234 @@
+"""What the model is told about: tool payload size and readable contrast.
+
+Enabling Binary Ninja's own MCP server declares 75 further tools, named
+``bn_*`` so they collide with none of Rikugan's. Left alone that sends two
+full tool sets on every turn, which is what made the API refuse the request.
+"""
+
+from __future__ import annotations
+
+import re
+import unittest
+
+from rikugan.binja import native_mcp
+from rikugan.constants import MCP_TOOL_PREFIX
+from rikugan.mcp.bridge import _MAX_TOOL_DESCRIPTION, _MAX_TOOL_NAME, describe_payload, register_mcp_tools
+from rikugan.mcp.config import MCPServerConfig
+from rikugan.tools.base import ToolDefinition
+from rikugan.tools.registry import ToolRegistry
+
+# The API reserves "mcp_", so the real prefix is what these must exercise.
+PREFIX = f"{MCP_TOOL_PREFIX}binaryninja_"
+
+
+def _defn(name: str, mutating: bool = False) -> ToolDefinition:
+    return ToolDefinition(
+        name=name,
+        description=f"does {name}",
+        parameters=[],
+        category="test",
+        handler=lambda **kw: name,
+        mutating=mutating,
+    )
+
+
+class _FakeTool:
+    def __init__(self, name, description="", input_schema=None):
+        self.name = name
+        self.description = description
+        self.input_schema = input_schema or {}
+
+
+class _FakeClient:
+    def __init__(self, tools):
+        self.name = "binaryninja"
+        self._tools = tools
+
+    def get_tools(self):
+        return self._tools
+
+    def call_tool(self, name, arguments):
+        return f"called {name}"
+
+
+class TestShadowing(unittest.TestCase):
+    def setUp(self):
+        self.registry = ToolRegistry()
+        self.registry.register(_defn("decompile_function"))
+        self.registry.register(_defn("rename_function", mutating=True))
+
+    def test_a_shadowed_tool_is_not_declared_to_the_model(self):
+        self.registry.set_shadowed(["decompile_function"])
+        declared = {t["function"]["name"] for t in self.registry.to_provider_format()}
+        self.assertNotIn("decompile_function", declared)
+        self.assertIn("rename_function", declared)
+        self.assertNotIn("decompile_function", self.registry.list_names())
+
+    def test_a_shadowed_tool_still_runs(self):
+        # A saved session or a skill may still name it; hiding it from the
+        # declaration must not turn a replay into a ToolNotFoundError.
+        self.registry.set_shadowed(["decompile_function"])
+        self.assertEqual(self.registry.execute("decompile_function", {}), "decompile_function")
+
+    def test_clearing_brings_the_tool_back(self):
+        self.registry.set_shadowed(["decompile_function"])
+        self.registry.clear_shadowed()
+        self.assertIn("decompile_function", self.registry.list_names())
+
+    def test_shadowing_invalidates_the_schema_cache(self):
+        before = {t["function"]["name"] for t in self.registry.to_provider_format()}
+        self.assertIn("decompile_function", before)
+        self.registry.set_shadowed(["decompile_function"])
+        after = {t["function"]["name"] for t in self.registry.to_provider_format()}
+        self.assertNotEqual(before, after)
+
+
+class TestSupersededBuiltins(unittest.TestCase):
+    def test_every_rikugan_tool_stands_down(self):
+        registry = ToolRegistry()
+        registry.register(_defn("list_functions"))
+        registry.register(_defn("rename_function", mutating=True))
+        registry.register(_defn("execute_python", mutating=True))
+        registry.register(_defn(f"{PREFIX}bn_function_list"))
+
+        superseded = native_mcp.superseded_builtins(registry)
+
+        # It is one tool set or the other: declaring both on every request is
+        # what made the API refuse it.
+        self.assertEqual(
+            sorted(superseded),
+            ["execute_python", "list_functions", "rename_function"],
+        )
+
+    def test_the_host_server_never_supersedes_itself(self):
+        registry = ToolRegistry()
+        registry.register(_defn(f"{PREFIX}bn_function_list"))
+        self.assertEqual(native_mcp.superseded_builtins(registry), [])
+
+    def test_the_declaration_falls_back_to_the_host_set_alone(self):
+        registry = ToolRegistry()
+        for i in range(30):
+            registry.register(_defn(f"read_{i}"))
+        for i in range(10):
+            registry.register(_defn(f"write_{i}", mutating=True))
+        for i in range(75):
+            registry.register(_defn(f"{PREFIX}bn_{i}"))
+
+        both = len(registry.to_provider_format())
+        registry.set_shadowed(native_mcp.superseded_builtins(registry))
+        after = len(registry.to_provider_format())
+
+        self.assertEqual(both, 115)
+        self.assertEqual(after, 75)
+
+
+class TestBridgePayload(unittest.TestCase):
+    def test_a_long_description_is_clipped(self):
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool("bn_info", "word " * 400)])
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        defn = registry.get(f"{PREFIX}bn_info")
+        assert defn is not None
+        # Every declared tool is re-sent each turn, so a server's prose is a
+        # per-turn cost; the prefix leaves room for it.
+        self.assertLess(len(defn.description), _MAX_TOOL_DESCRIPTION + 40)
+        self.assertTrue(defn.description.endswith("…"))
+
+    def test_a_short_description_is_left_alone(self):
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool("bn_info", "Return binary metadata.")])
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        defn = registry.get(f"{PREFIX}bn_info")
+        assert defn is not None
+        self.assertTrue(defn.description.endswith("Return binary metadata."))
+
+    def test_a_name_the_providers_would_reject_is_skipped(self):
+        registry = ToolRegistry()
+        long_name = "bn_" + "x" * _MAX_TOOL_NAME
+        client = _FakeClient([_FakeTool(long_name, "x"), _FakeTool("bn_ok", "x")])
+        count = register_mcp_tools(client, registry, prefix=PREFIX)
+        self.assertEqual(count, 1)
+        self.assertEqual(registry.list_names(), [f"{PREFIX}bn_ok"])
+
+    def test_a_name_with_illegal_characters_is_skipped(self):
+        # Both Anthropic and OpenAI accept only [a-zA-Z0-9_-]; relaying one
+        # through would fail the whole request, not just that tool.
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool("bn.info", "x"), _FakeTool("bn ok", "x"), _FakeTool("bn_ok", "x")])
+        count = register_mcp_tools(client, registry, prefix=PREFIX)
+        self.assertEqual(count, 1)
+
+    def test_a_type_outside_json_schema_falls_back(self):
+        # A schema built from $ref or anyOf has no plain type.
+        registry = ToolRegistry()
+        schema = {"properties": {"addr": {"type": "any"}, "n": {"type": "integer"}}}
+        client = _FakeClient([_FakeTool("bn_read", "x", schema)])
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        props = registry.get(f"{PREFIX}bn_read").to_json_schema()["properties"]
+        self.assertEqual(props["addr"]["type"], "string")
+        self.assertEqual(props["n"]["type"], "integer")
+
+    def test_the_server_may_ask_for_a_tighter_clip(self):
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool("bn_info", "word " * 200)])
+        client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp", description_limit=30)
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        defn = registry.get(f"{PREFIX}bn_info")
+        assert defn is not None
+        self.assertLess(len(defn.description), 80)
+
+    def test_a_cap_exposes_only_the_first_n_tools(self):
+        # Halving the tool set is how you find out whether a provider is
+        # refusing a request over its size, without having to guess.
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool(f"bn_{i}", "x") for i in range(75)])
+        client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp", max_tools=10)
+        count = register_mcp_tools(client, registry, prefix=PREFIX)
+        self.assertEqual(count, 10)
+
+    def test_no_cap_exposes_everything(self):
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool(f"bn_{i}", "x") for i in range(75)])
+        client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp")
+        self.assertEqual(register_mcp_tools(client, registry, prefix=PREFIX), 75)
+
+    def test_describe_payload_reports_what_is_sent(self):
+        registry = ToolRegistry()
+        registry.register(_defn("a"))
+        self.assertIn("1 tools declared", describe_payload(registry))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestReservedToolNamePrefix(unittest.TestCase):
+    """The API reserves "mcp_" for its own MCP connector.
+
+    A tool declared under that prefix is billed as a premium connector and the
+    request is refused outright on a subscription token — with a message about
+    extra usage that never mentions tool names. Verified against the live API:
+    "mcp_x" is refused; "mcp__x", "MCP_x", "mcp-x" and "bn_mcp_x" are accepted.
+    """
+
+    def test_the_bridge_prefix_avoids_the_reserved_one(self):
+        self.assertIsNone(
+            re.match(r"^mcp_[^_]", MCP_TOOL_PREFIX),
+            f"{MCP_TOOL_PREFIX!r} matches the prefix the API reserves",
+        )
+
+    def test_registered_tool_names_avoid_it_too(self):
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool("bn_info", "x"), _FakeTool("bn_read", "x")])
+        register_mcp_tools(client, registry, prefix=PREFIX)
+        for name in registry.list_names():
+            with self.subTest(name=name):
+                self.assertIsNone(re.match(r"^mcp_[^_]", name))
+
+    def test_the_prompt_prefix_matches_the_bridge(self):
+        # The prompt keys its Binary Ninja section off this prefix; a mismatch
+        # would silently stop the guidance ever being included.
+        from rikugan.agent.prompts.binja import NATIVE_MCP_TOOL_PREFIX
+
+        self.assertEqual(NATIVE_MCP_TOOL_PREFIX, PREFIX)
+        self.assertEqual(native_mcp.tool_prefix(), PREFIX)

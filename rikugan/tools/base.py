@@ -42,6 +42,10 @@ class ParameterSchema:
     default: Any = None
     enum: list[Any] | None = None
     items: dict[str, Any] | None = None
+    # A parameter whose shape cannot be expressed by the fields above — a
+    # nested object, a union — carries its own already-sanitized schema and is
+    # emitted as-is. Set by the MCP bridge; native tools leave it None.
+    schema: dict[str, Any] | None = None
 
 
 @dataclass
@@ -61,14 +65,17 @@ class ToolDefinition:
         required: list[str] = []
 
         for param in self.parameters:
-            prop: dict[str, Any] = {"type": param.type}
-            if param.description:
-                prop["description"] = param.description
-            if param.enum:
-                prop["enum"] = param.enum
-            if param.items:
-                prop["items"] = param.items
-            properties[param.name] = prop
+            if param.schema is not None:
+                properties[param.name] = param.schema
+            else:
+                prop: dict[str, Any] = {"type": param.type}
+                if param.description:
+                    prop["description"] = param.description
+                if param.enum:
+                    prop["enum"] = param.enum
+                if param.items:
+                    prop["items"] = param.items
+                properties[param.name] = prop
             if param.required:
                 required.append(param.name)
 

@@ -284,10 +284,26 @@ class TestAgentLoop(unittest.TestCase):
         loop = self._make_loop(provider)
 
         events = list(loop.run("Long answer please"))
-        warnings = [e for e in events if e.type == TurnEventType.ERROR]
+        # Truncation is informational: the answer arrived, just cut short. It is
+        # a notice so it neither looks like nor counts as a failure.
+        notices = [e for e in events if e.type == TurnEventType.NOTICE]
 
-        self.assertTrue(warnings)
-        self.assertIn("output token limit", warnings[0].error)
+        self.assertTrue(notices)
+        self.assertIn("output token limit", notices[0].text)
+        self.assertEqual([], [e for e in events if e.type == TurnEventType.ERROR])
+
+    def test_normal_stop_reasons_produce_no_banner(self):
+        """A tool-calling turn ends with 'tool_use' on Anthropic and
+        'tool_calls' on OpenAI. Neither is a failure."""
+        for reason in ("tool_use", "tool_calls", "end_turn", "stop", "stop_sequence", "function_call"):
+            with self.subTest(finish_reason=reason):
+                provider = MockProvider(responses=[_text_response_with_finish_reason("Done", reason)])
+                loop = self._make_loop(provider)
+
+                events = list(loop.run("Analyze this"))
+
+                self.assertEqual([], [e for e in events if e.type == TurnEventType.ERROR])
+                self.assertEqual([], [e for e in events if e.type == TurnEventType.NOTICE])
 
     def test_execute_python_requires_approval_even_in_explore_only(self):
         provider = MockProvider()

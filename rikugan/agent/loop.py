@@ -12,6 +12,7 @@ import traceback
 from collections.abc import Generator
 from typing import Any
 
+from ..constants import MCP_TOOL_PREFIX
 from ..core.config import RikuganConfig
 from ..core.errors import (
     CancellationError,
@@ -635,7 +636,7 @@ class AgentLoop:
         """Show MCP server health and status."""
         # Access the MCP manager via the tool registry's registered tools
         # We check for MCP-prefixed tools and try to reach the manager
-        mcp_tools = [n for n in self.tools.list_names() if n.startswith("mcp_")]
+        mcp_tools = [n for n in self.tools.list_names() if n.startswith(MCP_TOOL_PREFIX)]
         if not mcp_tools:
             yield TurnEvent.text_done("No MCP servers configured or connected.")
             return
@@ -1668,3 +1669,16 @@ class BackgroundAgentRunner:
             return self.event_queue.get(timeout=timeout)
         except queue.Empty:
             return None
+
+    def is_drained(self) -> bool:
+        """True once the producer has exited and every event has been consumed.
+
+        ``AgentLoop.is_running`` goes false in the loop's ``finally`` block,
+        while the runner thread is still flushing its last buffered text and the
+        sentinel. Dropping the runner on ``is_running`` alone therefore throws
+        the tail of the final answer away with the queue; wait for this instead.
+        """
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            return False
+        return self.event_queue.empty()

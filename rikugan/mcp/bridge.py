@@ -2,14 +2,47 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable
 from typing import Any
 
 from ..constants import MCP_TOOL_PREFIX
-from ..core.logging import log_info
+from ..core.logging import log_info, log_warning
 from ..tools.base import ParameterSchema, ToolDefinition
 from ..tools.registry import ToolRegistry
 from .client import MCPClient
+from .schema import collect_defs, sanitize_schema
+
+# Every declared tool is re-sent on every request, so a server's documentation
+# is a per-turn cost, paid again on each turn of every conversation. Servers
+# written for a chat client ship reference-manual prose: Binary Ninja's 75
+# tools came to ~54 KB, more than twice Rikugan's own 62, almost all of it
+# repeated boilerplate about handles and address formats. A sentence is enough
+# to pick a tool; the parameter schema carries the rest.
+_MAX_TOOL_DESCRIPTION = 140
+_MAX_PARAM_DESCRIPTION = 60
+
+# Both Anthropic and OpenAI reject tool names longer than this, and accept
+# only these characters. A server that violates either is not something we can
+# fix by asking nicely, so those tools are dropped rather than sent.
+_MAX_TOOL_NAME = 64
+_VALID_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+# JSON Schema types the providers accept in a tool's input schema.
+_VALID_PARAM_TYPES = frozenset({"string", "number", "integer", "boolean", "array", "object", "null"})
+
+
+def _clip(text: str, limit: int) -> str:
+    """Shorten *text* to *limit* characters on a word boundary where possible."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space > limit // 2:
+        cut = cut[:space]
+    return cut.rstrip(" .,;:") + "\u2026"
 
 
 def _mcp_schema_to_parameters(input_schema: dict[str, Any]) -> list[ParameterSchema]:
@@ -18,23 +51,40 @@ def _mcp_schema_to_parameters(input_schema: dict[str, Any]) -> list[ParameterSch
 
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))
+    # $ref pointers are relative to the tool's own schema document, so the
+    # definitions have to be gathered before each property is resolved.
+    defs = collect_defs(input_schema)
 
     for name, prop in properties.items():
         json_type = prop.get("type", "string")
         # Normalize array types
         if isinstance(json_type, list):
             json_type = json_type[0] if json_type else "string"
+        # A schema built from $ref/anyOf has no plain type; the providers
+        # reject anything outside their list, so fall back rather than relay it.
+        if json_type not in _VALID_PARAM_TYPES:
+            json_type = "string"
 
-        ps = ParameterSchema(
-            name=name,
-            type=json_type,
-            description=prop.get("description", ""),
-            required=name in required,
-            default=prop.get("default"),
-            enum=prop.get("enum"),
-            items=prop.get("items"),
+        clean = sanitize_schema(prop, defs)
+        clean["type"] = json_type
+        described = _clip(clean.get("description", ""), _MAX_PARAM_DESCRIPTION)
+        if described:
+            clean["description"] = described
+        else:
+            clean.pop("description", None)
+
+        params.append(
+            ParameterSchema(
+                name=name,
+                type=json_type,
+                description=described,
+                required=name in required,
+                default=prop.get("default"),
+                enum=prop.get("enum"),
+                items=clean.get("items"),
+                schema=clean,
+            )
         )
-        params.append(ps)
 
     return params
 
@@ -61,11 +111,21 @@ def register_mcp_tools(client: MCPClient, registry: ToolRegistry, prefix: str = 
         prefix = f"{MCP_TOOL_PREFIX}{safe_name}_"
 
     tools = client.get_tools()
+    cap = getattr(getattr(client, "config", None), "max_tools", 0)
+    if cap and len(tools) > cap:
+        log_warning(f"MCP[{client.name}]: exposing {cap} of {len(tools)} tools (max_tools)")
+        tools = tools[:cap]
     count = 0
+    skipped: list[str] = []
+
+    limit = getattr(getattr(client, "config", None), "description_limit", 0) or _MAX_TOOL_DESCRIPTION
 
     for mcp_tool in tools:
         rikugan_name = f"{prefix}{mcp_tool.name}"
-        description = f"[MCP:{client.name}] {mcp_tool.description}"
+        if len(rikugan_name) > _MAX_TOOL_NAME or not _VALID_TOOL_NAME.match(rikugan_name):
+            skipped.append(mcp_tool.name)
+            continue
+        description = f"[MCP:{client.name}] {_clip(mcp_tool.description, limit)}"
         parameters = _mcp_schema_to_parameters(mcp_tool.input_schema)
         handler = _make_mcp_handler(client, mcp_tool.name)
 
@@ -79,5 +139,18 @@ def register_mcp_tools(client: MCPClient, registry: ToolRegistry, prefix: str = 
         registry.register(defn)
         count += 1
 
-    log_info(f"Registered {count} MCP tools from {client.name} (prefix={prefix})")
+    if skipped:
+        log_warning(f"MCP[{client.name}]: skipped {len(skipped)} tools the providers would reject: {skipped}")
+    log_info(f"Registered {count} MCP tools from {client.name} (prefix={prefix}); {describe_payload(registry)}")
     return count
+
+
+def describe_payload(registry: ToolRegistry) -> str:
+    """Size of the tool declaration the model is sent on every request.
+
+    Worth a log line: a large tool set is charged again on each turn, and it is
+    otherwise invisible when a provider rejects the request for being too big.
+    """
+    schemas = registry.to_provider_format()
+    size = len(json.dumps(schemas))
+    return f"{len(schemas)} tools declared, ~{size // 1024} KB (~{size // 4} tokens) per request"

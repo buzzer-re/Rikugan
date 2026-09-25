@@ -10,7 +10,13 @@ from tests.qt_stubs import ensure_pyside6_stubs
 
 ensure_pyside6_stubs()
 
-from rikugan.ui.message_widgets import _assistant_bubble_theme, _split_thinking
+from rikugan.ui.markdown import collapse_breaks, md_to_html
+from rikugan.ui.message_widgets import (
+    _assistant_bubble_theme,
+    _commit_index_in_tail,
+    _split_thinking,
+    strip_partial_think_tag,
+)
 
 
 _LIGHT_TOKENS = {
@@ -57,6 +63,7 @@ def _luminance(color: str) -> float:
 # ---------------------------------------------------------------------------
 # _split_thinking
 # ---------------------------------------------------------------------------
+
 
 class TestSplitThinking(unittest.TestCase):
     def test_no_think_tags_returns_all_visible(self):
@@ -130,6 +137,83 @@ class TestMessageBubbleThemes(unittest.TestCase):
         self.assertGreater(_luminance(theme["background"]), 0.15)
         self.assertLess(_luminance(theme["background"]), 0.35)
         self.assertGreater(_luminance(theme["text"]), 0.75)
+
+
+def _render_streamed(text: str) -> str:
+    """Replay the committed/tail split exactly as _render_progressive does."""
+    committed_html = ""
+    committed_len = 0
+    while True:
+        tail = text[committed_len:]
+        commit = _commit_index_in_tail(tail)
+        if commit <= 0:
+            break
+        committed_html = collapse_breaks(committed_html + md_to_html(tail[:commit]))
+        committed_len += commit
+    return collapse_breaks(committed_html + md_to_html(text[committed_len:]))
+
+
+class TestStreamedRenderMatchesOneShot(unittest.TestCase):
+    """A message must not grow blank space just because it was streamed.
+
+    Each committed block used to append an unconditional <br> on top of the one
+    its own HTML already ended with, so a long answer gained a blank line per
+    paragraph — hundreds of pixels of empty space below the text.
+    """
+
+    CASES = {
+        "paragraphs": "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.",
+        "list_then_text": "Summary:\n\n1. First item\n2. Second item\n\nMore text here.\n\nDone.",
+        "loose_list": "Steps:\n\n1. First step\n\n2. Second step\n\n3. Third step\n\nDone.",
+        "code_block": "Look at this:\n\n```c\nint main(void) {\n  return 0;\n}\n```\n\nThat is the entry point.",
+        "heading_and_text": "# Title\n\nBody text here.\n\n## Subtitle\n\nMore body text.",
+        "single_paragraph": "Just one paragraph with no breaks at all.",
+    }
+
+    def test_streamed_html_is_identical_to_one_shot(self):
+        for name, text in self.CASES.items():
+            with self.subTest(case=name):
+                self.assertEqual(md_to_html(text), _render_streamed(text))
+
+    def test_no_triple_break_runs_survive(self):
+        for name, text in self.CASES.items():
+            with self.subTest(case=name):
+                self.assertNotIn("<br><br><br>", _render_streamed(text))
+
+
+class TestCommitDoesNotSplitLists(unittest.TestCase):
+    def test_commit_point_skips_a_blank_line_between_list_items(self):
+        tail = "1. First step\n\n2. Second step\n\nDone."
+        commit = _commit_index_in_tail(tail)
+        # The only safe commit point is after the list, not between its items.
+        self.assertNotIn(commit, (len("1. First step\n\n"),))
+        self.assertTrue(tail[:commit].rstrip().endswith("Second step") or commit == 0)
+
+    def test_paragraph_after_list_still_commits(self):
+        tail = "- a\n- b\n\nAfter the list.\n\n"
+        self.assertGreater(_commit_index_in_tail(tail), 0)
+
+    def test_plain_paragraphs_commit_as_before(self):
+        tail = "One.\n\nTwo.\n\n"
+        self.assertEqual(_commit_index_in_tail(tail), len(tail))
+
+
+class TestStripPartialThinkTag(unittest.TestCase):
+    """A half-revealed opening tag must not flash as literal text."""
+
+    def test_each_prefix_of_the_tag_is_dropped(self):
+        for size in range(1, len("<think>")):
+            partial = "<think>"[:size]
+            with self.subTest(partial=partial):
+                self.assertEqual(strip_partial_think_tag(f"Answer{partial}"), "Answer")
+
+    def test_complete_tag_is_left_for_the_splitter(self):
+        self.assertEqual(strip_partial_think_tag("Answer<think>"), "Answer<think>")
+
+    def test_ordinary_text_is_untouched(self):
+        for text in ("Answer.", "a < b", "x <= y", ""):
+            with self.subTest(text=text):
+                self.assertEqual(strip_partial_think_tag(text), text)
 
 
 if __name__ == "__main__":

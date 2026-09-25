@@ -106,6 +106,8 @@ class TestIdaSessionController(unittest.TestCase):
         self.cfg.checkpoint_auto_save = True
         self.ctrl.session.add_message(Message(role=Role.USER, content="test"))
         self.ctrl.on_agent_finished()
+        # The autosave runs on a background thread so the panel doesn't stall.
+        self.ctrl.flush_autosaves()
 
         # Verify session was saved to disk
         from rikugan.state.history import SessionHistory
@@ -119,6 +121,7 @@ class TestIdaSessionController(unittest.TestCase):
         self.ctrl.session.add_message(Message(role=Role.USER, content="persisted"))
         self.cfg.checkpoint_auto_save = True
         self.ctrl.on_agent_finished()
+        self.ctrl.flush_autosaves()
         saved_id = self.ctrl.session.id
 
         # New chat, then restore
@@ -135,10 +138,12 @@ class TestIdaSessionController(unittest.TestCase):
         self.ctrl.session.add_message(Message(role=Role.USER, content="persisted one"))
         self.cfg.checkpoint_auto_save = True
         self.ctrl.on_agent_finished()
+        self.ctrl.flush_autosaves()
 
         self.ctrl.new_chat()
         self.ctrl.session.add_message(Message(role=Role.USER, content="persisted two"))
         self.ctrl.on_agent_finished()
+        self.ctrl.flush_autosaves()
 
         ctrl2 = IdaSessionController(self.cfg)
         restored = ctrl2.restore_sessions()
@@ -155,6 +160,7 @@ class TestIdaSessionController(unittest.TestCase):
         )
         self.cfg.checkpoint_auto_save = True
         self.ctrl.on_agent_finished()
+        self.ctrl.flush_autosaves()
         saved_id = self.ctrl.session.id
 
         # Create fresh controller to avoid in-memory state
@@ -177,6 +183,7 @@ class TestIdaSessionController(unittest.TestCase):
         self.ctrl.session.add_message(Message(role=Role.TOOL, tool_results=[tr]))
         self.cfg.checkpoint_auto_save = True
         self.ctrl.on_agent_finished()
+        self.ctrl.flush_autosaves()
 
         ctrl2 = IdaSessionController(self.cfg)
         restored = ctrl2.restore_session()

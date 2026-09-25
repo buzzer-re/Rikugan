@@ -22,6 +22,24 @@ try:
 except ImportError:
     _HAS_MCP = False
 
+# HTTP transports are optional: they only matter for a server we connect to
+# rather than spawn, such as Binary Ninja's in-process MCP plugin.
+try:
+    from mcp.client.streamable_http import streamablehttp_client
+
+    _HAS_HTTP_MCP = True
+except ImportError:
+    streamablehttp_client = None  # type: ignore[assignment]
+    _HAS_HTTP_MCP = False
+
+try:
+    from mcp.client.sse import sse_client
+
+    _HAS_SSE_MCP = True
+except ImportError:
+    sse_client = None  # type: ignore[assignment]
+    _HAS_SSE_MCP = False
+
 
 def _unwrap_exception(exc: BaseException) -> str:
     """Extract a human-readable message from potentially nested ExceptionGroups.
@@ -114,7 +132,8 @@ class MCPClient:
 
         Blocks until the server is ready or the timeout expires.
         """
-        log_info(f"MCP[{self.name}]: starting server: {self.config.command} {self.config.args}")
+        target = self.config.url or f"{self.config.command} {self.config.args}"
+        log_info(f"MCP[{self.name}]: starting server: {target}")
 
         self._running = True
         self._ready.clear()
@@ -227,6 +246,25 @@ class MCPClient:
         finally:
             self._running = False
 
+    def _open_transport(self, server_params, errlog):
+        """Return the async context manager for this server's transport.
+
+        A configured ``url`` means the server already exists and we connect to
+        it; otherwise we spawn ``command`` and talk over stdio. Streamable HTTP
+        is tried first because it is the current MCP transport, with SSE as the
+        fallback for servers that only speak the older one.
+        """
+        url = self.config.url
+        if not url:
+            return stdio_client(server_params, errlog=errlog)
+        if url.rstrip("/").endswith("/sse"):
+            if not _HAS_SSE_MCP:
+                raise MCPError(f"MCP[{self.name}]: the installed mcp package has no SSE transport")
+            return sse_client(url)
+        if not _HAS_HTTP_MCP:
+            raise MCPError(f"MCP[{self.name}]: the installed mcp package has no streamable-http transport")
+        return streamablehttp_client(url)
+
     async def _async_main(self) -> None:
         """Async entry point: connect, handshake, discover tools, then keep alive."""
         self._loop = asyncio.get_running_loop()
@@ -243,10 +281,9 @@ class MCPClient:
 
         errlog = _safe_errlog()
         try:
-            async with stdio_client(server_params, errlog=errlog) as (
-                read_stream,
-                write_stream,
-            ):
+            async with self._open_transport(server_params, errlog) as streams:
+                # streamable-http yields a third element (a session-id getter).
+                read_stream, write_stream = streams[0], streams[1]
                 async with ClientSession(read_stream, write_stream) as session:
                     self._session = session
 

@@ -6,7 +6,7 @@ import random
 import re as _re
 from typing import ClassVar
 
-from .markdown import md_to_html, resolve_markdown_theme
+from .markdown import collapse_breaks, md_to_html, resolve_markdown_theme
 from .qt_compat import (
     QFrame,
     QHBoxLayout,
@@ -14,13 +14,14 @@ from .qt_compat import (
     QPushButton,
     QSizePolicy,
     Qt,
+    QTextDocument,
     QTimer,
     QToolButton,
     QVBoxLayout,
     QWidget,
     qt_flags,
 )
-from .styles import blend_theme_color, get_chat_color_tokens, host_stylesheet
+from .styles import blend_theme_color, ensure_contrast, get_chat_color_tokens, host_stylesheet
 
 _THINKING_PHRASES = [
     "analyzing binary structure...",
@@ -44,18 +45,7 @@ _THINKING_PHRASES = [
 
 _USER_ROLE = "#4ec9b0"
 _ASSISTANT_ROLE = "#569cd6"
-_BODY_TEXT = "#d4d4d4"
-_MUTED_TEXT = "#808080"
-_SUBTLE_TEXT = "#b0b0b0"
 _USER_BUBBLE_BG = "#0e639c"
-_USER_BUBBLE_BORDER = "#1177bb"
-_ASSISTANT_BUBBLE_BG = "#151515"
-_ASSISTANT_BUBBLE_BORDER = "#2c2c2c"
-_THINKING_SURFACE_BG = "#1e1e1e"
-_THINKING_BLOCK_BG = "#1a1a2e"
-_THINKING_BLOCK_BORDER = "#2a2a3e"
-_TOOL_BG = "#252526"
-_TOOL_BORDER = "#3c3c3c"
 
 
 def _color_luminance(color: str) -> float:
@@ -79,6 +69,15 @@ def _ensure_readable(fg: str, bg: str) -> str:
     if abs(_color_luminance(fg) - _color_luminance(bg)) >= 0.4:
         return fg
     return "#ececec" if _color_luminance(bg) < 0.5 else "#1a1a1a"
+
+
+def _role_color(color: str, source=None) -> str:
+    """A role label sits directly on the chat canvas, so resolve it there.
+
+    The two role hues come from a dark editor palette; on a light host theme
+    they land a shade or two above the background and read as a smudge.
+    """
+    return ensure_contrast(color, _theme_colors(source)["chat_canvas"], 4.5)
 
 
 def _theme_colors(source=None) -> dict[str, str]:
@@ -111,7 +110,10 @@ def _assistant_bubble_theme(source=None) -> dict[str, str]:
     colors = _theme_colors(source)
     return {
         "background": colors["assistant_bg"],
-        "text": colors["text"],
+        # Guard the contrast like the user bubble does. A host palette that
+        # resolves body text close to the bubble surface painted the answer
+        # invisible while the frame and the role label still drew.
+        "text": _ensure_readable(colors["text"], colors["assistant_bg"]),
         # Soft warm edge for a smoother bubble; fall back to the neutral border
         # if a caller passed a pre-built token dict without the new key.
         "border": colors.get("assistant_border", colors["border"]),
@@ -188,6 +190,68 @@ def _tool_frame_style(
     return f"QFrame#{object_name} {{ {_frame_css(background=bg, border=border, radius=6)} }}"
 
 
+_THINK_OPEN = "<think>"
+
+
+def strip_partial_think_tag(text: str) -> str:
+    """Drop a half-revealed ``<think>`` from the end of streamed text.
+
+    The typewriter reveals a character at a time, so an opening tag arrives as
+    ``<``, ``<t``, ``<th``… Each of those escapes to literal text and flashes in
+    the bubble for a few frames before the tag completes and the whole run
+    becomes reasoning — text appearing and then taking itself back.
+    """
+    for size in range(len(_THINK_OPEN) - 1, 0, -1):
+        if text.endswith(_THINK_OPEN[:size]):
+            return text[:-size]
+    return text
+
+
+def normalize_escaped_newlines(text: str) -> str:
+    """Turn literal ``\\n`` sequences into real newlines.
+
+    Models sometimes double-escape the JSON string they pass to ``ask_user``,
+    so the decoded argument still carries backslash-n and renders as visible
+    punctuation. Only sequences that survived decoding are touched.
+    """
+    if "\\n" not in text:
+        return text
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+
+
+def _option_button_css(source=None) -> str:
+    """Palette-derived styling for the question/approval option buttons."""
+    colors = _theme_colors(source)
+    surface = colors["tool_bg"]
+    accent = colors["accent"]
+    border = blend_theme_color(accent, colors["panel"], 0.45)
+    hover = blend_theme_color(surface, accent, 0.25)
+    pressed = blend_theme_color(surface, colors["panel"], 0.35)
+    muted = colors["muted"]
+    return (
+        f"QPushButton {{ background: {surface}; color: {accent}; border: 1px solid {border}; "
+        "border-radius: 4px; padding: 4px 14px; font-size: 12px; }"
+        f"QPushButton:hover {{ background: {hover}; }}"
+        f"QPushButton:pressed {{ background: {pressed}; }}"
+        f"QPushButton:disabled {{ color: {muted}; background: {pressed}; border-color: {colors['border']}; }}"
+    )
+
+
+def make_wrapping(label: QLabel) -> None:
+    """Let *label* wrap and keep its height-for-width contract.
+
+    ``QLabel.setWordWrap`` turns on height-for-width on the *current* size
+    policy, so a later ``setSizePolicy()`` with a fresh policy silently clears
+    it and the label is then laid out at its unwrapped one-line sizeHint. Set
+    both together, in this order, and the contract survives.
+    """
+    policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    policy.setHeightForWidth(True)
+    label.setSizePolicy(policy)
+    label.setWordWrap(True)
+    label.setMinimumWidth(0)
+
+
 # Re-export tool widgets so existing consumers that import from this module
 # continue to work without changes.
 
@@ -213,14 +277,34 @@ class _HeightCachedLabel(QLabel):
     def hasHeightForWidth(self) -> bool:
         return False
 
+    def measured_height(self, width: int) -> int:
+        """Height this label's text occupies at *width*.
+
+        Measured on a standalone document rather than via
+        ``QLabel.heightForWidth``. QLabel clamps that against its own minimum
+        and maximum height, which ``setFixedHeight`` has already pinned — so
+        once a height was pinned at a too-narrow width (session restore sets the
+        text before the label is in a layout), every later measurement returned
+        the stale, too-tall value and the message kept an empty band under it.
+
+        A zero document margin makes this match QLabel's own layout exactly, for
+        wrapped prose, wide code blocks and tables alike.
+        """
+        doc = QTextDocument()
+        doc.setDefaultFont(self.font())
+        doc.setDocumentMargin(0)
+        doc.setHtml(self.text())
+        doc.setTextWidth(width)
+        return int(doc.size().height() + 0.5)
+
     def pin_height(self) -> None:
-        """Fix widget height to the value heightForWidth returns for the current width."""
-        w = self.width()
-        if w <= 0:
+        """Fix the widget height to what its current text needs."""
+        width = self.width()
+        if width <= 0:
             return
-        h = QLabel.heightForWidth(self, w)
-        if h > 0:
-            self.setFixedHeight(h)
+        height = self.measured_height(width)
+        if height > 0:
+            self.setFixedHeight(height)
 
     def resizeEvent(self, event) -> None:
         # Re-pin whenever our own width settles to a new value. Without this, a
@@ -302,8 +386,8 @@ class UserMessageWidget(QFrame):
         self._role_label = QLabel("You")
         self._role_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_USER_ROLE}; font-weight: bold; font-size: 11px;",
-                f"color: {_USER_ROLE}; {_native_text_style(size=11, bold=True)}",
+                f"color: {_role_color(_USER_ROLE, parent or self)}; font-weight: bold; font-size: 11px;",
+                f"color: {_role_color(_USER_ROLE, parent or self)}; {_native_text_style(size=11, bold=True)}",
             )
         )
         layout.addWidget(self._role_label)
@@ -450,6 +534,36 @@ class _ThinkingBlock(QFrame):
 # ---------------------------------------------------------------------------
 
 
+# Beyond this the in-progress tail is redrawn in coarser steps instead of on
+# every reveal frame; below it, streaming stays character-smooth.
+_MAX_LIVE_TAIL_CHARS = 4000
+_LARGE_TAIL_STEP_CHARS = 400
+
+_LIST_ITEM_RE = _re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)")
+
+
+def _starts_list_item(text: str) -> bool:
+    """True when *text* begins with a bullet or numbered list marker."""
+    for line in text.lstrip("\n").split("\n", 1):
+        return bool(_LIST_ITEM_RE.match(line))
+    return False
+
+
+def _continues_open_list(committed: str, rest: str) -> bool:
+    """True when committing here would cut one list into two.
+
+    A list whose items are separated by blank lines offers a commit point
+    between every item. Taking them renders one ``<ol>`` per item, so the
+    numbering restarts at 1 on each line.
+    """
+    if not _starts_list_item(rest):
+        return False
+    for line in reversed(committed.split("\n")):
+        if line.strip():
+            return bool(_LIST_ITEM_RE.match(line))
+    return False
+
+
 def _commit_index_in_tail(tail: str) -> int:
     """Return how many leading chars of *tail* form complete Markdown blocks.
 
@@ -468,7 +582,11 @@ def _commit_index_in_tail(tail: str) -> int:
             limit = fence if fence != -1 else n
             nn = tail.find("\n\n", pos, limit)
             if nn != -1:
-                pos = last = nn + 2
+                candidate = nn + 2
+                if _continues_open_list(tail[:candidate], tail[candidate:]):
+                    pos = candidate  # keep scanning; don't split the list here
+                    continue
+                pos = last = candidate
                 continue
             if fence == -1:
                 break
@@ -518,6 +636,9 @@ class AssistantMessageWidget(QFrame):
         # Incrementally rendered HTML for finalized visible blocks (B2).
         self._committed_html = ""
         self._committed_visible_len = 0
+        self._last_tail_len = 0
+        # Latched once any text has been displayed; see _sync_bubble_visibility.
+        self._has_shown_text = False
         # Resolve the markdown theme once; reuse it on every streaming frame so
         # render cost excludes palette reads and color blends. The host theme is
         # effectively constant for a message's lifetime.
@@ -532,8 +653,8 @@ class AssistantMessageWidget(QFrame):
         self._role_label = QLabel("Rikugan")
         self._role_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_ASSISTANT_ROLE}; font-weight: bold; font-size: 11px;",
-                f"color: {_ASSISTANT_ROLE}; {_native_text_style(size=11, bold=True)}",
+                f"color: {_role_color(_ASSISTANT_ROLE, parent or self)}; font-weight: bold; font-size: 11px;",
+                f"color: {_role_color(_ASSISTANT_ROLE, parent or self)}; {_native_text_style(size=11, bold=True)}",
             )
         )
         layout.addWidget(self._role_label)
@@ -568,9 +689,12 @@ class AssistantMessageWidget(QFrame):
         self._reveal_timer.setInterval(self._REVEAL_INTERVAL_MS)
         self._reveal_timer.timeout.connect(self._reveal_tick)
 
-    @staticmethod
-    def _make_content_label(text_color: str) -> _HeightCachedLabel:
-        label = _HeightCachedLabel()
+    def _make_content_label(self, text_color: str) -> _HeightCachedLabel:
+        # Parent it up front: a parentless QLabel reports Qt's 640px default
+        # width, so an early pin measures against a width the label will never
+        # have — and the `width() <= 0` guard that was meant to catch that can
+        # never fire.
+        label = _HeightCachedLabel(self._bubble)
         label.setWordWrap(True)
         label.setTextFormat(Qt.TextFormat.RichText)
         label.setTextInteractionFlags(
@@ -586,7 +710,6 @@ class AssistantMessageWidget(QFrame):
         label.setAlignment(qt_flags(Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignTop))
         label.setStyleSheet(f"background: transparent; color: {text_color}; font-size: 13px;")
         label.setMinimumWidth(0)
-        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         return label
 
     def set_render_callback(self, callback) -> None:
@@ -606,7 +729,9 @@ class AssistantMessageWidget(QFrame):
         """
         if "<think>" not in text:
             self._thinking_block.hide()
-            return text
+            # Whitespace-only output is nothing to read. Rendering it produced a
+            # lone <br>, which showed as a "Rikugan" label with a gap under it.
+            return text if text.strip() else ""
         thinking, visible = _split_thinking(text)
         if thinking:
             in_progress = "</think>" not in text
@@ -618,7 +743,9 @@ class AssistantMessageWidget(QFrame):
     def _render_progressive(self) -> None:
         """Render the revealed text, re-parsing/laying out only the tail."""
         theme = self._md_theme_cached()
-        visible = self._update_thinking(self._full_text[: self._displayed_len])
+        # Streaming only: the final render has the whole message, where a
+        # trailing "<" is real text rather than an unfinished tag.
+        visible = strip_partial_think_tag(self._update_thinking(self._full_text[: self._displayed_len]))
 
         # Visible text is append-only in practice; reset defensively if it shrank
         # (e.g. a <think> block resolving) so the committed prefix stays valid.
@@ -632,7 +759,12 @@ class AssistantMessageWidget(QFrame):
         commit = _commit_index_in_tail(tail)
         if commit > 0:
             segment = tail[:commit]
-            self._committed_html += md_to_html(segment, self, theme=theme) + "<br>"
+            # The segment ends at a paragraph break, so its HTML already carries
+            # the trailing <br>s. Appending another added one blank line per
+            # committed block — a long answer grew hundreds of pixels of empty
+            # space. Normalize across the join instead, which per-segment
+            # collapsing inside md_to_html cannot do.
+            self._committed_html = collapse_breaks(self._committed_html + md_to_html(segment, self, theme=theme))
             self._committed_visible_len += commit
             tail = visible[self._committed_visible_len :]
             # Committed label changes only when a block finalizes (infrequent),
@@ -641,9 +773,20 @@ class AssistantMessageWidget(QFrame):
             self._committed_label.show()
             self._committed_label.pin_height()
 
+        # An unterminated code fence blocks every commit point, so the "tail"
+        # becomes the whole message and re-parsing plus re-laying it out at
+        # 33fps turns quadratic. Past a threshold, redraw it in coarser steps.
+        grew_by = len(tail) - self._last_tail_len
+        if len(tail) > _MAX_LIVE_TAIL_CHARS and grew_by < _LARGE_TAIL_STEP_CHARS:
+            if self._render_callback is not None:
+                self._render_callback()
+            return
+        self._last_tail_len = len(tail)
+
         self._tail_label.setText(md_to_html(tail, self, theme=theme))
         self._tail_label.setVisible(bool(tail))
         self._tail_label.pin_height()
+        self._sync_bubble_visibility()
         if self._render_callback is not None:
             self._render_callback()
 
@@ -652,10 +795,31 @@ class AssistantMessageWidget(QFrame):
         theme = self._md_theme_cached()
         visible = self._update_thinking(self._full_text)
         self._committed_label.setText(md_to_html(visible, self, theme=theme))
-        self._committed_label.show()
+        self._committed_label.setVisible(bool(visible))
         self._committed_label.pin_height()
         self._tail_label.clear()
         self._tail_label.hide()
+        self._sync_bubble_visibility()
+
+    def _sync_bubble_visibility(self) -> None:
+        """Hide what has nothing to show — but never un-show text.
+
+        A turn whose text is entirely reasoning leaves both labels empty, and
+        one that is only whitespace leaves nothing at all. The frame used to
+        stay either way: first as an empty grey box, then — once the frame was
+        hidden — as a bare "Rikugan" label with a gap beneath it.
+
+        Hiding is latched off once anything has been displayed. A render's
+        notion of "visible text" is derived from a *prefix* of the message
+        while it streams, so it can be transiently empty — an opening ``<think>``
+        tag revealed one character at a time is enough — and a message must
+        never take back text the reader has already seen.
+        """
+        has_text = bool(self._committed_label.text()) or bool(self._tail_label.text())
+        if has_text:
+            self._has_shown_text = True
+        self._bubble.setVisible(has_text or self._has_shown_text)
+        self.setVisible(has_text or self._has_shown_text or not self._thinking_block.isHidden())
 
     def _reveal_tick(self) -> None:
         remaining = len(self._full_text) - self._displayed_len
@@ -689,12 +853,13 @@ class AssistantMessageWidget(QFrame):
         self._displayed_len = len(text)
         self._committed_html = ""
         self._committed_visible_len = 0
+        self._last_tail_len = 0
         self._render_full()
-        # During session restore, setUpdatesEnabled(False) is active when this
-        # is called, so the widget has no width yet and pin_height() returns
-        # early. Schedule a deferred call so it re-pins after the layout pass.
-        if self._committed_label.width() <= 0:
-            QTimer.singleShot(0, self._committed_label.pin_height)
+        # Always re-pin once the pending layout pass has run. During session
+        # restore setUpdatesEnabled(False) is active and the label has no final
+        # width yet, so the height measured a moment ago is not the one it will
+        # be laid out at.
+        QTimer.singleShot(0, self._committed_label.pin_height)
 
     def full_text(self) -> str:
         return self._full_text
@@ -730,8 +895,8 @@ class ThinkingWidget(QFrame):
         self._star_label = QLabel(self._STAR_FRAMES[0])
         self._star_label.setStyleSheet(
             host_stylesheet(
-                "color: #dcdcaa; font-size: 14px;",
-                f"color: #dcdcaa; {_native_text_style(size=14)}",
+                f"color: {_role_color('#dcdcaa', parent or self)}; font-size: 14px;",
+                f"color: {_role_color('#dcdcaa', parent or self)}; {_native_text_style(size=14)}",
             )
         )
         self._star_label.setFixedWidth(18)
@@ -797,8 +962,8 @@ class QueuedMessageWidget(QFrame):
         self._role_label = QLabel("You")
         self._role_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_USER_ROLE}; font-weight: bold; font-size: 11px;",
-                f"color: {_USER_ROLE}; {_native_text_style(size=11, bold=True)}",
+                f"color: {_role_color(_USER_ROLE, parent or self)}; font-weight: bold; font-size: 11px;",
+                f"color: {_role_color(_USER_ROLE, parent or self)}; {_native_text_style(size=11, bold=True)}",
             )
         )
         content_layout.addWidget(self._role_label)
@@ -839,10 +1004,11 @@ class UserQuestionWidget(QFrame):
         super().__init__(parent)
         self._option_selected_callback = None
         self.setObjectName("message_question")
+        colors = _theme_colors(parent or self)
         self.setStyleSheet(
             _tool_frame_style(
                 source=parent or self,
-                accent="#dcdcaa",
+                accent=colors["accent"],
                 background=_thinking_surface(parent or self),
                 object_name="message_question",
             )
@@ -853,26 +1019,33 @@ class UserQuestionWidget(QFrame):
         layout.setSpacing(6)
 
         self._header = QLabel("Rikugan asks:")
+        accent = colors["accent"]
         self._header.setStyleSheet(
             host_stylesheet(
-                "color: #dcdcaa; font-weight: bold; font-size: 11px;",
-                f"color: #dcdcaa; {_native_text_style(size=11, bold=True)}",
+                f"color: {accent}; font-weight: bold; font-size: 11px;",
+                f"color: {accent}; {_native_text_style(size=11, bold=True)}",
             )
         )
         layout.addWidget(self._header)
 
-        self._q_label = QLabel(question)
-        self._q_label.setWordWrap(True)
+        # The question is model-authored prose: render it through the same
+        # Markdown pipeline as an assistant message. As a plain QLabel it
+        # depended on Qt's mightBeRichText() guess, and its line breaks showed
+        # up as literal backslash-n.
+        self._q_label = QLabel(md_to_html(normalize_escaped_newlines(question), parent or self))
+        self._q_label.setTextFormat(Qt.TextFormat.RichText)
+        make_wrapping(self._q_label)
         self._q_label.setTextInteractionFlags(
             qt_flags(
                 Qt.TextInteractionFlag.TextSelectableByMouse,
                 Qt.TextInteractionFlag.TextSelectableByKeyboard,
             )
         )
+        body = _ensure_readable(_body_text(parent or self), _thinking_surface(parent or self))
         self._q_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_body_text(parent or self)}; font-size: 13px;",
-                f"color: {_body_text(parent or self)}; {_native_text_style(size=13)}",
+                f"color: {body}; font-size: 13px;",
+                f"color: {body}; {_native_text_style(size=13)}",
             )
         )
         layout.addWidget(self._q_label)
@@ -881,16 +1054,14 @@ class UserQuestionWidget(QFrame):
             btn_layout = QHBoxLayout()
             btn_layout.setContentsMargins(0, 4, 0, 0)
             btn_layout.setSpacing(8)
+            button_css = _option_button_css(parent or self)
             for opt in options:
                 btn = QPushButton(opt)
-                button_css = (
-                    "QPushButton { background: #2d4a6e; color: #9cdcfe; border: 1px solid #4a7ab5; "
-                    "border-radius: 4px; padding: 4px 14px; font-size: 12px; }"
-                    "QPushButton:hover { background: #3a5a8a; }"
-                    "QPushButton:pressed { background: #1a3a5e; }"
-                    "QPushButton:disabled { color: #808080; background: #1e2a3a; border-color: #444; }"
-                )
                 btn.setStyleSheet(host_stylesheet(button_css, button_css))
+                # Elide rather than clip: "Yes, apply all 4 renames" lost a
+                # character off each end at sidebar width.
+                btn.setToolTip(opt)
+                btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
                 btn.clicked.connect(lambda checked, o=opt: self._on_option(o))
                 btn_layout.addWidget(btn)
             btn_layout.addStretch()
@@ -1186,14 +1357,14 @@ class ErrorMessageWidget(QFrame):
         self._header = QLabel("Error")
         self._header.setStyleSheet(
             host_stylesheet(
-                "color: #f44747; font-weight: bold; font-size: 11px;",
-                f"color: #f44747; {_native_text_style(size=11, bold=True)}",
+                f"color: {_role_color('#f44747', parent or self)}; font-weight: bold; font-size: 11px;",
+                f"color: {_role_color('#f44747', parent or self)}; {_native_text_style(size=11, bold=True)}",
             )
         )
         layout.addWidget(self._header)
 
         self._content = QLabel(error_text)
-        self._content.setWordWrap(True)
+        make_wrapping(self._content)
         self._content.setTextInteractionFlags(
             qt_flags(
                 Qt.TextInteractionFlag.TextSelectableByMouse,
@@ -1202,10 +1373,53 @@ class ErrorMessageWidget(QFrame):
         )
         self._content.setStyleSheet(
             host_stylesheet(
-                "color: #f44747; font-size: 12px;",
-                f"color: #f44747; {_native_text_style(size=12)}",
+                f"color: {_role_color('#f44747', parent or self)}; font-size: 12px;",
+                f"color: {_role_color('#f44747', parent or self)}; {_native_text_style(size=12)}",
             )
         )
-        self._content.setMinimumWidth(0)
-        self._content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._content)
+
+
+class NoticeMessageWidget(QFrame):
+    """A muted, informational row — not a failure.
+
+    Used for provider stop reasons that are worth mentioning (the answer was
+    truncated, the provider filtered it) but that do not mean the run failed.
+    """
+
+    def __init__(self, notice_text: str, parent: QWidget = None):
+        super().__init__(parent)
+        self.setObjectName("message_notice")
+        self.setStyleSheet(
+            _tool_frame_style(
+                source=parent or self,
+                accent=_border_color(parent or self),
+                background=_thinking_surface(parent or self),
+                object_name="message_notice",
+            )
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(7)
+
+        muted = _muted_text(parent or self)
+        icon = QLabel("ⓘ")  # circled i
+        icon.setStyleSheet(host_stylesheet(f"color: {muted};", f"color: {muted};"))
+        layout.addWidget(icon)
+
+        self._content = QLabel(notice_text)
+        make_wrapping(self._content)
+        self._content.setTextInteractionFlags(
+            qt_flags(
+                Qt.TextInteractionFlag.TextSelectableByMouse,
+                Qt.TextInteractionFlag.TextSelectableByKeyboard,
+            )
+        )
+        self._content.setStyleSheet(
+            host_stylesheet(
+                f"color: {muted}; font-size: 12px;",
+                f"color: {muted}; {_native_text_style(size=12)}",
+            )
+        )
+        layout.addWidget(self._content, 1)

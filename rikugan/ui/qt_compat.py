@@ -68,6 +68,7 @@ if QT_BINDING == "PySide6":
         QPalette,
         QSyntaxHighlighter,
         QTextCharFormat,
+        QTextDocument,
     )
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -110,17 +111,18 @@ if QT_BINDING == "PySide6":
         QWidget,
     )
 else:
-    from PyQt5.QtCore import QEvent, QObject, QSize, Qt, QTimer  # noqa: F401
-    from PyQt5.QtCore import pyqtSignal as Signal  # noqa: F401
-    from PyQt5.QtGui import (  # noqa: F401
+    from PyQt5.QtCore import QEvent, QObject, QSize, Qt, QTimer  # type: ignore[no-redef]  # noqa: F401
+    from PyQt5.QtCore import pyqtSignal as Signal  # type: ignore[no-redef,assignment]  # noqa: F401
+    from PyQt5.QtGui import (  # type: ignore[no-redef]  # noqa: F401
         QColor,
         QFont,
         QIntValidator,
         QPalette,
         QSyntaxHighlighter,
         QTextCharFormat,
+        QTextDocument,
     )
-    from PyQt5.QtWidgets import (  # noqa: F401
+    from PyQt5.QtWidgets import (  # type: ignore[no-redef]  # noqa: F401
         QAbstractItemView,
         QApplication,
         QCheckBox,

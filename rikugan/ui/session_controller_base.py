@@ -42,7 +42,7 @@ class SessionControllerBase:
     def __init__(
         self,
         config: RikuganConfig,
-        tool_registry_factory: Callable[[], ToolRegistry],
+        tool_registry_factory: Callable[..., ToolRegistry],
         database_path_getter: Callable[[], str],
         host_name: str,
     ):
@@ -50,7 +50,11 @@ class SessionControllerBase:
         self.host_name = host_name
         self._provider_registry = ProviderRegistry()
         self._provider_registry.register_custom_providers(list(config.custom_providers.keys()))
-        self._tool_registry = tool_registry_factory()
+        self._tool_registry = tool_registry_factory(config)
+        # Serializes background autosaves so two turns cannot write the same
+        # session file at once.
+        self._autosave_lock = threading.Lock()
+        self._autosave_thread: threading.Thread | None = None
         self._skill_registry = SkillRegistry()
         self._mcp_manager = MCPManager()
         self._idb_path = _normalize_db_path(database_path_getter())
@@ -249,6 +253,11 @@ class SessionControllerBase:
     def any_agent_running(self) -> bool:
         return any(runner.agent_loop.is_running for runner in self._runners.values())
 
+    @property
+    def has_runners(self) -> bool:
+        """True while any runner is still registered, running or draining."""
+        return bool(self._runners)
+
     def is_tab_running(self, tab_id: str) -> bool:
         runner = self._runners.get(tab_id)
         return runner is not None and runner.agent_loop.is_running
@@ -386,13 +395,40 @@ class SessionControllerBase:
 
         session = self._sessions.get(target)
         if session and self.config.checkpoint_auto_save and session.messages:
-            try:
-                history = SessionHistory(self.config)
-                path = history.save_session(session)
-                log_debug(f"Session auto-saved: {path}")
-            except (OSError, ValueError) as e:
-                log_error(f"Failed to auto-save session: {e}")
+            self._autosave_session(session)
         return next_message
+
+    def _autosave_session(self, session: SessionState) -> None:
+        """Persist the session without blocking the caller's thread.
+
+        This runs at the end of every turn, from the UI thread's event pump.
+        Serializing every message — decompiler dumps and all — and writing two
+        indented JSON files took long enough on a real session to stall the
+        panel each time the agent finished.
+        """
+        snapshot = copy.copy(session)
+        # Shallow-copy the containers so the worker can't trip over a list the
+        # next turn is appending to. Messages are append-only once created.
+        snapshot.messages = list(session.messages)
+        snapshot.subagent_logs = {key: list(msgs) for key, msgs in (session.subagent_logs or {}).items()}
+
+        def _write() -> None:
+            with self._autosave_lock:
+                try:
+                    path = SessionHistory(self.config).save_session(snapshot)
+                    log_debug(f"Session auto-saved: {path}")
+                except (OSError, ValueError) as e:
+                    log_error(f"Failed to auto-save session: {e}")
+
+        thread = threading.Thread(target=_write, daemon=True, name="rikugan-session-save")
+        self._autosave_thread = thread
+        thread.start()
+
+    def flush_autosaves(self, timeout: float = 5.0) -> None:
+        """Wait for the last background save. Daemon threads die on exit."""
+        thread = self._autosave_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout)
 
     def new_chat(self) -> None:
         """Reset the active tab to a fresh session."""
@@ -561,6 +597,8 @@ class SessionControllerBase:
 
     def shutdown(self) -> None:
         self._runtime_shutdown.set()
+        # A background autosave would be killed mid-write when the host exits.
+        self.flush_autosaves()
         if self._runtime_init_thread.is_alive():
             self._runtime_init_done.wait(timeout=1.0)
         for tab_id in list(self._runners):

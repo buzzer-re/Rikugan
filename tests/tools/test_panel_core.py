@@ -13,11 +13,19 @@ from tests.qt_stubs import ensure_pyside6_stubs
 ensure_pyside6_stubs()
 
 # Stub heavy rikugan submodules
+# Only modules this file had to invent are stubbed. When a real module is
+# already imported (test order varies), leave it alone — overwriting its
+# functions leaks into every test that runs afterwards.
+_created_stubs: set[str] = set()
+
 for _mod_name in [
     "rikugan.ui.styles",
     "rikugan.ui.chat_view",
     "rikugan.ui.input_area",
     "rikugan.ui.context_bar",
+    "rikugan.ui.composer",
+    "rikugan.ui.panel_header",
+    "rikugan.ui.welcome_view",
     "rikugan.ui.tool_widgets",
     "rikugan.core.config",
     "rikugan.core.logging",
@@ -33,22 +41,42 @@ for _mod_name in [
     if _stub is None:
         _stub = types.ModuleType(_mod_name)
         sys.modules[_mod_name] = _stub
+        _created_stubs.add(_mod_name)
     for _attr in [
         "DARK_THEME",
+        "build_chat_drawer_stylesheet",
         "build_chat_sidebar_stylesheet",
         "build_chat_view_stylesheet",
-        "build_mini_tool_button_stylesheet",
-        "build_small_button_stylesheet",
+        "build_composer_stylesheet",
+        "build_context_bar_stylesheet",
+        "build_input_area_stylesheet",
+        "build_mode_bar_stylesheet",
+        "build_panel_header_stylesheet",
+        "build_welcome_stylesheet",
         "build_theme_stylesheet",
         "blend_theme_color",
+        "PRODUCT_ACCENT",
+        "PRODUCT_BORDER",
+        "PRODUCT_MUTED",
+        "PRODUCT_PANEL",
+        "PRODUCT_SURFACE",
+        "PRODUCT_SURFACE_HI",
+        "PRODUCT_TEXT",
         "get_chat_color_tokens",
+        "get_effective_palette",
+        "get_host_font_tokens",
         "get_host_palette_colors",
         "host_stylesheet",
         "maybe_host_stylesheet",
         "use_native_host_theme",
         "ChatView",
+        "Composer",
         "InputArea",
         "ContextBar",
+        "PanelHeader",
+        "WelcomeView",
+        "build_suggestions",
+        "shorten_model_name",
         "_SharedSpinnerTimer",
         "RikuganConfig",
         "log_error",
@@ -74,7 +102,7 @@ if _ollama_stub and not isinstance(getattr(_ollama_stub, "DEFAULT_OLLAMA_URL", N
     _ollama_stub.DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 _styles_stub = sys.modules.get("rikugan.ui.styles")
-if _styles_stub is not None:
+if _styles_stub is not None and "rikugan.ui.styles" in _created_stubs:
     _styles_stub.blend_theme_color = lambda color_a, color_b, amount: color_a
     _styles_stub.get_host_palette_colors = lambda source=None: {
         "window": "#1e1e1e",
@@ -113,6 +141,9 @@ if _styles_stub is not None:
 sys.modules.pop("rikugan.ui.panel_core", None)
 
 from rikugan.ui.panel_core import (  # noqa: E402
+    _PLACEHOLDER_APPROVAL,
+    _PLACEHOLDER_IDLE,
+    _PLACEHOLDER_RUNNING,
     _TOOL_RESULT_TRUNCATE_CHARS,
     ChatThreadList,
     RikuganPanelCore,
@@ -314,6 +345,13 @@ def _make_panel():
     panel._chat_area_stack = None
     panel._chat_sidebar = None
     panel._tab_status = {}
+    panel._sidebar_rows = {}
+    panel._native_mcp_available = False
+    panel._native_mcp_active = False
+    panel._native_mcp_probe = None
+    panel._native_mcp_user_initiated = False
+    panel._native_mcp_timer = None
+    panel._panel_header = MagicMock()
     panel._tab_approval = {}
     panel._pending_restore_messages = {}
     panel._context_bar = None
@@ -322,9 +360,16 @@ def _make_panel():
     panel._poll_timer = None
     panel._restore_timer = None
     panel._restore_queue = None
+    panel._binary_timer = None
+    panel._binary_queue = None
     panel._input_area = MagicMock()
-    panel._send_btn = MagicMock()
-    panel._cancel_btn = MagicMock()
+    panel._composer = MagicMock()
+    panel._panel_header = MagicMock()
+    panel._chat_column = None
+    panel._scrim = None
+    panel._drawer_mode = False
+    panel._drawer_open = False
+    panel._welcome_views = {}
     panel._mutations_btn = MagicMock()
     panel._count_label = MagicMock()
     panel._tab_widget = MagicMock()
@@ -389,25 +434,38 @@ class TestActiveChatView(unittest.TestCase):
 
 
 class TestSetRunning(unittest.TestCase):
-    def test_running_true_sets_queue_text(self):
+    def test_running_true_switches_composer_to_stop(self):
         panel = _make_panel()
         panel._set_running(True)
-        panel._send_btn.setText.assert_called_with("Queue")
+        panel._composer.set_running.assert_called_with(True)
 
-    def test_running_false_sets_send_text(self):
+    def test_running_false_switches_composer_to_send(self):
         panel = _make_panel()
         panel._set_running(False)
-        panel._send_btn.setText.assert_called_with("Send")
+        panel._composer.set_running.assert_called_with(False)
 
-    def test_running_shows_cancel_btn(self):
+    def test_running_sets_busy_placeholder(self):
         panel = _make_panel()
         panel._set_running(True)
-        panel._cancel_btn.setVisible.assert_called_with(True)
+        panel._composer.set_placeholder.assert_called_with(_PLACEHOLDER_RUNNING)
 
-    def test_not_running_hides_cancel_btn(self):
+    def test_idle_sets_idle_placeholder(self):
         panel = _make_panel()
         panel._set_running(False)
-        panel._cancel_btn.setVisible.assert_called_with(False)
+        panel._composer.set_placeholder.assert_called_with(_PLACEHOLDER_IDLE)
+
+    def test_button_approval_disables_free_text(self):
+        panel = _make_panel()
+        panel._awaiting_approval_tabs.add("active")
+        panel._set_running(False)
+        panel._composer.set_input_enabled.assert_called_with(False)
+        panel._composer.set_placeholder.assert_called_with(_PLACEHOLDER_APPROVAL)
+
+    def test_running_marks_context_bar(self):
+        panel = _make_panel()
+        panel._context_bar = MagicMock()
+        panel._set_running(True)
+        panel._context_bar.set_state.assert_called_with("running")
 
 
 class TestUpdateTabBarVisibility(unittest.TestCase):
@@ -461,11 +519,16 @@ class TestChatThreadList(unittest.TestCase):
         sidebar = object.__new__(ChatThreadList)
         item = MagicMock()
         row = MagicMock()
+        # Rows now size themselves to the host font, so the mock must answer
+        # sizeHint() with a real number.
+        row.sizeHint.return_value.height.return_value = 44
         sidebar._items = {"tid": item}
         sidebar._rows = {"tid": row}
         sidebar._titles = {"tid": "Analyze auth"}
         sidebar._details = {"tid": "2 threads"}
         sidebar._statuses = {}
+        sidebar._groups = {"tid": ""}
+        sidebar._group_items = {}
         sidebar._search = MagicMock()
         sidebar._search.text.return_value = ""
 
@@ -480,14 +543,17 @@ class TestChatThreadList(unittest.TestCase):
 
 
 class TestComposerActions(unittest.TestCase):
-    def test_composer_action_builder_only_contains_send_stop_controls(self):
-        source = inspect.getsource(RikuganPanelCore._build_action_buttons)
-        self.assertIn('QPushButton("Send")', source)
-        self.assertIn('QPushButton("Stop")', source)
-        self.assertNotIn('QPushButton("New")', source)
-        self.assertNotIn('QPushButton("Export")', source)
-        self.assertNotIn('QPushButton("Settings")', source)
-        self.assertNotIn('QPushButton("Tools")', source)
+    def test_input_section_builds_the_composer_widget(self):
+        source = inspect.getsource(RikuganPanelCore._build_input_section)
+        self.assertIn("Composer()", source)
+        # The fixed-width Send column is gone: the button lives in the frame.
+        self.assertNotIn("setFixedWidth(64)", source)
+        self.assertNotIn('QPushButton("Send")', source)
+
+    def test_chat_actions_are_not_a_button_row(self):
+        source = inspect.getsource(ChatThreadList._build_header)
+        for label in ("Fork", "Export", "Delete", "Settings"):
+            self.assertNotIn(f'"{label}"', source)
 
 
 class TestOnNewTab(unittest.TestCase):
@@ -671,7 +737,9 @@ class TestDontAutoLoadChats(unittest.TestCase):
         panel._add_unloaded_chat("tid1", session)
 
         # Listed in the sidebar and stashed for replay, but NO ChatView built.
-        panel._chat_sidebar.add_chat.assert_called_once_with("tid1", "My Chat", "1 thread")
+        # The 4th argument is the group header (the binary the chat belongs to).
+        listed = panel._chat_sidebar.add_chat.call_args.args
+        self.assertEqual(listed[:3], ("tid1", "My Chat", "1 thread"))
         self.assertEqual(panel._pending_restore_messages["tid1"], session.messages)
         self.assertNotIn("tid1", panel._chat_views)
 
@@ -708,6 +776,131 @@ class TestDontAutoLoadChats(unittest.TestCase):
         panel._select_chat("ghost")
 
         panel._create_tab.assert_not_called()
+
+
+class TestNativeMcpConsent(unittest.TestCase):
+    """Binary Ninja's MCP server is offered once per binary, and remembered."""
+
+    def _panel(self):
+        panel = _make_panel()
+        panel._config.binja_mcp_consent = {}
+        panel._config.binja_mcp_url = ""
+        panel._ctrl._db_instance_id = "db-1"
+        panel._ctrl._idb_path = "/samples/x.bndb"
+        return panel
+
+    def test_consent_is_keyed_to_the_database(self):
+        panel = self._panel()
+        self.assertEqual(panel._native_mcp_key(), "db-1")
+
+    def test_answer_is_written_to_the_config(self):
+        panel = self._panel()
+        panel._remember_native_mcp_consent(True)
+        self.assertEqual(panel._config.binja_mcp_consent["db-1"], True)
+        panel._config.save.assert_called()
+
+    def test_toggling_off_stops_the_server_and_remembers_it(self):
+        panel = self._panel()
+        panel._native_mcp_available = True
+        panel._native_mcp_active = True
+        panel._stop_native_mcp = MagicMock()
+        panel._toggle_native_mcp()
+        panel._stop_native_mcp.assert_called_once()
+        self.assertEqual(panel._config.binja_mcp_consent["db-1"], False)
+
+    def test_toggling_on_starts_the_server_and_remembers_it(self):
+        panel = self._panel()
+        panel._native_mcp_available = True
+        panel._native_mcp_active = False
+        panel._start_native_mcp = MagicMock()
+        panel._toggle_native_mcp()
+        panel._start_native_mcp.assert_called_once()
+        self.assertEqual(panel._config.binja_mcp_consent["db-1"], True)
+
+    def test_the_toggle_does_nothing_without_a_server(self):
+        panel = self._panel()
+        panel._native_mcp_available = False
+        panel._start_native_mcp = MagicMock()
+        panel._toggle_native_mcp()
+        panel._start_native_mcp.assert_not_called()
+
+    def test_a_remembered_yes_starts_without_asking_again(self):
+        panel = self._panel()
+        panel._config.binja_mcp_consent = {"db-1": True}
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=True, url="u", tool_count=4, error=""
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._ask_native_mcp_consent = MagicMock()
+        panel._start_native_mcp = MagicMock()
+        panel._poll_native_mcp()
+        panel._ask_native_mcp_consent.assert_not_called()
+        panel._start_native_mcp.assert_called_once()
+
+    def test_a_remembered_no_is_honoured_silently(self):
+        panel = self._panel()
+        panel._config.binja_mcp_consent = {"db-1": False}
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=True, url="u", tool_count=4, error=""
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._ask_native_mcp_consent = MagicMock()
+        panel._start_native_mcp = MagicMock()
+        panel._poll_native_mcp()
+        panel._ask_native_mcp_consent.assert_not_called()
+        panel._start_native_mcp.assert_not_called()
+        # Still offered on the toggle, so a "no" is never a dead end.
+        self.assertTrue(panel._native_mcp_available)
+
+    def test_clicking_the_toggle_reprobes_when_nothing_was_found(self):
+        """The server is a plugin; it can be enabled after Rikugan starts."""
+        panel = self._panel()
+        panel._native_mcp_available = False
+        panel._native_mcp_active = False
+        panel._detect_native_mcp = MagicMock()
+        panel._toggle_native_mcp()
+        panel._detect_native_mcp.assert_called_once_with(user_initiated=True)
+
+    def test_a_user_initiated_find_connects_without_asking(self):
+        panel = self._panel()
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_user_initiated = True
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=True, url="u", tool_count=7, error=""
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._ask_native_mcp_consent = MagicMock()
+        panel._start_native_mcp = MagicMock()
+        panel._poll_native_mcp()
+        panel._ask_native_mcp_consent.assert_not_called()
+        panel._start_native_mcp.assert_called_once()
+        self.assertTrue(panel._config.binja_mcp_consent["db-1"])
+
+    def test_a_user_initiated_miss_says_so(self):
+        panel = self._panel()
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_user_initiated = True
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=False, url="http://127.0.0.1:24642/mcp", tool_count=0, error="refused"
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._report_native_mcp_missing = MagicMock()
+        panel._poll_native_mcp()
+        panel._report_native_mcp_missing.assert_called_once()
+
+    def test_no_server_means_no_prompt_and_no_toggle(self):
+        panel = self._panel()
+        panel._native_mcp_probe = MagicMock()
+        panel._native_mcp_probe.get_nowait.return_value = types.SimpleNamespace(
+            available=False, url="u", tool_count=0, error="refused"
+        )
+        panel._stop_native_mcp_timer = MagicMock()
+        panel._ask_native_mcp_consent = MagicMock()
+        panel._poll_native_mcp()
+        panel._ask_native_mcp_consent.assert_not_called()
+        self.assertFalse(panel._native_mcp_available)
 
 
 if __name__ == "__main__":

@@ -18,14 +18,32 @@ def _default_mcp_config_path() -> str:
 
 @dataclass
 class MCPServerConfig:
-    """Configuration for a single MCP server."""
+    """Configuration for a single MCP server.
+
+    A server is reached either by spawning *command* (stdio) or by connecting to
+    *url* over HTTP. The second form is what an in-process server such as Binary
+    Ninja's own MCP plugin offers: there is no process for us to start.
+    """
 
     name: str
-    command: str
+    command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     timeout: float = 30.0
+    url: str = ""
+    # Characters of the server's own tool documentation to keep. Its prose is
+    # re-sent on every turn, so a verbose server is a standing cost; 0 means
+    # use the bridge's default.
+    description_limit: int = 0
+    # Expose only the first N of the server's tools. 0 means all. A way to
+    # find out whether a provider is refusing a request over its size without
+    # having to guess: halve it and see.
+    max_tools: int = 0
+
+    @property
+    def is_remote(self) -> bool:
+        return bool(self.url)
 
 
 def load_mcp_config(path: str = "") -> list[MCPServerConfig]:
@@ -63,12 +81,15 @@ def load_mcp_config(path: str = "") -> list[MCPServerConfig]:
             env=cfg.get("env", {}),
             enabled=cfg.get("enabled", True),
             timeout=float(cfg.get("timeout", 30.0)),
+            url=cfg.get("url", ""),
+            description_limit=int(cfg.get("description_limit", 0)),
+            max_tools=int(cfg.get("max_tools", 0)),
         )
-        if server.command:
+        if server.command or server.url:
             servers.append(server)
-            log_debug(f"MCP server config: {name} cmd={server.command}")
+            log_debug(f"MCP server config: {name} {'url=' + server.url if server.url else 'cmd=' + server.command}")
         else:
-            log_error(f"MCP server {name}: missing 'command', skipping")
+            log_error(f"MCP server {name}: needs 'command' or 'url', skipping")
 
     return servers
 
@@ -86,8 +107,14 @@ def save_mcp_config(servers: list[MCPServerConfig], path: str = "") -> None:
             "env": s.env,
             "enabled": s.enabled,
         }
+        if s.url:
+            entry["url"] = s.url
         if s.timeout != 30.0:
             entry["timeout"] = s.timeout
+        if s.description_limit:
+            entry["description_limit"] = s.description_limit
+        if s.max_tools:
+            entry["max_tools"] = s.max_tools
         servers_dict[s.name] = entry
 
     data = {"mcpServers": servers_dict}
