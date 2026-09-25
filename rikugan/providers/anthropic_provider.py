@@ -58,6 +58,16 @@ def _read_oauth_from_keychain() -> str | None:
         return None
 
 
+def _cache_marks(content: Any) -> int:
+    """How many cache_control breakpoints a message carries.
+
+    The API allows a fixed number per request, so the count is worth seeing.
+    """
+    if not isinstance(content, list):
+        return 0
+    return sum(1 for block in content if isinstance(block, dict) and block.get("cache_control"))
+
+
 def resolve_anthropic_auth(
     api_key: str = "",
     allow_keychain: bool = True,
@@ -373,45 +383,9 @@ class AnthropicProvider(LLMProvider):
 
     # A tool set this large is worth naming when the API turns a request away:
     # it is re-sent every turn and is otherwise invisible from the message.
-    # A tool set this large is worth naming as a contributing factor, though
-    # it is not on its own why a request is turned away.
-    _BIG_TOOL_SET = 80
-
-    _USAGE_WORDS = ("usage", "limit", "credit", "balance", "quota")
-
-    def _quota_rejection_hint(self, message: str) -> str:
-        """Explain a rejection the message itself does not explain.
-
-        Anthropic answers a request it will not bill with a note about extra
-        usage and a link to buy more. On a subscription token that is the whole
-        story: the account is at its cap, and no amount of trimming on our side
-        adds allowance. Say that, and name the way round it, rather than
-        leaving it to look like a bug in Rikugan.
-
-        A large tool set does decide which side of the line a given request
-        lands on, so it is mentioned — as a contributing factor, not the cause.
-        """
-        lowered = message.lower()
-        if not any(word in lowered for word in self._USAGE_WORDS):
-            return ""
-        if self._auth_type != "oauth":
-            return ""
-        count, size = getattr(self, "_last_tool_payload", (0, 0))
-        payload = ""
-        if count >= self._BIG_TOOL_SET:
-            payload = (
-                f" This request declared {count} tools (~{size // 1024} KB), re-sent every turn; "
-                "a smaller tool set can slip under the cap but does not raise it."
-            )
-        return (
-            "\n\nRikugan is signed in with a Claude subscription token, and this account "
-            "has no extra usage left to bill against. Claude Code may keep working on a "
-            "separate allowance. An Anthropic API key (Settings \u2192 Providers) bills to "
-            f"API credits instead and is not subject to this cap.{payload}"
-        )
-
     def _handle_api_error(self, e: Exception) -> NoReturn:
         """Raise the appropriate Rikugan error from an Anthropic API error."""
+        self.dump_failed_request(str(e))
         try:
             anthropic = importlib.import_module("anthropic")
         except ImportError:
@@ -434,7 +408,7 @@ class AnthropicProvider(LLMProvider):
             msg = str(e)
             if "context" in msg.lower() or "token" in msg.lower():
                 raise ContextLengthError(str(e), provider="anthropic") from e
-            raise ProviderError(msg + self._quota_rejection_hint(msg), provider="anthropic") from e
+            raise ProviderError(msg, provider="anthropic") from e
         raise ProviderError(str(e), provider="anthropic") from e
 
     def _build_request_kwargs(
@@ -475,7 +449,6 @@ class AnthropicProvider(LLMProvider):
 
         if tools:
             formatted_tools = self._format_tools(tools)
-            self._last_tool_payload = (len(formatted_tools), len(json.dumps(formatted_tools)))
             # Mark the last tool with cache_control so the full tool list is cached
             if formatted_tools:
                 formatted_tools[-1]["cache_control"] = {"type": "ephemeral"}
@@ -497,7 +470,66 @@ class AnthropicProvider(LLMProvider):
                     }
                 ]
 
+        self._last_request = kwargs
         return kwargs
+
+    def dump_failed_request(self, error: str, directory: str = "") -> str:
+        """Write the request that just failed, so it can be read rather than guessed at.
+
+        An API rejection names a symptom; what actually went over the wire is
+        the only thing that settles why. Tools go in verbatim because that is
+        usually what differs between a request that works and one that does
+        not. Message bodies are summarised: they carry the analysed binary's
+        contents, which is a lot of data and none of it is the question.
+        """
+        request = getattr(self, "_last_request", None)
+        if not request:
+            return ""
+        try:
+            if not directory:
+                from ..core.config import _default_config_dir
+
+                directory = _default_config_dir()
+            path = os.path.join(directory, "last_failed_request.json")
+            system = request.get("system") or []
+            payload = {
+                "error": error,
+                "model": request.get("model"),
+                "max_tokens": request.get("max_tokens"),
+                "auth_type": self._auth_type,
+                "system_blocks": [
+                    {
+                        "chars": len(b.get("text", "")),
+                        "cache_control": b.get("cache_control"),
+                        "head": b.get("text", "")[:200],
+                    }
+                    for b in system
+                ]
+                if isinstance(system, list)
+                else [{"chars": len(str(system)), "head": str(system)[:200]}],
+                "messages": [
+                    {
+                        "role": m.get("role"),
+                        "blocks": [c.get("type", "text") for c in m["content"]]
+                        if isinstance(m.get("content"), list)
+                        else ["str"],
+                        "chars": len(json.dumps(m.get("content", ""))),
+                        "cache_control": _cache_marks(m.get("content")),
+                    }
+                    for m in request.get("messages", [])
+                ],
+                "tool_count": len(request.get("tools", [])),
+                "tool_bytes": len(json.dumps(request.get("tools", []))),
+                "tools": request.get("tools", []),
+            }
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, default=str)
+            log_error(f"Wrote the failing request to {path}")
+            return path
+        except OSError as e:
+            log_debug(f"Could not write the failed request: {e}")
+            return ""
 
     def _call_api(self, client: Any, kwargs: dict[str, Any]) -> Any:
         """Invoke the Anthropic messages.create API."""

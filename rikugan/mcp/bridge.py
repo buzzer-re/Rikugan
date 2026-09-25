@@ -12,6 +12,7 @@ from ..core.logging import log_info, log_warning
 from ..tools.base import ParameterSchema, ToolDefinition
 from ..tools.registry import ToolRegistry
 from .client import MCPClient
+from .schema import collect_defs, sanitize_schema
 
 # Every declared tool is re-sent on every request, so a server's documentation
 # is a per-turn cost, paid again on each turn of every conversation. Servers
@@ -50,6 +51,9 @@ def _mcp_schema_to_parameters(input_schema: dict[str, Any]) -> list[ParameterSch
 
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))
+    # $ref pointers are relative to the tool's own schema document, so the
+    # definitions have to be gathered before each property is resolved.
+    defs = collect_defs(input_schema)
 
     for name, prop in properties.items():
         json_type = prop.get("type", "string")
@@ -61,16 +65,26 @@ def _mcp_schema_to_parameters(input_schema: dict[str, Any]) -> list[ParameterSch
         if json_type not in _VALID_PARAM_TYPES:
             json_type = "string"
 
-        ps = ParameterSchema(
-            name=name,
-            type=json_type,
-            description=_clip(prop.get("description", ""), _MAX_PARAM_DESCRIPTION),
-            required=name in required,
-            default=prop.get("default"),
-            enum=prop.get("enum"),
-            items=prop.get("items"),
+        clean = sanitize_schema(prop, defs)
+        clean["type"] = json_type
+        described = _clip(clean.get("description", ""), _MAX_PARAM_DESCRIPTION)
+        if described:
+            clean["description"] = described
+        else:
+            clean.pop("description", None)
+
+        params.append(
+            ParameterSchema(
+                name=name,
+                type=json_type,
+                description=described,
+                required=name in required,
+                default=prop.get("default"),
+                enum=prop.get("enum"),
+                items=clean.get("items"),
+                schema=clean,
+            )
         )
-        params.append(ps)
 
     return params
 
