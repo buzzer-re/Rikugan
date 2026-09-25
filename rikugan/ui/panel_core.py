@@ -13,7 +13,7 @@ from typing import Any
 from ..agent.mutation import MutationRecord
 from ..agent.turn import TurnEvent, TurnEventType
 from ..core.config import RikuganConfig
-from ..core.host import get_current_address
+from ..core.host import get_current_address, get_database_path
 from ..core.logging import log_debug, log_error, log_info, log_warning
 from ..core.types import Role
 from ..providers.auth_cache import resolve_auth_cached
@@ -827,6 +827,7 @@ class RikuganPanelCore(QWidget):
         self._binary_summary = BinarySummary()
         self._binary_summary_loaded = False
         self._binary_summary_attempts = 0
+        self._db_watch_timer: QTimer | None = None
         self._native_mcp_probe: queue.Queue | None = None
         self._native_mcp_timer: QTimer | None = None
         self._native_mcp_available = False
@@ -1019,6 +1020,48 @@ class RikuganPanelCore(QWidget):
                 self._ui_hooks = None
 
         self._try_restore_session()
+        self._start_database_watch()
+
+    def _start_database_watch(self) -> None:
+        """Notice a view switch the host never told us about.
+
+        Binary Ninja builds a sidebar widget per view and caches its
+        BinaryView, so the location callback reports the same view for the
+        widget's whole life; switching tabs can leave the panel pointed at the
+        previous binary while that binary's chats stay listed and selectable.
+        Asking the host what is loaded is cheap and needs no cooperation from
+        the notification wiring, so it also covers whatever else fails to fire.
+        """
+        self._db_watch_timer = QTimer(self)
+        self._db_watch_timer.setInterval(1000)
+        self._db_watch_timer.timeout.connect(self._check_active_database)
+        self._db_watch_timer.start()
+
+    def _stop_database_watch(self) -> None:
+        timer = getattr(self, "_db_watch_timer", None)
+        if timer is None:
+            return
+        timer.stop()
+        try:
+            timer.timeout.disconnect(self._check_active_database)
+        except (RuntimeError, TypeError) as e:
+            log_debug(f"database watch disconnect failed: {e}")
+        timer.deleteLater()
+        self._db_watch_timer = None
+
+    def _check_active_database(self) -> None:
+        if self._is_shutdown:
+            return
+        try:
+            current = get_database_path()
+        except Exception as e:
+            log_debug(f"database watch failed: {e}")
+            return
+        # An empty path means no view is focused right now, which is not the
+        # same as switching away — dropping the chats there would lose them on
+        # every incidental loss of focus.
+        if current:
+            self.on_database_changed(current)
 
     def _build_tab_widget(self) -> None:
         """Create the tab widget with custom tab bar."""
@@ -1940,6 +1983,7 @@ class RikuganPanelCore(QWidget):
             self._stop_skills_refresh_timer()
             self._stop_restore_poll_timer()
             self._stop_binary_poll_timer()
+            self._stop_database_watch()
             _SharedSpinnerTimer.shutdown()
             if self._context_bar:
                 self._context_bar.stop()
