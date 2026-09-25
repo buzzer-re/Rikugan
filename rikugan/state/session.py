@@ -64,6 +64,10 @@ class SessionState:
 
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
+    # When this chat was last looked at. Distinct from created_at: reopening a
+    # binary should land on the chat the user was last working in, which is
+    # rarely the one most recently created.
+    last_active_at: float = field(default_factory=time.time)
     messages: list[Message] = field(default_factory=list)
     total_usage: TokenUsage = field(default_factory=TokenUsage)
     last_prompt_tokens: int = 0
@@ -275,3 +279,7 @@ class SessionState:
     def message_count(self) -> int:
         with self._lock:
             return len(self.messages)
+
+    def touch(self) -> None:
+        """Mark this chat as the one most recently looked at."""
+        self.last_active_at = time.time()

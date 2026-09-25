@@ -199,6 +199,9 @@ class SessionControllerBase:
         if tab_id not in self._sessions:
             return
         self._active_tab_id = tab_id
+        # Reopening this binary should land here, not on whichever chat was
+        # created last.
+        self._sessions[tab_id].touch()
         log_debug(f"Switched to tab {tab_id}")
 
     def tab_label(self, tab_id: str) -> str:
@@ -498,6 +501,25 @@ class SessionControllerBase:
             log_error(f"Failed to load sessions for restore: {e}")
         return loaded
 
+    def belongs_to_current_db(self, session: SessionState) -> bool:
+        """Whether this chat was opened against the binary now in view.
+
+        A chat carries its binary's addresses, names and analysis in its
+        history, and the agent answers against whatever database is loaded
+        now. Listing one from another binary invites the user to type into it,
+        which silently mixes two binaries' context — so those stay hidden
+        rather than merely sorted to the bottom.
+        """
+        if session.db_instance_id and self._db_instance_id:
+            return session.db_instance_id == self._db_instance_id
+        if session.idb_path and self._idb_path:
+            # Normalize both: a session saved before the path was canonicalized
+            # would otherwise look like a different binary.
+            return _normalize_db_path(session.idb_path) == _normalize_db_path(self._idb_path)
+        # Nothing on either side identifies a binary, so there is nothing to
+        # contradict — an unsaved or pre-upgrade chat stays visible.
+        return True
+
     def register_restored_sessions(self, sessions: list[SessionState]) -> list[tuple[str, SessionState]]:
         """Register pre-loaded sessions as tabs. Must run on the UI thread.
 
@@ -507,6 +529,9 @@ class SessionControllerBase:
         results: list[tuple[str, SessionState]] = []
         for session in sessions:
             if not session.messages:
+                continue
+            if not self.belongs_to_current_db(session):
+                log_debug(f"Skipping session {session.id}: belongs to another binary")
                 continue
             tab_id = uuid.uuid4().hex[:8]
             self._sessions[tab_id] = session
@@ -523,7 +548,10 @@ class SessionControllerBase:
                     del self._sessions[self._active_tab_id]
                     default_dropped = True
             if default_dropped:
-                self._active_tab_id = results[-1][0]  # most recent
+                # The chat the user was last working in, which is rarely the
+                # one created most recently. Typing into the wrong chat means
+                # typing into another binary's context.
+                self._active_tab_id = max(results, key=lambda r: r[1].last_active_at)[0]
         return results
 
     def restore_sessions(self) -> list[tuple[str, SessionState]]:

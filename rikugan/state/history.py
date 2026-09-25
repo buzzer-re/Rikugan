@@ -32,6 +32,7 @@ def _build_summary_data(data: dict[str, Any], fallback_id: str) -> dict[str, Any
     return {
         "id": data.get("id", fallback_id),
         "created_at": data.get("created_at", 0),
+        "last_active_at": data.get("last_active_at", data.get("created_at", 0)),
         "provider": data.get("provider_name", ""),
         "model": data.get("model_name", ""),
         "idb_path": _normalize_db_path(data.get("idb_path", "")),
@@ -62,6 +63,7 @@ class SessionHistory:
             "schema_version": SESSION_SCHEMA_VERSION,
             "id": session.id,
             "created_at": session.created_at,
+            "last_active_at": session.last_active_at,
             "provider_name": session.provider_name,
             "model_name": session.model_name,
             "idb_path": db_path,
@@ -95,6 +97,7 @@ class SessionHistory:
         session = SessionState(
             id=data["id"],
             created_at=data.get("created_at", 0),
+            last_active_at=data.get("last_active_at", data.get("created_at", 0)),
             provider_name=data.get("provider_name", ""),
             model_name=data.get("model_name", ""),
             idb_path=data.get("idb_path", ""),
