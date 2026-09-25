@@ -1240,6 +1240,9 @@ class RikuganPanelCore(QWidget):
             name="rikugan-native-mcp-probe",
         ).start()
 
+        if user_initiated and self._panel_header is not None:
+            self._panel_header.set_native_mcp_busy(True)
+
         self._native_mcp_timer = QTimer(self)
         self._native_mcp_timer.setInterval(200)
         self._native_mcp_timer.timeout.connect(self._poll_native_mcp)
@@ -1268,6 +1271,9 @@ class RikuganPanelCore(QWidget):
         self._native_mcp_probe = None
         asked = self._native_mcp_user_initiated
         self._native_mcp_user_initiated = False
+        if self._panel_header is not None:
+            # Whatever the answer, the control stops claiming to be mid-switch.
+            self._panel_header.set_native_mcp_busy(False)
 
         if not result.available:
             self._native_mcp_available = False
@@ -1291,14 +1297,12 @@ class RikuganPanelCore(QWidget):
 
     def _report_native_mcp_missing(self, result) -> None:
         """Say why an explicit request found nothing, instead of doing nothing."""
+        from ..binja import native_mcp
+
         QMessageBox.information(
             self,
             "Binary Ninja MCP server",
-            f"No MCP server answered at {result.url}.\n\n"
-            "Enable Binary Ninja's MCP server plugin, then try again. If it "
-            "listens elsewhere, set the address in Settings \u2192 Behavior \u2192 "
-            "Binary Ninja MCP URL \u2014 Binary Ninja logs it at startup as "
-            '"MCP server listening at ...".',
+            native_mcp.missing_server_message(result.url),
         )
 
     def _native_mcp_key(self) -> str:

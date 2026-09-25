@@ -26,6 +26,7 @@ _OVERFLOW = "\u2026"
 _SIDEBAR = "\u2630"  # trigram for heaven, reads as a list/menu glyph
 _DOT_ON = "\u25cf"
 _DOT_OFF = "\u25cb"
+_DOT_BUSY = "\u25cc"  # dotted circle: looking for the server
 _MAX_TITLE_CHARS = 26
 # Naming the host on the MCP chip costs the header about half its width, so
 # the chat title gives way while that chip is showing rather than pushing the
@@ -89,6 +90,7 @@ class PanelHeader(QWidget):
         self._settings_callback: Callable[[], None] | None = None
         self._mutations_callback: Callable[[], None] | None = None
         self._mcp_callback: Callable[[], None] | None = None
+        self._mcp_active = False
         self._chat_title = "Untitled"
 
         layout = QHBoxLayout(self)
@@ -172,11 +174,31 @@ class PanelHeader(QWidget):
 
     def set_native_mcp_active(self, active: bool) -> None:
         """Say in words which tool set the agent is working with."""
+        self._mcp_active = active
+        self._mcp_btn.setEnabled(True)
         self._mcp_btn.setChecked(active)
         self._mcp_btn.setText(mcp_label(active))
         self._mcp_btn.setToolTip(mcp_tooltip(active))
 
+    def set_native_mcp_busy(self, busy: bool) -> None:
+        """Show that we are looking for the server, which can take seconds.
+
+        Without this the button reads as though the switch already happened
+        while the probe is still running.
+        """
+        if not busy:
+            self.set_native_mcp_active(self._mcp_active)
+            return
+        self._mcp_btn.setEnabled(False)
+        self._mcp_btn.setChecked(False)
+        self._mcp_btn.setText(f"{_DOT_BUSY} Binary Ninja MCP")
+        self._mcp_btn.setToolTip("Looking for Binary Ninja's MCP server\u2026")
+
     def _on_mcp(self) -> None:
+        # A checkable button flips itself the moment it is clicked, but whether
+        # the swap actually happens is the controller's call and may take a
+        # probe to find out. Put it back and wait to be told.
+        self.set_native_mcp_active(self._mcp_active)
         if self._mcp_callback is not None:
             self._mcp_callback()
 

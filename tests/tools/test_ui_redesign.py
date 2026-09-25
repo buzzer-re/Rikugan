@@ -29,7 +29,8 @@ from rikugan.ui.binary_summary import (  # noqa: E402
     parse_info_lines,
     parse_total_count,
 )
-from rikugan.ui.panel_header import elide_title, mcp_label, mcp_tooltip  # noqa: E402
+from rikugan.binja import native_mcp  # noqa: E402
+from rikugan.ui.panel_header import PanelHeader, elide_title, mcp_label, mcp_tooltip  # noqa: E402
 from rikugan.ui.welcome_view import build_suggestions, wrap_chips  # noqa: E402
 
 _IDA_INFO = """File: libcrypt_stub.dylib
@@ -247,6 +248,98 @@ class TestNativeMcpControl(unittest.TestCase):
         for cost in ("patching", "scripting", "/undo"):
             with self.subTest(cost=cost):
                 self.assertIn(cost, tip)
+
+
+class _FakeToolButton:
+    """Enough of QToolButton to exercise the header's state handling."""
+
+    def __init__(self):
+        self._text = ""
+        self._tip = ""
+        self._checked = False
+        self._enabled = True
+
+    def setText(self, text):
+        self._text = text
+
+    def setToolTip(self, tip):
+        self._tip = tip
+
+    def setChecked(self, checked):
+        self._checked = checked
+
+    def setEnabled(self, enabled):
+        self._enabled = enabled
+
+    def isVisible(self):
+        return True
+
+
+def _header_with_fake_button():
+    """A PanelHeader with only the MCP state it needs — Qt is not stubbed deeply."""
+    header = PanelHeader.__new__(PanelHeader)
+    header._mcp_btn = _FakeToolButton()
+    header._mcp_active = False
+    header._mcp_callback = None
+    return header
+
+
+class TestNativeMcpButtonState(unittest.TestCase):
+    """The control must never claim a switch that has not happened.
+
+    Qt flips a checkable button the instant it is clicked, but whether the
+    swap happens depends on a probe that may find no server at all.
+    """
+
+    def test_clicking_does_not_switch_the_control_on_by_itself(self):
+        header = _header_with_fake_button()
+        header._on_mcp()
+        self.assertFalse(header._mcp_active)
+        self.assertFalse(header._mcp_btn._checked)
+        self.assertEqual(header._mcp_btn._text, mcp_label(False))
+
+    def test_the_callback_still_runs_on_click(self):
+        header = _header_with_fake_button()
+        calls = []
+        header._mcp_callback = lambda: calls.append(1)
+        header._on_mcp()
+        self.assertEqual(calls, [1])
+
+    def test_a_probe_in_flight_reads_as_neither_on_nor_off(self):
+        header = _header_with_fake_button()
+        header.set_native_mcp_busy(True)
+        self.assertFalse(header._mcp_btn._checked)
+        self.assertFalse(header._mcp_btn._enabled)
+        self.assertNotEqual(header._mcp_btn._text, mcp_label(True))
+
+    def test_a_failed_probe_leaves_the_control_off(self):
+        header = _header_with_fake_button()
+        header.set_native_mcp_busy(True)
+        header.set_native_mcp_busy(False)  # probe came back with nothing
+        self.assertFalse(header._mcp_btn._checked)
+        self.assertTrue(header._mcp_btn._enabled)
+        self.assertEqual(header._mcp_btn._text, mcp_label(False))
+
+    def test_turning_it_off_again_restores_the_off_state(self):
+        header = _header_with_fake_button()
+        header.set_native_mcp_active(True)
+        header._on_mcp()  # click while on: stays on until the controller says
+        self.assertTrue(header._mcp_btn._checked)
+        header.set_native_mcp_active(False)
+        self.assertFalse(header._mcp_btn._checked)
+
+
+class TestMissingServerMessage(unittest.TestCase):
+    def test_it_names_the_menu_path(self):
+        # The plugin is off by default and the path is not guessable.
+        msg = native_mcp.missing_server_message("http://127.0.0.1:24642/mcp")
+        self.assertIn("Plugins", msg)
+        self.assertIn("MCP", msg)
+        self.assertIn("Start Server", msg)
+
+    def test_it_names_the_address_that_was_tried(self):
+        msg = native_mcp.missing_server_message("http://127.0.0.1:9999/mcp")
+        self.assertIn("http://127.0.0.1:9999/mcp", msg)
 
 
 # ---------------------------------------------------------------------------

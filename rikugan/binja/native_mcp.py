@@ -69,6 +69,23 @@ def probe(url: str = "") -> ProbeResult:
             log_debug(f"Binary Ninja MCP probe cleanup: {e}")
 
 
+def missing_server_message(url: str) -> str:
+    """What to tell someone whose click found no server.
+
+    The plugin is off by default and the menu path is not guessable, so name
+    it rather than saying only that nothing answered.
+    """
+    return (
+        f"No MCP server answered at {url}.\n\n"
+        "Start it from Binary Ninja's menu:\n"
+        "    Plugins \u2192 MCP \u2192 Start Server\n\n"
+        "Then click Binary Ninja MCP again.\n\n"
+        "If it listens elsewhere, set the address in Settings \u2192 Behavior "
+        "\u2192 Binary Ninja MCP URL \u2014 Binary Ninja logs it at startup as "
+        '"MCP server listening at ...".'
+    )
+
+
 def superseded_builtins(registry) -> list[str]:
     """Rikugan's own tools, all of which stand down while the host server runs.
 
