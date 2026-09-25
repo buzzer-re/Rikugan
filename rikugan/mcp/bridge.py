@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -13,13 +14,22 @@ from ..tools.registry import ToolRegistry
 from .client import MCPClient
 
 # Every declared tool is re-sent on every request, so a server's documentation
-# is a per-turn cost. Servers written for a chat client often ship paragraphs;
-# keep enough to choose the tool and drop the rest.
-_MAX_TOOL_DESCRIPTION = 400
-_MAX_PARAM_DESCRIPTION = 150
+# is a per-turn cost, paid again on each turn of every conversation. Servers
+# written for a chat client ship reference-manual prose: Binary Ninja's 75
+# tools came to ~54 KB, more than twice Rikugan's own 62, almost all of it
+# repeated boilerplate about handles and address formats. A sentence is enough
+# to pick a tool; the parameter schema carries the rest.
+_MAX_TOOL_DESCRIPTION = 140
+_MAX_PARAM_DESCRIPTION = 60
 
-# Both Anthropic and OpenAI reject tool names longer than this.
+# Both Anthropic and OpenAI reject tool names longer than this, and accept
+# only these characters. A server that violates either is not something we can
+# fix by asking nicely, so those tools are dropped rather than sent.
 _MAX_TOOL_NAME = 64
+_VALID_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+# JSON Schema types the providers accept in a tool's input schema.
+_VALID_PARAM_TYPES = frozenset({"string", "number", "integer", "boolean", "array", "object", "null"})
 
 
 def _clip(text: str, limit: int) -> str:
@@ -46,6 +56,10 @@ def _mcp_schema_to_parameters(input_schema: dict[str, Any]) -> list[ParameterSch
         # Normalize array types
         if isinstance(json_type, list):
             json_type = json_type[0] if json_type else "string"
+        # A schema built from $ref/anyOf has no plain type; the providers
+        # reject anything outside their list, so fall back rather than relay it.
+        if json_type not in _VALID_PARAM_TYPES:
+            json_type = "string"
 
         ps = ParameterSchema(
             name=name,
@@ -86,12 +100,14 @@ def register_mcp_tools(client: MCPClient, registry: ToolRegistry, prefix: str = 
     count = 0
     skipped: list[str] = []
 
+    limit = getattr(getattr(client, "config", None), "description_limit", 0) or _MAX_TOOL_DESCRIPTION
+
     for mcp_tool in tools:
         rikugan_name = f"{prefix}{mcp_tool.name}"
-        if len(rikugan_name) > _MAX_TOOL_NAME:
+        if len(rikugan_name) > _MAX_TOOL_NAME or not _VALID_TOOL_NAME.match(rikugan_name):
             skipped.append(mcp_tool.name)
             continue
-        description = f"[MCP:{client.name}] {_clip(mcp_tool.description, _MAX_TOOL_DESCRIPTION)}"
+        description = f"[MCP:{client.name}] {_clip(mcp_tool.description, limit)}"
         parameters = _mcp_schema_to_parameters(mcp_tool.input_schema)
         handler = _make_mcp_handler(client, mcp_tool.name)
 
@@ -106,7 +122,7 @@ def register_mcp_tools(client: MCPClient, registry: ToolRegistry, prefix: str = 
         count += 1
 
     if skipped:
-        log_warning(f"MCP[{client.name}]: skipped {len(skipped)} tools whose names exceed {_MAX_TOOL_NAME} chars")
+        log_warning(f"MCP[{client.name}]: skipped {len(skipped)} tools the providers would reject: {skipped}")
     log_info(f"Registered {count} MCP tools from {client.name} (prefix={prefix}); {describe_payload(registry)}")
     return count
 

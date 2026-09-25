@@ -32,6 +32,10 @@ class MCPServerConfig:
     enabled: bool = True
     timeout: float = 30.0
     url: str = ""
+    # Characters of the server's own tool documentation to keep. Its prose is
+    # re-sent on every turn, so a verbose server is a standing cost; 0 means
+    # use the bridge's default.
+    description_limit: int = 0
 
     @property
     def is_remote(self) -> bool:
@@ -74,6 +78,7 @@ def load_mcp_config(path: str = "") -> list[MCPServerConfig]:
             enabled=cfg.get("enabled", True),
             timeout=float(cfg.get("timeout", 30.0)),
             url=cfg.get("url", ""),
+            description_limit=int(cfg.get("description_limit", 0)),
         )
         if server.command or server.url:
             servers.append(server)
@@ -101,6 +106,8 @@ def save_mcp_config(servers: list[MCPServerConfig], path: str = "") -> None:
             entry["url"] = s.url
         if s.timeout != 30.0:
             entry["timeout"] = s.timeout
+        if s.description_limit:
+            entry["description_limit"] = s.description_limit
         servers_dict[s.name] = entry
 
     data = {"mcpServers": servers_dict}

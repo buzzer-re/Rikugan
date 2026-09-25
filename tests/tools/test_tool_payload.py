@@ -11,6 +11,7 @@ import unittest
 
 from rikugan.binja import native_mcp
 from rikugan.mcp.bridge import _MAX_TOOL_DESCRIPTION, _MAX_TOOL_NAME, describe_payload, register_mcp_tools
+from rikugan.mcp.config import MCPServerConfig
 from rikugan.tools.base import ToolDefinition
 from rikugan.tools.registry import ToolRegistry
 
@@ -143,6 +144,33 @@ class TestBridgePayload(unittest.TestCase):
         count = register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
         self.assertEqual(count, 1)
         self.assertEqual(registry.list_names(), ["mcp_binaryninja_bn_ok"])
+
+    def test_a_name_with_illegal_characters_is_skipped(self):
+        # Both Anthropic and OpenAI accept only [a-zA-Z0-9_-]; relaying one
+        # through would fail the whole request, not just that tool.
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool("bn.info", "x"), _FakeTool("bn ok", "x"), _FakeTool("bn_ok", "x")])
+        count = register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
+        self.assertEqual(count, 1)
+
+    def test_a_type_outside_json_schema_falls_back(self):
+        # A schema built from $ref or anyOf has no plain type.
+        registry = ToolRegistry()
+        schema = {"properties": {"addr": {"type": "any"}, "n": {"type": "integer"}}}
+        client = _FakeClient([_FakeTool("bn_read", "x", schema)])
+        register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
+        props = registry.get("mcp_binaryninja_bn_read").to_json_schema()["properties"]
+        self.assertEqual(props["addr"]["type"], "string")
+        self.assertEqual(props["n"]["type"], "integer")
+
+    def test_the_server_may_ask_for_a_tighter_clip(self):
+        registry = ToolRegistry()
+        client = _FakeClient([_FakeTool("bn_info", "word " * 200)])
+        client.config = MCPServerConfig(name="binaryninja", url="http://x/mcp", description_limit=30)
+        register_mcp_tools(client, registry, prefix="mcp_binaryninja_")
+        defn = registry.get("mcp_binaryninja_bn_info")
+        assert defn is not None
+        self.assertLess(len(defn.description), 80)
 
     def test_describe_payload_reports_what_is_sent(self):
         registry = ToolRegistry()
