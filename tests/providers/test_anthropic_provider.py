@@ -66,8 +66,13 @@ class TestAnthropicFormatMessages(unittest.TestCase):
         self.assertEqual(content[1]["name"], "get_info")
         self.assertEqual(content[1]["input"], {"x": 1})
 
-    def test_tool_results_become_user_messages(self):
-        """Anthropic maps tool results to user messages with tool_result content."""
+    def test_tool_results_become_one_user_message(self):
+        """All results from one assistant turn belong in a single user message.
+
+        Emitting one message per result put two user messages back to back,
+        which breaks the alternation the API requires — and the prompt asks
+        the model to batch tool calls, so that was every parallel turn.
+        """
         p = _make_provider()
         msgs = [Message(
             role=Role.TOOL,
@@ -77,16 +82,15 @@ class TestAnthropicFormatMessages(unittest.TestCase):
             ],
         )]
         result = p._format_messages(msgs)
-        self.assertEqual(len(result), 2)
-        for r in result:
-            self.assertEqual(r["role"], "user")
-            self.assertIsInstance(r["content"], list)
-            self.assertEqual(r["content"][0]["type"], "tool_result")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["role"], "user")
+        blocks = result[0]["content"]
+        self.assertEqual([b["type"] for b in blocks], ["tool_result", "tool_result"])
 
-        self.assertEqual(result[0]["content"][0]["tool_use_id"], "tc_1")
-        self.assertFalse(result[0]["content"][0]["is_error"])
-        self.assertEqual(result[1]["content"][0]["tool_use_id"], "tc_2")
-        self.assertTrue(result[1]["content"][0]["is_error"])
+        self.assertEqual(blocks[0]["tool_use_id"], "tc_1")
+        self.assertFalse(blocks[0]["is_error"])
+        self.assertEqual(blocks[1]["tool_use_id"], "tc_2")
+        self.assertTrue(blocks[1]["is_error"])
 
     def test_full_conversation(self):
         p = _make_provider()
@@ -304,3 +308,61 @@ class TestCacheMarks(unittest.TestCase):
         from rikugan.providers.anthropic_provider import _cache_marks
 
         self.assertEqual(_cache_marks("hello"), 0)
+
+
+class TestRoleAlternation(unittest.TestCase):
+    """The API requires alternating roles; failed turns break that.
+
+    A turn that errors leaves its user message in the history with no reply,
+    so a run of failures builds a run of user messages and every later
+    request carries a malformed conversation.
+    """
+
+    def _formatted(self, messages):
+        return _make_provider()._format_messages(messages)
+
+    def test_a_run_of_user_messages_is_folded_into_one(self):
+        out = self._formatted([Message(role=Role.USER, content=f"hello {i}") for i in range(6)])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["role"], "user")
+        # Nothing the user typed is discarded.
+        for i in range(6):
+            self.assertIn(f"hello {i}", out[0]["content"])
+
+    def test_alternating_history_is_untouched(self):
+        out = self._formatted(
+            [
+                Message(role=Role.USER, content="a"),
+                Message(role=Role.ASSISTANT, content="b"),
+                Message(role=Role.USER, content="c"),
+            ]
+        )
+        self.assertEqual([m["role"] for m in out], ["user", "assistant", "user"])
+
+    def test_roles_always_alternate_after_folding(self):
+        out = self._formatted(
+            [
+                Message(role=Role.USER, content="hell"),
+                Message(role=Role.USER, content="hello"),
+                Message(role=Role.ASSISTANT, content="hi"),
+                Message(role=Role.USER, content="hello"),
+                Message(role=Role.USER, content="hello"),
+                Message(role=Role.USER, content="hello"),
+            ]
+        )
+        roles = [m["role"] for m in out]
+        self.assertEqual(roles, ["user", "assistant", "user"])
+        for a, b in zip(roles, roles[1:], strict=False):
+            self.assertNotEqual(a, b)
+
+    def test_block_and_string_bodies_join_without_loss(self):
+        out = self._formatted(
+            [
+                Message(role=Role.ASSISTANT, content="text", tool_calls=[ToolCall(id="1", name="t", arguments={})]),
+                Message(role=Role.ASSISTANT, content="more"),
+            ]
+        )
+        self.assertEqual(len(out), 1)
+        kinds = [b["type"] for b in out[0]["content"]]
+        self.assertIn("tool_use", kinds)
+        self.assertIn("text", kinds)

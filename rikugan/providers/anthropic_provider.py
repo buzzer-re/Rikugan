@@ -58,6 +58,38 @@ def _read_oauth_from_keychain() -> str | None:
         return None
 
 
+def _merge_adjacent_roles(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold runs of same-role messages into one, as the API requires.
+
+    Messages have to alternate user/assistant. A turn that fails leaves its
+    user message in the history with no reply, so a few failures in a row
+    build a run of user messages and every later request carries a malformed
+    conversation — a second, self-inflicted failure on top of the first.
+
+    Repairing it here rather than in the session keeps the user's own text on
+    screen: nothing is dropped, adjacent messages are joined.
+    """
+    merged: list[dict[str, Any]] = []
+    for msg in messages:
+        if merged and merged[-1]["role"] == msg["role"]:
+            merged[-1]["content"] = _join_content(merged[-1]["content"], msg["content"])
+            continue
+        merged.append({"role": msg["role"], "content": msg["content"]})
+    return merged
+
+
+def _join_content(left: Any, right: Any) -> Any:
+    """Join two message bodies, keeping block form when either side uses it."""
+    if isinstance(left, str) and isinstance(right, str):
+        return f"{left}\n\n{right}"
+    as_blocks = [
+        block if isinstance(block, dict) else {"type": "text", "text": str(block)}
+        for side in (left, right)
+        for block in (side if isinstance(side, list) else [{"type": "text", "text": side}])
+    ]
+    return as_blocks
+
+
 def _cache_marks(content: Any) -> int:
     """How many cache_control breakpoints a message carries.
 
@@ -331,7 +363,7 @@ class AnthropicProvider(LLMProvider):
                         }
                     )
 
-        return formatted
+        return _merge_adjacent_roles(formatted)
 
     def _format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert OpenAI-style tool schemas to Anthropic format."""
