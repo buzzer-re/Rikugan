@@ -182,7 +182,17 @@ class TestSessionHistory(unittest.TestCase):
 
         def fail_if_messages_loaded(fp, *args, **kwargs):
             data = real_load(fp, *args, **kwargs)
-            self.assertEqual(set(data.keys()), {"id", "created_at", "provider", "model", "idb_path", "db_instance_id", "messages", "description"})
+            self.assertEqual(set(data.keys()), {
+                    "id",
+                    "created_at",
+                    "last_active_at",
+                    "provider",
+                    "model",
+                    "idb_path",
+                    "db_instance_id",
+                    "messages",
+                    "description",
+                })
             self.assertIsInstance(data["messages"], int)
             return data
 

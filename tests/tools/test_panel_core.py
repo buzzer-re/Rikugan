@@ -529,6 +529,8 @@ class TestChatThreadList(unittest.TestCase):
         sidebar._statuses = {}
         sidebar._groups = {"tid": ""}
         sidebar._group_items = {}
+        sidebar._group_headers = {}
+        sidebar._collapsed = set()
         sidebar._search = MagicMock()
         sidebar._search.text.return_value = ""
 
@@ -905,3 +907,125 @@ class TestNativeMcpConsent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChatFolders(unittest.TestCase):
+    """Chats are grouped by the binary they were opened against.
+
+    A chat from another binary looks like any other in a flat list until you
+    type into it, so each file becomes a folder and the ones you are not
+    working in fold away.
+    """
+
+    def _list(self, groups):
+        sidebar = object.__new__(ChatThreadList)
+        sidebar._items = {tid: MagicMock() for tid in groups}
+        sidebar._titles = {tid: f"chat {tid}" for tid in groups}
+        sidebar._details = dict.fromkeys(groups, "")
+        sidebar._groups = dict(groups)
+        sidebar._group_order = list(dict.fromkeys(groups.values()))
+        sidebar._group_items = {g: MagicMock() for g in sidebar._group_order}
+        sidebar._group_headers = {g: MagicMock() for g in sidebar._group_order}
+        sidebar._collapsed = set()
+        sidebar._current_group = ""
+        sidebar._search = MagicMock()
+        sidebar._search.text.return_value = ""
+        return sidebar
+
+    def _hidden(self, sidebar, tab_id):
+        return sidebar._items[tab_id].setHidden.call_args[0][0]
+
+    def test_only_the_binary_in_view_stays_open(self):
+        sidebar = self._list({"a": "one.bndb", "b": "two.bndb"})
+        sidebar.set_current_group("one.bndb")
+        self.assertFalse(self._hidden(sidebar, "a"))
+        self.assertTrue(self._hidden(sidebar, "b"))
+
+    def test_a_folder_can_be_opened_again(self):
+        sidebar = self._list({"a": "one.bndb", "b": "two.bndb"})
+        sidebar.set_current_group("one.bndb")
+        sidebar.toggle_group("two.bndb")
+        self.assertFalse(self._hidden(sidebar, "b"))
+
+    def test_search_reaches_into_folded_folders(self):
+        # A chat you cannot find is worse than a folder that opens itself.
+        sidebar = self._list({"a": "one.bndb", "b": "two.bndb"})
+        sidebar.set_current_group("one.bndb")
+        sidebar._search.text.return_value = "chat b"
+        sidebar._apply_filter()
+        self.assertFalse(self._hidden(sidebar, "b"))
+
+    def test_an_empty_folder_header_is_hidden(self):
+        sidebar = self._list({"a": "one.bndb"})
+        sidebar._search.text.return_value = "nothing matches"
+        sidebar._apply_filter()
+        sidebar._group_items["one.bndb"].setHidden.assert_called_with(True)
+
+
+class TestFoldersStayFolded(unittest.TestCase):
+    """Folders are filled one chat at a time as sessions restore.
+
+    A row added into a folded folder must arrive folded, and a folder that
+    first appears after the binary in view is known must start folded —
+    otherwise every folder reads as open however it was built.
+    """
+
+    def _list(self):
+        sidebar = object.__new__(ChatThreadList)
+        sidebar._items = {}
+        sidebar._rows = {}
+        sidebar._titles = {}
+        sidebar._details = {}
+        sidebar._statuses = {}
+        sidebar._groups = {}
+        sidebar._group_order = []
+        sidebar._group_members = {}
+        sidebar._group_items = {}
+        sidebar._group_headers = {}
+        sidebar._collapsed = set()
+        sidebar._current_group = ""
+        sidebar._search = MagicMock()
+        sidebar._search.text.return_value = ""
+        return sidebar
+
+    def _add(self, sidebar, tab_id, group):
+        """Register a chat through the real grouping code, minus Qt widgets."""
+
+        def _fake_header(name):
+            sidebar._group_items[name] = MagicMock()
+            sidebar._group_headers[name] = MagicMock()
+
+        sidebar._insert_group_header = _fake_header
+        sidebar._items[tab_id] = MagicMock()
+        sidebar._titles[tab_id] = tab_id
+        sidebar._details[tab_id] = ""
+        sidebar._groups[tab_id] = group
+        sidebar._register_in_group(tab_id, group)
+        sidebar._apply_filter()
+
+    def _hidden(self, sidebar, tab_id):
+        return sidebar._items[tab_id].setHidden.call_args[0][0]
+
+    def test_a_folder_discovered_later_starts_folded(self):
+        sidebar = self._list()
+        self._add(sidebar, "a", "current.bndb")
+        sidebar.set_current_group("current.bndb")
+        self._add(sidebar, "b", "other.bndb")
+        self.assertIn("other.bndb", sidebar._collapsed)
+        self.assertTrue(self._hidden(sidebar, "b"))
+
+    def test_a_second_chat_in_a_folded_folder_arrives_folded(self):
+        sidebar = self._list()
+        self._add(sidebar, "a", "current.bndb")
+        sidebar.set_current_group("current.bndb")
+        self._add(sidebar, "b", "other.bndb")
+        self._add(sidebar, "c", "other.bndb")
+        self.assertTrue(self._hidden(sidebar, "c"))
+
+    def test_the_binary_in_view_is_never_folded(self):
+        sidebar = self._list()
+        self._add(sidebar, "a", "current.bndb")
+        sidebar.set_current_group("current.bndb")
+        self._add(sidebar, "b", "current.bndb")
+        self.assertNotIn("current.bndb", sidebar._collapsed)
+        self.assertFalse(self._hidden(sidebar, "b"))

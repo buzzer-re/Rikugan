@@ -16,6 +16,8 @@ install_ida_mocks()
 # Some UI tests stub modules in sys.modules; ensure this test gets real ones.
 for _mod_name in [
     "rikugan.core.types",
+    "rikugan.state.session",
+    "rikugan.state.history",
     "rikugan.core.config",
     "rikugan.core.logging",
     "rikugan.agent.turn",
@@ -35,6 +37,7 @@ for _mod_name in [
 from rikugan.core.config import RikuganConfig
 from rikugan.core.types import Message, Role, TokenUsage, ToolCall, ToolResult
 from rikugan.ida.ui.session_controller import IdaSessionController
+from rikugan.state.session import SessionState
 
 
 class TestIdaSessionController(unittest.TestCase):
@@ -266,3 +269,40 @@ class TestIdaSessionController(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChatFocus(unittest.TestCase):
+    """Reopening a binary lands on the chat the user was last working in."""
+
+    def setUp(self):
+        self.cfg = RikuganConfig()
+        self.cfg._config_dir = tempfile.mkdtemp()
+        self.ctrl = IdaSessionController(self.cfg)
+
+    def tearDown(self):
+        self.ctrl.shutdown()
+
+    def _session(self, *, last_active=0.0, text="hi"):
+        s = SessionState()
+        s.messages.append(Message(role=Role.USER, content=text))
+        if last_active:
+            s.last_active_at = last_active
+        return s
+
+    def test_the_last_used_chat_is_focused_not_the_newest(self):
+        older_but_recently_used = self._session(last_active=5000.0, text="a")
+        newest_but_untouched = self._session(last_active=100.0, text="b")
+        registered = self.ctrl.register_restored_sessions(
+            [older_but_recently_used, newest_but_untouched]
+        )
+        expected = next(tid for tid, s in registered if s is older_but_recently_used)
+        self.assertEqual(self.ctrl.active_tab_id, expected)
+
+    def test_switching_to_a_chat_marks_it_as_used(self):
+        registered = self.ctrl.register_restored_sessions(
+            [self._session(last_active=1.0, text=f"m{i}") for i in range(2)]
+        )
+        target, session = next(t for t in registered if t[0] != self.ctrl.active_tab_id)
+        before = session.last_active_at
+        self.ctrl.switch_tab(target)
+        self.assertGreater(session.last_active_at, before)

@@ -199,6 +199,9 @@ class SessionControllerBase:
         if tab_id not in self._sessions:
             return
         self._active_tab_id = tab_id
+        # Reopening this binary should land here, not on whichever chat was
+        # created last.
+        self._sessions[tab_id].touch()
         log_debug(f"Switched to tab {tab_id}")
 
     def tab_label(self, tab_id: str) -> str:
@@ -523,7 +526,10 @@ class SessionControllerBase:
                     del self._sessions[self._active_tab_id]
                     default_dropped = True
             if default_dropped:
-                self._active_tab_id = results[-1][0]  # most recent
+                # The chat the user was last working in, which is rarely the
+                # one created most recently. Typing into the wrong chat means
+                # typing into another binary's context.
+                self._active_tab_id = max(results, key=lambda r: r[1].last_active_at)[0]
         return results
 
     def restore_sessions(self) -> list[tuple[str, SessionState]]:

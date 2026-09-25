@@ -836,8 +836,14 @@ def build_chat_drawer_stylesheet(source=None) -> str:
         # deliberately sets a background even where IDA owns the dock theme.
         f'QWidget#chat_sidebar[drawer="true"] {{ background-color: {t["panel"]}; '
         f"border-right: 1px solid {t['border']}; }}"
-        f"QLabel#chat_group_header {{ color: {t['faint']}; font-size: {t['font_small']}; "
-        "background: transparent; padding: 6px 4px 3px 4px; }"
+        f"QLabel#chat_group_header {{ color: {t['muted']}; font-size: {t['font_small']}; "
+        "background: transparent; }"
+        f"QLabel#chat_group_chevron {{ color: {t['faint']}; font-size: {t['font_small']}; "
+        "background: transparent; }"
+        f"QLabel#chat_group_count {{ color: {t['faint']}; font-size: {t['font_small']}; "
+        "background: transparent; }"
+        "QWidget#chat_group_header_row { background: transparent; }"
+        f"QWidget#chat_group_header_row:hover {{ background-color: {t['surface']}; }}"
         f"QWidget#chat_sidebar_footer {{ border-top: 1px solid {t['border_soft']}; }}"
         f"QToolButton#drawer_chip {{ background-color: {t['surface']}; "
         f"color: {ensure_contrast(t['muted'], t['surface'])}; "
