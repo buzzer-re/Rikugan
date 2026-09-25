@@ -220,8 +220,22 @@ class AnthropicProvider(LLMProvider):
 
     @staticmethod
     def _model_limits(model_id: str) -> tuple[int, int]:
-        """Return conservative provider-owned context/output limits."""
+        """Return the model's context window and output cap.
+
+        An unknown model used to fall through to 200K/8192, which is wrong in
+        both directions for the Claude 5 family: it holds a megatoken of
+        context and writes up to 128K. Under-reporting the window makes the
+        context manager compact a conversation that had six times the room it
+        thought, and the output cap truncated every long answer at 8K.
+        """
         model = model_id.lower()
+        # Claude 5 family: 1M context, 128K output.
+        if any(tag in model for tag in ("fable-5", "mythos-5", "opus-5", "sonnet-5")):
+            return 1000000, 128000
+        if "haiku-4-5" in model:
+            return 200000, 64000
+        if "sonnet-4-6" in model or "opus-4-6" in model or "opus-4-7" in model or "opus-4-8" in model:
+            return 1000000, 128000
         if "sonnet-4" in model or "3-7-sonnet" in model:
             return 200000, 64000
         if "opus-4" in model:

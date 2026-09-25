@@ -366,3 +366,24 @@ class TestRoleAlternation(unittest.TestCase):
         kinds = [b["type"] for b in out[0]["content"]]
         self.assertIn("tool_use", kinds)
         self.assertIn("text", kinds)
+
+
+class TestModelLimits(unittest.TestCase):
+    """An unknown model fell through to 200K/8192, wrong in both directions."""
+
+    def _limits(self, model):
+        from rikugan.providers.anthropic_provider import AnthropicProvider
+
+        return AnthropicProvider._model_limits(model)
+
+    def test_the_claude_5_family_gets_its_real_limits(self):
+        for model in ("claude-sonnet-5", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"):
+            with self.subTest(model=model):
+                self.assertEqual(self._limits(model), (1000000, 128000))
+
+    def test_haiku_4_5_keeps_its_smaller_window(self):
+        self.assertEqual(self._limits("claude-haiku-4-5")[0], 200000)
+
+    def test_an_unknown_model_stays_conservative(self):
+        # Guessing high would have the context manager overrun the window.
+        self.assertEqual(self._limits("claude-something-new"), (200000, 8192))
