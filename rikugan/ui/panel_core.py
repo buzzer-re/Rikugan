@@ -370,6 +370,49 @@ class ChatThreadRow(QWidget):
             self._badge.setStyleSheet(f"QLabel {{ {css} border-radius: 3px; padding: 1px 5px; font-size: 10px; }}")
 
 
+class _GroupHeader(QWidget):
+    """A binary's folder row: chevron, name, and how many chats it holds.
+
+    Chats belong to the binary they were opened against, and that is not
+    obvious from a flat list — a chat from another binary looks like any
+    other until you type into it. Naming the file and folding the rest away
+    makes the boundary visible instead of implied.
+    """
+
+    def __init__(self, name: str, parent: QWidget = None):
+        super().__init__(parent)
+        self.setObjectName("chat_group_header_row")
+        self._name = name
+        self._on_click = None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 6, 2)
+        layout.setSpacing(4)
+        self._chevron = QLabel("\u25be", self)
+        self._chevron.setObjectName("chat_group_chevron")
+        self._label = QLabel(name, self)
+        self._label.setObjectName("chat_group_header")
+        self._label.setToolTip(name)
+        self._count = QLabel("", self)
+        self._count.setObjectName("chat_group_count")
+        layout.addWidget(self._chevron)
+        layout.addWidget(self._label, 1)
+        layout.addWidget(self._count)
+
+    def set_click_callback(self, callback) -> None:
+        self._on_click = callback
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._chevron.setText("\u25b8" if collapsed else "\u25be")
+
+    def set_count(self, count: int) -> None:
+        self._count.setText(str(count) if count else "")
+
+    def mousePressEvent(self, event) -> None:
+        if self._on_click is not None:
+            self._on_click(self._name)
+        super().mousePressEvent(event)
+
+
 class ChatThreadList(QWidget):
     """Chat list shown as an overlay drawer (narrow) or a splitter column (wide).
 
@@ -398,6 +441,10 @@ class ChatThreadList(QWidget):
         self._group_order: list[str] = []
         self._group_members: dict[str, list[str]] = {}
         self._group_items: dict[str, QListWidgetItem] = {}
+        self._group_headers: dict[str, _GroupHeader] = {}
+        # Folders for binaries other than the one in view start folded.
+        self._collapsed: set[str] = set()
+        self._current_group = ""
         self._selected_tab_id: str | None = None
         self._suppress_select = False
         self.setObjectName("chat_sidebar")
@@ -571,6 +618,8 @@ class ChatThreadList(QWidget):
         """Remove every chat entry (e.g. when switching databases)."""
         for tab_id in list(self._items.keys()):
             self.remove_chat(tab_id)
+        self._collapsed.clear()
+        self._current_group = ""
         self._selected_tab_id = None
 
     def select_chat(self, tab_id: str) -> None:
@@ -607,13 +656,34 @@ class ChatThreadList(QWidget):
     def _insert_group_header(self, group: str) -> None:
         header_item = QListWidgetItem()
         header_item.setFlags(Qt.ItemFlag.NoItemFlags)
-        label = QLabel(group, self._list)
-        label.setObjectName("chat_group_header")
-        label.setToolTip(group)
+        header = _GroupHeader(group, self._list)
+        header.set_click_callback(self.toggle_group)
+        header.set_collapsed(group in self._collapsed)
         header_item.setSizeHint(QSize(0, 22))
         self._group_items[group] = header_item
+        self._group_headers[group] = header
         self._list.insertItem(self._group_start_row(group), header_item)
-        self._list.setItemWidget(header_item, label)
+        self._list.setItemWidget(header_item, header)
+
+    def toggle_group(self, group: str) -> None:
+        """Fold a binary's chats away, or open them up again."""
+        if group in self._collapsed:
+            self._collapsed.discard(group)
+        else:
+            self._collapsed.add(group)
+        self._apply_filter()
+
+    def set_current_group(self, group: str) -> None:
+        """Open the binary in view and fold every other one away.
+
+        Only one binary is loaded at a time, so the others are history: worth
+        being able to find, not worth competing with the chats in play.
+        """
+        if group and group == self._current_group:
+            return
+        self._current_group = group
+        self._collapsed = {name for name in self._group_order if name != group and name != self._UNGROUPED}
+        self._apply_filter()
 
     def _group_start_row(self, group: str) -> int:
         row = 0
@@ -639,6 +709,8 @@ class ChatThreadList(QWidget):
             members.remove(tab_id)
         if members:
             return
+        self._group_headers.pop(group, None)
+        self._collapsed.discard(group)
         header_item = self._group_items.pop(group, None)
         if header_item is not None:
             header_row = self._list.row(header_item)
@@ -680,15 +752,23 @@ class ChatThreadList(QWidget):
 
     def _apply_filter(self) -> None:
         needle = self._search.text().strip().lower()
-        visible_per_group: dict[str, int] = {}
+        matches_per_group: dict[str, int] = {}
         for tab_id, item in self._items.items():
             haystack = f"{self._titles.get(tab_id, '')} {self._details.get(tab_id, '')}".lower()
-            hidden = bool(needle and needle not in haystack)
-            item.setHidden(hidden)
             group = self._groups.get(tab_id, self._UNGROUPED)
-            visible_per_group[group] = visible_per_group.get(group, 0) + (0 if hidden else 1)
+            matched = not needle or needle in haystack
+            matches_per_group[group] = matches_per_group.get(group, 0) + (1 if matched else 0)
+            # A search reaches into folded folders: a chat you cannot find is
+            # worse than a folder that opens itself.
+            folded = not needle and group in self._collapsed
+            item.setHidden(not matched or folded)
         for group, header_item in self._group_items.items():
-            header_item.setHidden(visible_per_group.get(group, 0) == 0)
+            count = matches_per_group.get(group, 0)
+            header_item.setHidden(count == 0)
+            header = self._group_headers.get(group)
+            if header is not None:
+                header.set_collapsed(not needle and group in self._collapsed)
+                header.set_count(count)
 
     # --- actions --------------------------------------------------------
 
@@ -1393,6 +1473,11 @@ class RikuganPanelCore(QWidget):
         # Nothing found yet — the server may have been enabled since startup.
         self._detect_native_mcp(user_initiated=True)
 
+    def _current_binary_group(self) -> str:
+        """Folder name for the binary in view — the one kept open."""
+        path = self._ctrl._idb_path
+        return os.path.basename(path) if path and isinstance(path, str) else ""
+
     def _chat_group(self, tab_id: str) -> str:
         """Group label for a chat: the binary it belongs to."""
         session = self._ctrl.get_session(tab_id)
@@ -1547,6 +1632,7 @@ class RikuganPanelCore(QWidget):
         if self._chat_sidebar is not None:
             if add_to_sidebar:
                 self._chat_sidebar.add_chat(tab_id, label, self._chat_detail(tab_id), self._chat_group(tab_id))
+                self._chat_sidebar.set_current_group(self._current_binary_group())
             if select:
                 self._chat_sidebar.select_chat(tab_id)
         if select:
@@ -1569,6 +1655,7 @@ class RikuganPanelCore(QWidget):
                 self._chat_detail(tab_id),
                 self._chat_group(tab_id),
             )
+            self._chat_sidebar.set_current_group(self._current_binary_group())
 
     def _on_new_tab(self) -> None:
         """Create a fresh independent chat tab."""

@@ -501,25 +501,6 @@ class SessionControllerBase:
             log_error(f"Failed to load sessions for restore: {e}")
         return loaded
 
-    def belongs_to_current_db(self, session: SessionState) -> bool:
-        """Whether this chat was opened against the binary now in view.
-
-        A chat carries its binary's addresses, names and analysis in its
-        history, and the agent answers against whatever database is loaded
-        now. Listing one from another binary invites the user to type into it,
-        which silently mixes two binaries' context — so those stay hidden
-        rather than merely sorted to the bottom.
-        """
-        if session.db_instance_id and self._db_instance_id:
-            return session.db_instance_id == self._db_instance_id
-        if session.idb_path and self._idb_path:
-            # Normalize both: a session saved before the path was canonicalized
-            # would otherwise look like a different binary.
-            return _normalize_db_path(session.idb_path) == _normalize_db_path(self._idb_path)
-        # Nothing on either side identifies a binary, so there is nothing to
-        # contradict — an unsaved or pre-upgrade chat stays visible.
-        return True
-
     def register_restored_sessions(self, sessions: list[SessionState]) -> list[tuple[str, SessionState]]:
         """Register pre-loaded sessions as tabs. Must run on the UI thread.
 
@@ -529,9 +510,6 @@ class SessionControllerBase:
         results: list[tuple[str, SessionState]] = []
         for session in sessions:
             if not session.messages:
-                continue
-            if not self.belongs_to_current_db(session):
-                log_debug(f"Skipping session {session.id}: belongs to another binary")
                 continue
             tab_id = uuid.uuid4().hex[:8]
             self._sessions[tab_id] = session

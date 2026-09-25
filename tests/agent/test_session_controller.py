@@ -271,53 +271,27 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestChatBinaryScoping(unittest.TestCase):
-    """A chat belongs to the binary it was opened against.
-
-    Its history carries that binary's addresses and names, and the agent
-    answers against whatever database is loaded now — so typing into a chat
-    from another binary silently mixes two contexts.
-    """
+class TestChatFocus(unittest.TestCase):
+    """Reopening a binary lands on the chat the user was last working in."""
 
     def setUp(self):
         self.cfg = RikuganConfig()
         self.cfg._config_dir = tempfile.mkdtemp()
         self.ctrl = IdaSessionController(self.cfg)
-        self.ctrl._idb_path = "/bin/current.i64"
-        self.ctrl._db_instance_id = "db-current"
 
     def tearDown(self):
         self.ctrl.shutdown()
 
-    def _session(self, *, instance="", path="", last_active=0.0, text="hi"):
-        s = SessionState(idb_path=path, db_instance_id=instance)
+    def _session(self, *, last_active=0.0, text="hi"):
+        s = SessionState()
         s.messages.append(Message(role=Role.USER, content=text))
         if last_active:
             s.last_active_at = last_active
         return s
 
-    def test_a_chat_from_another_binary_is_not_listed(self):
-        keep = self._session(instance="db-current")
-        drop = self._session(instance="db-other")
-        registered = self.ctrl.register_restored_sessions([keep, drop])
-        self.assertEqual([s for _, s in registered], [keep])
-
-    def test_matching_falls_back_to_the_path(self):
-        keep = self._session(path="/bin/current.i64")
-        drop = self._session(path="/bin/elsewhere.i64")
-        self.ctrl._db_instance_id = ""
-        registered = self.ctrl.register_restored_sessions([keep, drop])
-        self.assertEqual([s for _, s in registered], [keep])
-
-    def test_a_chat_with_no_binary_recorded_is_kept(self):
-        # Pre-upgrade or unsaved chats identify no binary; there is nothing to
-        # contradict, so hiding them would lose the user's work.
-        orphan = self._session()
-        self.assertTrue(self.ctrl.belongs_to_current_db(orphan))
-
     def test_the_last_used_chat_is_focused_not_the_newest(self):
-        older_but_recently_used = self._session(instance="db-current", last_active=5000.0, text="a")
-        newest_but_untouched = self._session(instance="db-current", last_active=100.0, text="b")
+        older_but_recently_used = self._session(last_active=5000.0, text="a")
+        newest_but_untouched = self._session(last_active=100.0, text="b")
         registered = self.ctrl.register_restored_sessions(
             [older_but_recently_used, newest_but_untouched]
         )
@@ -326,10 +300,8 @@ class TestChatBinaryScoping(unittest.TestCase):
 
     def test_switching_to_a_chat_marks_it_as_used(self):
         registered = self.ctrl.register_restored_sessions(
-            [self._session(instance="db-current", last_active=1.0, text=f"m{i}") for i in range(2)]
+            [self._session(last_active=1.0, text=f"m{i}") for i in range(2)]
         )
-        # Pick a chat that is not already active — switching to the active one
-        # is a no-op by design.
         target, session = next(t for t in registered if t[0] != self.ctrl.active_tab_id)
         before = session.last_active_at
         self.ctrl.switch_tab(target)

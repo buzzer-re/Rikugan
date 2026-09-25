@@ -367,6 +367,9 @@ def _make_sidebar():
     sidebar._group_order = []
     sidebar._group_members = {}
     sidebar._group_items = {}
+    sidebar._group_headers = {}
+    sidebar._collapsed = set()
+    sidebar._current_group = ""
     sidebar._groups = {}
     sidebar._list = MagicMock()
     return sidebar
