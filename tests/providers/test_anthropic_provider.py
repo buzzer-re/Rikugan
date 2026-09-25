@@ -243,36 +243,46 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestOversizedRequestHint(unittest.TestCase):
-    """A rejection about usage says nothing about what made the request big.
+class TestQuotaRejectionHint(unittest.TestCase):
+    """A rejection about extra usage explains nothing on its own.
 
-    Turning on the host's own MCP server declares a second full tool set on
-    every turn; when the API then refuses the request, that is the difference
-    worth naming.
+    On a subscription token the account is simply at its cap, and nothing
+    Rikugan trims adds allowance — so say that, and name the way round it,
+    rather than leaving it looking like a bug in Rikugan.
     """
 
-    def _provider(self, tool_payload=None):
+    def _provider(self, auth_type="oauth", tool_payload=None):
         p = _make_provider()
+        p._auth_type = auth_type
         if tool_payload is not None:
             p._last_tool_payload = tool_payload
         return p
 
-    def test_a_large_tool_set_is_named_on_a_usage_rejection(self):
-        p = self._provider((137, 60000))
-        hint = p._oversized_request_hint("You're out of extra usage. Add more at claude.ai/settings/usage")
+    def test_it_names_the_cap_and_the_way_round_it(self):
+        p = self._provider(tool_payload=(137, 60000))
+        hint = p._quota_rejection_hint("You're out of extra usage. Add more at claude.ai/settings/usage")
+        self.assertIn("subscription", hint)
+        self.assertIn("API key", hint)
+
+    def test_a_large_tool_set_is_mentioned_as_a_factor(self):
+        p = self._provider(tool_payload=(137, 60000))
+        hint = p._quota_rejection_hint("You're out of extra usage.")
         self.assertIn("137 tools", hint)
-        self.assertIn("MCP", hint)
+        # But never as the cause: trimming does not add allowance.
+        self.assertIn("does not raise it", hint)
+
+    def test_an_api_key_user_gets_no_subscription_advice(self):
+        # There is no extra-usage cap on API credits, so this rejection means
+        # something else and the advice would be wrong.
+        p = self._provider(auth_type="api_key", tool_payload=(137, 60000))
+        self.assertEqual(p._quota_rejection_hint("You're out of extra usage."), "")
 
     def test_an_unrelated_rejection_gets_no_hint(self):
-        p = self._provider((137, 60000))
-        self.assertEqual(p._oversized_request_hint("invalid model name"), "")
+        p = self._provider(tool_payload=(137, 60000))
+        self.assertEqual(p._quota_rejection_hint("invalid model name"), "")
 
-    def test_a_small_tool_set_gets_no_hint(self):
-        # Without the second tool set the payload is not the story, and a
-        # wrong lead is worse than none.
-        p = self._provider((40, 15000))
-        self.assertEqual(p._oversized_request_hint("You're out of extra usage."), "")
-
-    def test_a_request_with_no_tools_gets_no_hint(self):
-        p = self._provider()
-        self.assertEqual(p._oversized_request_hint("You're out of extra usage."), "")
+    def test_a_small_tool_set_still_gets_the_cap_explanation(self):
+        p = self._provider(tool_payload=(40, 15000))
+        hint = p._quota_rejection_hint("You're out of extra usage.")
+        self.assertIn("API key", hint)
+        self.assertNotIn("40 tools", hint)

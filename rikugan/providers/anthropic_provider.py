@@ -373,25 +373,41 @@ class AnthropicProvider(LLMProvider):
 
     # A tool set this large is worth naming when the API turns a request away:
     # it is re-sent every turn and is otherwise invisible from the message.
+    # A tool set this large is worth naming as a contributing factor, though
+    # it is not on its own why a request is turned away.
     _BIG_TOOL_SET = 80
 
-    def _oversized_request_hint(self, message: str) -> str:
-        """Name the tool payload when a rejection may be about request size.
+    _USAGE_WORDS = ("usage", "limit", "credit", "balance", "quota")
 
-        Anthropic answers a subscription request it will not bill with a
-        message about usage, which says nothing about what made this request
-        different from the last one that worked. Declaring a second host tool
-        set does, so say so — as a lead, not a diagnosis.
+    def _quota_rejection_hint(self, message: str) -> str:
+        """Explain a rejection the message itself does not explain.
+
+        Anthropic answers a request it will not bill with a note about extra
+        usage and a link to buy more. On a subscription token that is the whole
+        story: the account is at its cap, and no amount of trimming on our side
+        adds allowance. Say that, and name the way round it, rather than
+        leaving it to look like a bug in Rikugan.
+
+        A large tool set does decide which side of the line a given request
+        lands on, so it is mentioned — as a contributing factor, not the cause.
         """
         lowered = message.lower()
-        if not any(word in lowered for word in ("usage", "limit", "credit", "balance", "quota")):
+        if not any(word in lowered for word in self._USAGE_WORDS):
+            return ""
+        if self._auth_type != "oauth":
             return ""
         count, size = getattr(self, "_last_tool_payload", (0, 0))
-        if count < self._BIG_TOOL_SET:
-            return ""
+        payload = ""
+        if count >= self._BIG_TOOL_SET:
+            payload = (
+                f" This request declared {count} tools (~{size // 1024} KB), re-sent every turn; "
+                "a smaller tool set can slip under the cap but does not raise it."
+            )
         return (
-            f"\n\nThis request declared {count} tools (~{size // 1024} KB), sent again on every turn. "
-            "If Binary Ninja's own MCP server is on, switching back to Rikugan's tools shrinks it."
+            "\n\nRikugan is signed in with a Claude subscription token, and this account "
+            "has no extra usage left to bill against. Claude Code may keep working on a "
+            "separate allowance. An Anthropic API key (Settings \u2192 Providers) bills to "
+            f"API credits instead and is not subject to this cap.{payload}"
         )
 
     def _handle_api_error(self, e: Exception) -> NoReturn:
@@ -418,7 +434,7 @@ class AnthropicProvider(LLMProvider):
             msg = str(e)
             if "context" in msg.lower() or "token" in msg.lower():
                 raise ContextLengthError(str(e), provider="anthropic") from e
-            raise ProviderError(msg + self._oversized_request_hint(msg), provider="anthropic") from e
+            raise ProviderError(msg + self._quota_rejection_hint(msg), provider="anthropic") from e
         raise ProviderError(str(e), provider="anthropic") from e
 
     def _build_request_kwargs(
