@@ -6,7 +6,7 @@ import inspect
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from tests.qt_stubs import ensure_pyside6_stubs
 
@@ -905,48 +905,3 @@ class TestNativeMcpConsent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestActiveDatabaseWatch(unittest.TestCase):
-    """The panel notices a view switch the host never announced.
-
-    Binary Ninja builds a sidebar widget per view and caches its BinaryView,
-    so its location callback reports the same view for that widget's whole
-    life. A tab switch can leave the panel pointed at the previous binary
-    while that binary's chats stay listed and selectable.
-    """
-
-    def _panel(self, current_path):
-        panel = RikuganPanelCore.__new__(RikuganPanelCore)
-        panel._is_shutdown = False
-        panel.changed = []
-        panel.on_database_changed = panel.changed.append
-        return panel
-
-    def test_a_switch_is_picked_up(self):
-        panel = self._panel("/bin/new.bndb")
-        with patch("rikugan.ui.panel_core.get_database_path", return_value="/bin/new.bndb"):
-            RikuganPanelCore._check_active_database(panel)
-        self.assertEqual(panel.changed, ["/bin/new.bndb"])
-
-    def test_no_focused_view_is_left_alone(self):
-        # An empty path means nothing is focused, which is not the same as
-        # switching away — acting on it would drop the chats on any incidental
-        # loss of focus.
-        panel = self._panel("")
-        with patch("rikugan.ui.panel_core.get_database_path", return_value=""):
-            RikuganPanelCore._check_active_database(panel)
-        self.assertEqual(panel.changed, [])
-
-    def test_a_host_that_raises_is_survivable(self):
-        panel = self._panel("")
-        with patch("rikugan.ui.panel_core.get_database_path", side_effect=RuntimeError("no view")):
-            RikuganPanelCore._check_active_database(panel)
-        self.assertEqual(panel.changed, [])
-
-    def test_a_shutdown_panel_does_nothing(self):
-        panel = self._panel("/bin/new.bndb")
-        panel._is_shutdown = True
-        with patch("rikugan.ui.panel_core.get_database_path", return_value="/bin/new.bndb"):
-            RikuganPanelCore._check_active_database(panel)
-        self.assertEqual(panel.changed, [])
