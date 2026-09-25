@@ -24,7 +24,8 @@ _CHEVRON = "▾"
 _PLUS = "+"
 _OVERFLOW = "\u2026"
 _SIDEBAR = "\u2630"  # trigram for heaven, reads as a list/menu glyph
-_MCP = "\u2b21"  # hexagon: the host's own MCP tools
+_DOT_ON = "\u25cf"
+_DOT_OFF = "\u25cb"
 _MAX_TITLE_CHARS = 26
 
 
@@ -34,6 +35,28 @@ def elide_title(title: str, limit: int = _MAX_TITLE_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def mcp_label(active: bool) -> str:
+    """Text on the host-MCP control.
+
+    It reads "MCP" rather than wearing an icon: the control swaps which tool
+    set the agent works with, and no shape on its own says that.
+    """
+    return f"{_DOT_ON if active else _DOT_OFF} MCP"
+
+
+def mcp_tooltip(active: bool) -> str:
+    """The sentence behind the control, naming what changes either way."""
+    if active:
+        return (
+            "Binary Ninja's own MCP tools are in use.\n"
+            "Rikugan's read-only tools stand down while they are.\n"
+            "Click to go back to Rikugan's own tools."
+        )
+    return (
+        "Binary Ninja is offering its own analysis tools over MCP.\nClick to let Rikugan use them instead of its own."
+    )
 
 
 class PanelHeader(QWidget):
@@ -69,10 +92,15 @@ class PanelHeader(QWidget):
         layout.addStretch()
 
         # Only shown once a host MCP server has actually answered a handshake.
-        self._mcp_btn = self._make_icon_button(_MCP, "Binary Ninja MCP tools", self._on_mcp)
+        # It reads "MCP" rather than wearing an icon: it hands the agent a
+        # different set of tools, which no glyph on its own would convey.
+        self._mcp_btn = QToolButton(self)
+        self._mcp_btn.setObjectName("mcp_toggle")
         self._mcp_btn.setCheckable(True)
         self._mcp_btn.setVisible(False)
+        self._mcp_btn.clicked.connect(self._on_mcp)
         layout.addWidget(self._mcp_btn)
+        self.set_native_mcp_active(False)
 
         self._new_btn = self._make_icon_button(_PLUS, "New chat", self._on_new)
         layout.addWidget(self._new_btn)
@@ -121,10 +149,10 @@ class PanelHeader(QWidget):
         self._mcp_btn.setVisible(available)
 
     def set_native_mcp_active(self, active: bool) -> None:
+        """Say in words which tool set the agent is working with."""
         self._mcp_btn.setChecked(active)
-        self._mcp_btn.setToolTip(
-            "Binary Ninja MCP tools: on (click to disable)" if active else "Binary Ninja MCP tools: off (click to use)"
-        )
+        self._mcp_btn.setText(mcp_label(active))
+        self._mcp_btn.setToolTip(mcp_tooltip(active))
 
     def _on_mcp(self) -> None:
         if self._mcp_callback is not None:

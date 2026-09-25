@@ -29,7 +29,7 @@ from rikugan.ui.binary_summary import (  # noqa: E402
     parse_info_lines,
     parse_total_count,
 )
-from rikugan.ui.panel_header import elide_title  # noqa: E402
+from rikugan.ui.panel_header import elide_title, mcp_label, mcp_tooltip  # noqa: E402
 from rikugan.ui.welcome_view import build_suggestions, wrap_chips  # noqa: E402
 
 _IDA_INFO = """File: libcrypt_stub.dylib
@@ -216,6 +216,26 @@ class TestElideTitle(unittest.TestCase):
         result = elide_title("a" * 40)
         self.assertEqual(len(result), 26)
         self.assertTrue(result.endswith("…"))
+
+
+class TestNativeMcpControl(unittest.TestCase):
+    """The control swaps the agent's tool set, so it has to say so."""
+
+    def test_the_label_names_the_protocol(self):
+        # A bare hexagon gave no clue what it governed.
+        for active in (True, False):
+            with self.subTest(active=active):
+                self.assertIn("MCP", mcp_label(active))
+
+    def test_the_label_shows_which_state_it_is_in(self):
+        self.assertNotEqual(mcp_label(True), mcp_label(False))
+
+    def test_the_tooltip_says_what_clicking_does(self):
+        self.assertIn("Click", mcp_tooltip(True))
+        self.assertIn("Click", mcp_tooltip(False))
+
+    def test_the_on_state_warns_that_builtins_stand_down(self):
+        self.assertIn("stand down", mcp_tooltip(True))
 
 
 # ---------------------------------------------------------------------------

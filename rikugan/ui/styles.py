@@ -815,6 +815,15 @@ def build_panel_header_stylesheet(source=None) -> str:
         f"border: 1px solid transparent; border-radius: 4px; font-size: {t['font_base']}; }}"
         f"QToolButton#header_icon:hover {{ background-color: {t['surface']}; "
         f"border-color: {t['border']}; color: {t['text']}; }}"
+        # The MCP control carries a word, not a glyph: nothing about a shape
+        # says which tools it governs, and it changes what the agent can do.
+        f"QToolButton#mcp_toggle {{ background-color: {t['surface']}; "
+        f"color: {ensure_contrast(t['muted'], t['surface'])}; "
+        f"border: 1px solid {t['border']}; border-radius: 9px; padding: 2px 8px; "
+        f"font-size: {t['font_small']}; }}"
+        f"QToolButton#mcp_toggle:hover {{ background-color: {t['surface_hi']}; color: {t['text']}; }}"
+        f"QToolButton#mcp_toggle:checked {{ background-color: {t['accent_soft']}; "
+        f"color: {t['text']}; border-color: {t['accent']}; }}"
     )
 
 
