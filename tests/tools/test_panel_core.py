@@ -1030,3 +1030,39 @@ class TestFoldersStayFolded(unittest.TestCase):
         self._add(sidebar, "b", "current.bndb")
         self.assertNotIn("current.bndb", sidebar._collapsed)
         self.assertFalse(self._hidden(sidebar, "b"))
+
+
+class TestQueuedMessageIsDispatched(unittest.TestCase):
+    """The panel must actually send what the controller hands back.
+
+    The controller drops a queued message at the end of a turn; if the panel
+    does not start a turn with it, the chat shows [queued] for ever and
+    nothing says why.
+    """
+
+    def _panel(self, next_message):
+        panel = _make_panel()
+        panel._ctrl = MagicMock()
+        panel._ctrl.active_tab_id = "t1"
+        panel._ctrl.on_agent_finished.return_value = next_message
+        panel._chat_views = {"t1": MagicMock()}
+        panel._started = []
+        panel._start_agent = lambda text, tab_id=None: panel._started.append(text)
+        panel._set_running = lambda running, tab_id=None: None
+        return panel
+
+    def test_a_queued_message_starts_the_next_turn(self):
+        panel = self._panel("continue")
+        RikuganPanelCore._on_agent_finished(panel, "t1")
+        self.assertEqual(panel._started, ["continue"])
+
+    def test_its_queued_marker_is_taken_off_the_chat(self):
+        panel = self._panel("continue")
+        RikuganPanelCore._on_agent_finished(panel, "t1")
+        panel._chat_views["t1"].pop_first_queued_message.assert_called_once()
+
+    def test_an_empty_queue_leaves_the_tab_idle(self):
+        panel = self._panel(None)
+        RikuganPanelCore._on_agent_finished(panel, "t1")
+        self.assertEqual(panel._started, [])
+        panel._chat_views["t1"].remove_queued_messages.assert_called_once()
