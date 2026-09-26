@@ -306,3 +306,69 @@ class TestChatFocus(unittest.TestCase):
         before = session.last_active_at
         self.ctrl.switch_tab(target)
         self.assertGreater(session.last_active_at, before)
+
+
+class TestQueuedMessageDelivery(unittest.TestCase):
+    """A message sent while the agent works must reach it, or not be taken.
+
+    Queueing is only honest if the turn it waits on ends. A turn that never
+    ends strands the queue silently: the chat shows [queued] for ever.
+    """
+
+    def setUp(self):
+        self.cfg = RikuganConfig()
+        self.cfg._config_dir = tempfile.mkdtemp()
+        self.ctrl = IdaSessionController(self.cfg)
+        self.tab = self.ctrl.active_tab_id
+
+    def tearDown(self):
+        self.ctrl.shutdown()
+
+    def _attach_runner(self):
+        class _Loop:
+            is_running = True
+
+        class _Runner:
+            agent_loop = _Loop()
+
+            def cancel(self):
+                _Loop.is_running = False
+
+        runner = _Runner()
+        self.ctrl._runners[self.tab] = runner
+        return runner
+
+    def test_a_queued_message_is_handed_back_when_the_turn_ends(self):
+        self._attach_runner()
+        self.ctrl.queue_message("continue", tab_id=self.tab)
+        self.assertEqual(self.ctrl.on_agent_finished(self.tab), "continue")
+
+    def test_queued_messages_come_back_in_order(self):
+        self._attach_runner()
+        for text in ("first", "second"):
+            self.ctrl.queue_message(text, tab_id=self.tab)
+        self.assertEqual(self.ctrl.on_agent_finished(self.tab), "first")
+        self.ctrl._runners[self.tab] = self._attach_runner()
+        self.assertEqual(self.ctrl.on_agent_finished(self.tab), "second")
+
+    def test_a_stopped_tab_stops_taking_messages_immediately(self):
+        # The agent may be blocked in a streaming read and not notice the
+        # cancel for as long as the request timeout. A message sent in that
+        # window used to be queued behind a turn already being torn down.
+        self._attach_runner()
+        self.assertTrue(self.ctrl.is_tab_running(self.tab))
+        self.ctrl.cancel(self.tab)
+        self.assertFalse(self.ctrl.is_tab_running(self.tab))
+
+    def test_a_new_turn_makes_a_stopped_tab_live_again(self):
+        self._attach_runner()
+        self.ctrl.cancel(self.tab)
+        self.ctrl._cancelling.discard(self.tab)
+        self.ctrl._runners[self.tab] = self._attach_runner()
+        self.assertTrue(self.ctrl.is_tab_running(self.tab))
+
+    def test_finishing_clears_the_stopped_flag(self):
+        self._attach_runner()
+        self.ctrl.cancel(self.tab)
+        self.ctrl.on_agent_finished(self.tab)
+        self.assertNotIn(self.tab, self.ctrl._cancelling)

@@ -401,6 +401,12 @@ class AgentLoop:
 
         self._research_state: _RS | None = None
 
+    # A provider can ask us to wait hours after a rate limit. Sleeping that
+    # long inside a turn leaves the panel saying "working" while everything
+    # the user sends queues behind a turn that will not end today, so past
+    # this the turn fails and says when it can be tried again.
+    _MAX_RETRY_BACKOFF_SECONDS = 60.0
+
     @property
     def is_running(self) -> bool:
         return self._running
@@ -771,6 +777,17 @@ class AgentLoop:
                         backoff = e.retry_after if e.retry_after > 0 else min(2**attempt, 10)
                     else:
                         backoff = min(2**attempt, 10)
+                    if backoff > self._MAX_RETRY_BACKOFF_SECONDS:
+                        # Waiting it out would strand the turn, and everything
+                        # the user sends behind it, for as long as the provider
+                        # named. End the turn and say so instead.
+                        raise RateLimitError(
+                            f"{self._format_provider_error_for_user(e)} "
+                            f"The provider asked to wait {backoff / 60:.0f} minutes, "
+                            "which is longer than a turn will hold. Try again later.",
+                            provider=getattr(e, "provider", ""),
+                            retry_after=backoff,
+                        ) from e
                     if silent_mode:
                         yield TurnEvent.error_event(
                             f"\u23f3 Retrying in {backoff:.0f}s (attempt {attempt + 2}/{max_retries})..."
@@ -1590,6 +1607,9 @@ class AgentLoop:
 
 
 _EVENT_QUEUE_MAXSIZE = 500
+# Long enough that a busy UI never loses an event, short enough that a stalled
+# one cannot park the agent thread indefinitely.
+_EVENT_PUT_TIMEOUT = 30.0
 
 
 class BackgroundAgentRunner:
@@ -1629,14 +1649,14 @@ class BackgroundAgentRunner:
                         pending_text.append(event.text)
                         event = TurnEvent.text_delta("".join(pending_text))
                         pending_text.clear()
-                    self.event_queue.put(event)
+                    self._put(event)
                 else:
                     # Flush any pending text before non-delta events
                     if pending_text:
                         coalesced = TurnEvent.text_delta("".join(pending_text))
                         pending_text.clear()
-                        self.event_queue.put(coalesced)
-                    self.event_queue.put(event)
+                        self._put(coalesced)
+                    self._put(event)
         except Exception as e:
             log_error(f"BackgroundAgentRunner error: {e}\n{traceback.format_exc()}")
             if pending_text:
@@ -1658,7 +1678,21 @@ class BackgroundAgentRunner:
                     )
                 except queue.Full:
                     log_debug("Event queue full, dropping pending text in finally block")
-            self.event_queue.put(None)  # Sentinel
+            self._put(None)  # Sentinel
+
+    def _put(self, event) -> None:
+        """Hand an event to the UI, giving up rather than blocking for ever.
+
+        The queue is bounded and the UI drains it on a timer. A plain put()
+        blocks with no deadline, so a consumer that stops draining leaves this
+        thread parked inside it: the turn never ends, the runner is never
+        retired, and every message the user sends queues behind a turn that
+        cannot finish. Losing an event is recoverable; wedging the turn is not.
+        """
+        try:
+            self.event_queue.put(event, timeout=_EVENT_PUT_TIMEOUT)
+        except queue.Full:
+            log_error(f"Event queue full for {_EVENT_PUT_TIMEOUT}s; dropping {getattr(event, 'type', event)}")
 
     def cancel(self) -> None:
         self.agent_loop.cancel()
