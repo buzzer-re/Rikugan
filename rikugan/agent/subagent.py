@@ -7,6 +7,7 @@ from typing import Any
 
 from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_info
+from ..core.types import Message, Role
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
 from ..state.session import SessionState
@@ -130,6 +131,7 @@ class SubagentRunner:
         user_goal: str,
         max_turns: int = 30,
         idb_path: str = "",
+        prior_context: str = "",
     ) -> Generator[TurnEvent, None, KnowledgeBase]:
         """Run exploration Phase 1 as an isolated subagent.
 
@@ -147,6 +149,14 @@ class SubagentRunner:
         session = SessionState()
         session.idb_path = idb_path
         self._last_session = session
+        if prior_context:
+            # An isolated context is the point — raw decompilation must not
+            # follow the goal in here. But a goal is often a reply to what came
+            # before ("continue", "do that one next"), and with nothing behind
+            # it the subagent can only report that it does not know what was
+            # meant. A digest of the conversation costs little and makes a
+            # referential goal resolvable.
+            session.add_message(Message(role=Role.USER, content=prior_context))
 
         loop = AgentLoop(
             provider=self.provider,

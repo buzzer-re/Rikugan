@@ -39,6 +39,32 @@ def _parse_plan(text: str) -> list[str]:
     return _parse_plan_impl(text)
 
 
+# Enough of the conversation for a goal that refers back to it to make sense,
+# without dragging the decompilation the isolated context exists to keep out.
+_CONTEXT_MESSAGES = 6
+_CONTEXT_CHARS = 600
+
+
+def _recent_context(loop: AgentLoop) -> str:
+    """A digest of what was said before, for a goal that refers back to it.
+
+    A follow-up is often only meaningful against the conversation it answers:
+    handed "continue" with nothing behind it, the subagent can do no better
+    than report that it does not know what was meant.
+    """
+    said = []
+    for message in loop.session.messages[-_CONTEXT_MESSAGES:]:
+        text = (message.content or "").strip()
+        if not text or message.role not in (Role.USER, Role.ASSISTANT):
+            continue
+        who = "User" if message.role == Role.USER else "Rikugan"
+        said.append(f"{who}: {text[:_CONTEXT_CHARS]}")
+    if not said:
+        return ""
+    body = "\n\n".join(said)
+    return f"Earlier in this conversation, for context only:\n\n{body}"
+
+
 def _run_phase1_subagent(
     loop: AgentLoop,
     state: ExplorationState,
@@ -60,6 +86,7 @@ def _run_phase1_subagent(
         user_goal=user_message,
         max_turns=state.max_explore_turns,
         idb_path=loop.session.idb_path or "",
+        prior_context=_recent_context(loop),
     )
 
     # Store exploration subagent messages for export
