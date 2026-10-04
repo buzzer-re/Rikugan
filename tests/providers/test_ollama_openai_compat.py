@@ -81,7 +81,7 @@ class TestOllamaListModels(unittest.TestCase):
         payload = {"models": [{"name": "phi3"}]}
         mock_resp = self._make_mock_response(payload)
         captured = {}
-        def fake_urlopen(url, timeout=None):
+        def fake_urlopen(url, timeout=None, context=None):
             captured["url"] = url
             return mock_resp
         with patch("urllib.request.urlopen", fake_urlopen):
