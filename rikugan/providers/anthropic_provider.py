@@ -351,6 +351,11 @@ class AnthropicProvider(LLMProvider):
                 formatted.append({"role": "user", "content": msg.content})
 
             elif msg.role == Role.ASSISTANT:
+                if not msg.content and not msg.tool_calls:
+                    # The API refuses a history holding an empty message, so
+                    # one saved before we stopped storing them would otherwise
+                    # fail every later request in that chat.
+                    continue
                 content: list = []
                 if msg.content:
                     content.append({"type": "text", "text": msg.content})
