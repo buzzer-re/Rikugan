@@ -33,12 +33,12 @@ class TestBuildReverseRecord(unittest.TestCase):
 
     def test_rename_variable(self):
         rec = build_reverse_record(
-            "rename_single_variable",
+            "rename_variable",
             {"function_name": "main", "variable_name": "var_10", "new_name": "counter"},
         )
         self.assertIsNotNone(rec)
         self.assertTrue(rec.reversible)
-        self.assertEqual(rec.reverse_tool, "rename_single_variable")
+        self.assertEqual(rec.reverse_tool, "rename_variable")
         self.assertEqual(rec.reverse_arguments["variable_name"], "counter")
         self.assertEqual(rec.reverse_arguments["new_name"], "var_10")
 
@@ -83,18 +83,18 @@ class TestBuildReverseRecord(unittest.TestCase):
         self.assertTrue(rec.reversible)
         self.assertEqual(rec.reverse_tool, "delete_function_comment")
 
-    def test_rename_data_with_old_name(self):
+    def test_rename_address_with_old_name(self):
         rec = build_reverse_record(
-            "rename_data",
+            "rename_address",
             {"address": "0x600000", "new_name": "g_counter"},
             pre_state={"old_name": "data_600000"},
         )
         self.assertTrue(rec.reversible)
         self.assertEqual(rec.reverse_arguments["new_name"], "data_600000")
 
-    def test_rename_data_without_old_name(self):
+    def test_rename_address_without_old_name(self):
         rec = build_reverse_record(
-            "rename_data",
+            "rename_address",
             {"address": "0x600000", "new_name": "g_counter"},
         )
         self.assertFalse(rec.reversible)
@@ -108,14 +108,12 @@ class TestBuildReverseRecord(unittest.TestCase):
         self.assertTrue(rec.reversible)
         self.assertEqual(rec.reverse_arguments["prototype"], "int sub_401000()")
 
-    def test_retype_variable(self):
-        rec = build_reverse_record(
-            "retype_variable",
-            {"function_name": "main", "variable_name": "v1", "type_str": "int *"},
-            pre_state={"old_type": "void *"},
-        )
-        self.assertTrue(rec.reversible)
-        self.assertEqual(rec.reverse_arguments["type_str"], "void *")
+    def test_set_type_is_declared_irreversible(self):
+        # Neither host exposes a type-at-address getter, so the prior type
+        # cannot be read. Saying so beats offering an undo that no-ops.
+        rec = build_reverse_record("set_type", {"address": "0x401000", "type_string": "int *"})
+        self.assertFalse(rec.reversible)
+        self.assertIn("no reverse operation", rec.irreversible_reason)
 
     def test_unknown_tool_not_reversible(self):
         rec = build_reverse_record(
@@ -170,9 +168,10 @@ class TestCapturePreState(unittest.TestCase):
         def mock_executor(name, args):
             raise RuntimeError("tool not available")
 
-        # Should not raise, just return empty pre_state
+        # Must not raise — and must record why, so the mutation row can say
+        # the change is not undoable instead of failing silently at undo time.
         pre = capture_pre_state("set_comment", {"address": "0x1000"}, mock_executor)
-        self.assertEqual(pre, {})
+        self.assertIn("tool not available", pre["_capture_failed"])
 
 
 class TestMutationRecord(unittest.TestCase):

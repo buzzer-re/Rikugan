@@ -99,25 +99,26 @@ def _reverse_set_pseudocode_comment(args: dict[str, Any], pre: dict[str, Any]) -
     )
 
 
-def _reverse_rename_data(args: dict[str, Any], pre: dict[str, Any]) -> MutationRecord:
+def _reverse_rename_address(args: dict[str, Any], pre: dict[str, Any]) -> MutationRecord:
     address = args.get("address", "")
     old_name = pre.get("old_name", "")
     new_name = args.get("new_name", "")
     if old_name:
         return MutationRecord(
-            tool_name="rename_data",
+            tool_name="rename_address",
             arguments=args,
-            reverse_tool="rename_data",
+            reverse_tool="rename_address",
             reverse_arguments={"address": address, "new_name": old_name},
-            description=f"Rename data at {address} → {new_name}",
+            description=f"Rename {address} → {new_name}",
         )
     return MutationRecord(
-        tool_name="rename_data",
+        tool_name="rename_address",
         arguments=args,
         reverse_tool="",
         reverse_arguments={},
-        description=f"Rename data at {address} → {new_name}",
+        description=f"Rename {address} → {new_name}",
         reversible=False,
+        irreversible_reason=pre.get("_capture_failed", "the previous name could not be read"),
     )
 
 
@@ -155,16 +156,53 @@ def _reverse_retype_variable(args: dict[str, Any], pre: dict[str, Any]) -> Mutat
 
 
 # Dispatch table: tool_name → handler(args, pre) -> Optional[MutationRecord]
+# Mutating tools with no reverse, named deliberately rather than by omission.
+# The contract test fails for any mutating tool that is in neither this set nor
+# _REVERSE_BUILDERS, so adding one forces the author to decide.
+#
+# Most of these need a getter to read the prior value, and the getter does not
+# exist in either host: set_type/propagate_type/apply_type_to_variable would
+# need a type-at-address reader, set_function_prototype a prototype reader.
+# Writing those getters would make these undoable and is worth doing; until
+# then the log says so rather than implying an undo that silently no-ops.
+_KNOWN_IRREVERSIBLE: frozenset[str] = frozenset(
+    {
+        "execute_python",  # arbitrary code; nothing to invert
+        "run_shell",
+        "set_type",
+        "propagate_type",
+        "apply_type_to_variable",
+        "apply_struct_to_address",
+        "create_struct",
+        "create_enum",
+        "create_typedef",
+        "modify_struct",
+        "modify_enum",
+        "import_c_header",
+        "import_type_from_library",
+        "write_bytes",
+        "nop_instructions",
+        "nop_microcode",
+        "patch_branch",
+        "il_replace_expr",
+        "il_set_condition",
+        "il_nop_expr",
+        "il_remove_block",
+        "install_il_workflow",
+        "install_microcode_optimizer",
+        "remove_microcode_optimizer",
+        "redecompile_function",
+    }
+)
+
 _REVERSE_BUILDERS: dict[str, Any] = {
     "rename_function": _reverse_rename_function,
     "rename_variable": lambda a, p: _reverse_rename_variable("rename_variable", a, p),
-    "rename_single_variable": lambda a, p: _reverse_rename_variable("rename_single_variable", a, p),
     "set_comment": _reverse_set_comment,
     "set_function_comment": _reverse_set_function_comment,
     "set_pseudocode_comment": _reverse_set_pseudocode_comment,
-    "rename_data": _reverse_rename_data,
+    "rename_address": _reverse_rename_address,
     "set_function_prototype": _reverse_set_function_prototype,
-    "retype_variable": _reverse_retype_variable,
 }
 
 
@@ -184,7 +222,13 @@ def build_reverse_record(
         if result is not None:
             return result
 
-    # For tools we don't know how to reverse (execute_python, etc.)
+    # Either the tool has no reverse at all, or the state needed to build one
+    # could not be read. Say which, on the record, so the mutation row can show
+    # it at the time rather than leaving the user to find out at undo time.
+    if tool_name in _KNOWN_IRREVERSIBLE:
+        reason = "this tool has no reverse operation"
+    else:
+        reason = pre.get("_capture_failed") or "the previous value could not be read"
     return MutationRecord(
         tool_name=tool_name,
         arguments=arguments,
@@ -192,6 +236,7 @@ def build_reverse_record(
         reverse_arguments={},
         description=f"Call {tool_name}",
         reversible=False,
+        irreversible_reason=reason,
     )
 
 
@@ -228,12 +273,15 @@ def capture_pre_state(
             target = arguments.get("name_or_address", "")
             if target:
                 pre["old_prototype"] = tool_executor("get_function_prototype", {"name_or_address": target})
-        elif tool_name == "retype_variable":
-            func = arguments.get("function_name", "")
-            var = arguments.get("variable_name", "")
-            if func and var:
-                pre["old_type"] = tool_executor("get_variable_type", {"function_name": func, "variable_name": var})
+        elif tool_name == "rename_address":
+            address = arguments.get("address", "")
+            if address:
+                pre["old_name"] = tool_executor("get_name_at", {"address": address})
     except Exception as e:
+        # The reverse builder turns this into a non-reversible record carrying
+        # the reason, so a missing getter shows up on the mutation row instead
+        # of silently producing an undo that does nothing.
         log_debug(f"capture_pre_state failed for {tool_name}: {e}")
+        pre["_capture_failed"] = str(e)
 
     return pre
