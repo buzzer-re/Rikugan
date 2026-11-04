@@ -54,7 +54,7 @@ from .modes.exploration import run_exploration_mode
 from .modes.normal import run_normal_loop
 from .modes.plan import run_plan_mode
 from .modes.research import run_research_mode
-from .mutation import MutationRecord, build_reverse_record, capture_pre_state
+from .mutation import MutationRecord, build_reverse_record, capture_pre_state, mutation_succeeded
 from .plan_mode import parse_plan as _parse_plan_impl
 from .subagent import SubagentRunner
 from .system_prompt import build_system_prompt
@@ -650,7 +650,9 @@ class AgentLoop:
                 errors.append(f"Cannot undo: {record.description} ({record.irreversible_reason or 'not reversible'})")
                 continue
             try:
-                self._run_tool(record.reverse_tool, record.reverse_arguments)
+                outcome = self._run_tool(record.reverse_tool, record.reverse_arguments)
+                if not mutation_succeeded(record.reverse_tool, outcome):
+                    raise ToolError(outcome, tool_name=record.reverse_tool)
             except UndoNoLongerPossible as e:
                 # Retrying cannot help, so holding the record would block every
                 # older undo behind it for good.
@@ -1469,7 +1471,7 @@ class AgentLoop:
             # Hysteresis: decrement instead of resetting so a single success
             # after several failures doesn't fully clear the counter.
             self._consecutive_errors = max(0, self._consecutive_errors - 1)
-            if is_mutating:
+            if is_mutating and mutation_succeeded(tc.name, result):
                 record = build_reverse_record(tc.name, tc.arguments, pre_state)
                 if record is not None:
                     self._mutation_log.append(record)

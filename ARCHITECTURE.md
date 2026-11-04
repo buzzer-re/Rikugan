@@ -585,18 +585,21 @@ class MutationRecord:                    # rikugan/core/types.py
 
 | Tool | Reverse Strategy |
 |------|-----------------|
-| `rename_function` | Swap `old_name` ↔ `new_name` |
-| `rename_variable` | Swap `variable_name` ↔ `new_name` |
-| `rename_address` | Restore `old_name`, captured through `get_name_at` |
-| `set_pseudocode_comment` | Restore the old comment, captured through `get_pseudocode_comment` (IDA only) |
-| `set_comment`, `set_function_comment`, `set_function_prototype` | Have builders, but need a getter neither host has yet, so they record as non-reversible (see below) |
+| `rename_function` | Restore the name read through `read_function_name` |
+| `rename_variable` | Swap `old_name` ↔ `new_name` |
+| `rename_address` | Restore the name read through `get_name_at`. An address that had none is recorded as non-reversible |
+| `set_comment`, `set_function_comment` | Write back the comment read through `read_comment` / `read_function_comment`, in the same slot. Writing an empty one is how both hosts remove it |
+| `set_pseudocode_comment` | The same, through `get_pseudocode_comment` (IDA only) |
+| `set_function_prototype` | Write back the type read through `read_function_prototype`. A function with none is recorded as non-reversible |
 | Everything in `_KNOWN_IRREVERSIBLE` | **Not reversible** (`reversible=False`) |
+
+`tests/agent/test_mutation_contract.py` also derives arguments from each tool's real parameters, and checks that every getter and reverse call is one that tool accepts, in both hosts. `tests/agent/test_undo_against_hosts.py` runs each round trip through the real tools over a fake database.
 
 ### `capture_pre_state()`
 
-For tools that need pre-mutation state, calls getter tools before the mutation. If a getter fails, it records `pre["_capture_failed"]`, and the mutation is logged as non-reversible with that reason rather than failing silently at undo time.
+Calls getter tools before the mutation. The `read_*` readers are `internal`, so they add nothing to the tool list sent to the model, and return raw values, since `/undo` passes them straight back to the setter. If a read fails, it records `pre["_capture_failed"]`, and the mutation is logged as non-reversible with that reason rather than failing at undo time. A reader's "there is nothing" message must not be taken for a value: `get_name_at` says "No name at 0x...", which would otherwise become the name.
 
-`get_comment`, `get_function_comment`, `get_function_prototype` and `get_variable_type` do not exist in either host, so comments, prototypes and types cannot currently be undone. Writing those getters would make them undoable.
+`set_type`, `propagate_type` and `apply_type_to_variable` need a type-at-address reader that neither host has, so they stay non-reversible.
 
 ### `/undo [N]`
 
@@ -608,7 +611,7 @@ The `/undo` command runs on a new loop over the same session:
 5. `UndoNoLongerPossible` means a retry cannot help (a file changed since, a discarded backup), so the record is dropped and older undos continue
 6. Yields `MUTATION_UNDONE` for each record that left, then a summary
 
-A reverse tool that reports failure by returning a string rather than raising looks like a success here. Analysis tools commonly do that.
+Analysis tools report failure by returning text rather than raising, so `mutation_succeeded()` recognises how each reversible tool opens its message when it worked, and anything else counts as failed. It applies both ways: a reversal that failed keeps its record, and a mutation that failed adds none. A new reversible tool has to open with one of `_SUCCESS_PREFIXES`.
 
 ### UI Integration
 

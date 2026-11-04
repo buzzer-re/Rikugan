@@ -45,6 +45,7 @@ class TestUndoCommand(unittest.TestCase):
         cfg = RikuganConfig()
         cfg._config_dir = tempfile.mkdtemp()
         self.tools = MagicMock()
+        self.tools.execute.return_value = "Renamed 0x1: a → b"
         if execute is not None:
             self.tools.execute.side_effect = execute
         self.session = SessionState()
@@ -93,10 +94,20 @@ class TestUndoCommand(unittest.TestCase):
 
     def test_earlier_successes_stay_undone_when_a_later_one_fails(self):
         older, newer = _record("older"), _record("newer")
-        self._undo("/undo 2", older, newer, execute=["ok", ToolError("database busy")])
+        self._undo("/undo 2", older, newer, execute=["Renamed 0x1: a → b", ToolError("database busy")])
         self.assertEqual(self.session.mutation_log, [older])
         self.assertEqual(self._announced(), ["newer"])
         self.assertIn("Undid 1", self._final_text())
+
+    def test_a_reversal_reporting_failure_in_text_is_a_failure(self):
+        # These tools return "Failed ..." rather than raising. Counting that as
+        # undone would drop the record of a change that is still applied.
+        record = _record("a")
+        self._undo("/undo", record, execute=["Failed to rename function at 0x401000"])
+        self.assertEqual(self.session.mutation_log, [record])
+        self.assertEqual(self._announced(), [])
+        self.assertIn("Failed to rename", self._final_text())
+        self.assertNotIn("Undid", self._final_text())
 
     def test_an_irreversible_record_says_why_and_leaves(self):
         self._undo("/undo", _record("a", reversible=False, reason="no getter for it"))
