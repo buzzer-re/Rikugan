@@ -800,7 +800,7 @@ class TestNativeMcpConsent(unittest.TestCase):
         panel = self._panel()
         panel._remember_native_mcp_consent(True)
         self.assertEqual(panel._config.binja_mcp_consent["db-1"], True)
-        panel._config.save.assert_called()
+        panel._config.save_setting.assert_called()
 
     def test_toggling_off_stops_the_server_and_remembers_it(self):
         panel = self._panel()
@@ -1146,3 +1146,13 @@ class TestMutationEventsRefreshThePanel(unittest.TestCase):
 
     def test_a_background_chats_mutation_does_not_touch_the_panel(self):
         self._send("MUTATION_RECORDED", "t2").assert_not_called()
+
+
+class TestNativeMcpConsentDoesNotRewriteKeys(unittest.TestCase):
+    def test_it_saves_only_its_own_setting(self):
+        panel = _make_panel()
+        panel._ctrl = MagicMock(_db_instance_id="db1")
+        panel._config = MagicMock(binja_mcp_consent={"old": False})
+        RikuganPanelCore._remember_native_mcp_consent(panel, True)
+        panel._config.save_setting.assert_called_once_with("binja_mcp_consent", {"old": False, "db1": True})
+        panel._config.save.assert_not_called()

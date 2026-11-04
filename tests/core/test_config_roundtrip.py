@@ -8,6 +8,7 @@ next start. Settings dialogs make that look like the checkbox is broken.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import sys
 import tempfile
@@ -67,6 +68,45 @@ class TestSettingsSurviveARestart(unittest.TestCase):
         for name, value in expected.items():
             with self.subTest(setting=name):
                 self.assertEqual(getattr(loaded, name), value)
+
+
+class TestSaveSetting(unittest.TestCase):
+    def _config_with_file(self, stored):
+        config = RikuganConfig()
+        config._config_dir = tempfile.mkdtemp()
+        with open(config.config_path, "w", encoding="utf-8") as f:
+            json.dump(stored, f)
+        config.load()
+        return config
+
+    def _stored(self, config):
+        with open(config.config_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_changes_the_value_in_memory_and_on_disk(self):
+        config = self._config_with_file({})
+        config.save_setting("filesystem_access", True)
+        self.assertTrue(config.filesystem_access)
+        self.assertIs(self._stored(config)["filesystem_access"], True)
+
+    def test_leaves_encrypted_keys_alone(self):
+        # save() with no password turns encryption off, and keys not yet decrypted
+        # are gone. Answering a consent prompt must never cost someone their keys.
+        block = {"enabled": True, "ciphertext": "SECRET-BLOB", "salt": "s"}
+        config = self._config_with_file({"provider": {"api_key": ""}, "encryption": block})
+        config.save_setting("binja_mcp_consent", {"db": True})
+        self.assertEqual(self._stored(config)["encryption"], block)
+
+    def test_works_with_no_config_file_yet(self):
+        config = RikuganConfig()
+        config._config_dir = os.path.join(tempfile.mkdtemp(), "new")
+        config.save_setting("filesystem_access", True)
+        self.assertIs(self._stored(config)["filesystem_access"], True)
+
+    def test_leaves_no_temporary_file(self):
+        config = self._config_with_file({})
+        config.save_setting("filesystem_access", True)
+        self.assertEqual(os.listdir(config.config_dir), [os.path.basename(config.config_path)])
 
 
 if __name__ == "__main__":

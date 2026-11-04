@@ -1430,7 +1430,9 @@ class RikuganPanelCore(QWidget):
     def _remember_native_mcp_consent(self, allowed: bool) -> None:
         self._config.binja_mcp_consent[self._native_mcp_key()] = allowed
         try:
-            self._config.save()
+            # Not save(): with no password it would write encrypted keys back out
+            # with encryption off, losing any not yet decrypted.
+            self._config.save_setting("binja_mcp_consent", self._config.binja_mcp_consent)
         except Exception as e:
             log_error(f"Failed to save Binary Ninja MCP consent: {e}")
 
