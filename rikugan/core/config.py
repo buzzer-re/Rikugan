@@ -225,6 +225,7 @@ class RikuganConfig:
             "a2a_agents",
             "bulk_renamer_batch_size",
             "bulk_renamer_max_concurrent",
+            "preserve_context",
             "oauth_consent_accepted",
             "encrypt_api_keys",
         ):
