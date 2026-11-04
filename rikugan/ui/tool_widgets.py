@@ -1316,6 +1316,21 @@ class _PythonHighlighter(QSyntaxHighlighter):
                 self.setFormat(m.start(), m.end() - m.start(), fmt)
 
 
+def _approval_card_text(tool_name: str, args_text: str, description: str) -> tuple[str, str, str]:
+    """Return the (title, info line, preview) an approval card shows.
+
+    A script is previewed as code. Anything else shows its description with the
+    raw arguments beneath, because the arguments are what actually runs and a
+    description only ever summarizes them.
+    """
+    title = f"Approve {tool_name}?"
+    code = ToolApprovalWidget._extract_code(args_text)
+    if code.strip():
+        count = len(code.strip().splitlines())
+        return title, f"Python code - {count} line{'s' if count != 1 else ''}", code
+    return title, description, "" if args_text.strip() in ("", "{}") else args_text
+
+
 class ToolApprovalWidget(QFrame):
     """Displays a tool approval request with syntax-highlighted code preview."""
 
@@ -1346,7 +1361,9 @@ class ToolApprovalWidget(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
 
-        self._header = QLabel("Approve execute_python?")
+        title, info, preview = _approval_card_text(tool_name, args_text, description)
+
+        self._header = QLabel(title)
         self._header.setStyleSheet(
             host_stylesheet(
                 "color: #dcdcaa; font-weight: bold; font-size: 11px;",
@@ -1355,10 +1372,11 @@ class ToolApprovalWidget(QFrame):
         )
         layout.addWidget(self._header)
 
-        code = self._extract_code(args_text)
-        code_lines = code.strip().splitlines() if code.strip() else []
-
-        self._info = QLabel(f"Python code - {len(code_lines)} line{'s' if len(code_lines) != 1 else ''}")
+        self._info = QLabel(info)
+        # The description quotes arguments, which can carry text from the binary.
+        # Rendered as rich text, that could restyle what the user is approving.
+        self._info.setTextFormat(Qt.TextFormat.PlainText)
+        self._info.setWordWrap(True)
         self._info.setStyleSheet(
             host_stylesheet(
                 "color: #a8a8a8; font-size: 10px;",
@@ -1367,7 +1385,7 @@ class ToolApprovalWidget(QFrame):
         )
         layout.addWidget(self._info)
 
-        editor = self._build_code_editor(code, code_lines)
+        editor = self._build_code_editor(preview, preview.strip().splitlines())
         if editor is not None:
             layout.addWidget(editor)
 
