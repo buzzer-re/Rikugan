@@ -168,7 +168,6 @@ def _reverse_retype_variable(args: dict[str, Any], pre: dict[str, Any]) -> Mutat
 _KNOWN_IRREVERSIBLE: frozenset[str] = frozenset(
     {
         "execute_python",  # arbitrary code; nothing to invert
-        "run_shell",
         "set_type",
         "propagate_type",
         "apply_type_to_variable",

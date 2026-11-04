@@ -61,6 +61,8 @@ The agent really ***lives*** and ***breathes*** reversing.
 |:--:|
 |~3x speed of the workflow, original process took ~4:30 min|
 
+**Coding** — With Filesystem access on, the agent can read, write and edit files, search them, and run shell commands, so a session can produce scripts, notes and patches as well as annotations. File paths are limited to the binary's folder and a scratch folder, and file writes can be undone with `/undo`. Shell commands start there but are not confined to it. It is off by default, and the agent asks once per chat before using it. A hostile sample can try to steer any agent with prompt injection, so weigh that before turning it on for one you don't trust.
+
 **Memory** — Findings are saved to `RIKUGAN.md` next to your database, persisting across sessions.
 
 **Skills & MCP** — 12 built-in skills, custom skill support, and MCP server integration. Reuse skills and MCP servers from Claude Code and Codex.
