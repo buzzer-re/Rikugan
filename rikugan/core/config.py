@@ -94,6 +94,16 @@ class RikuganConfig:
     # Context management
     preserve_context: bool = False  # disable tool result truncation + context compaction
 
+    # Let the agent read, write and search files in its workspace without being
+    # asked. Off, it asks once per chat the first time it reaches for a file.
+    filesystem_access: bool = False
+    # Directories usable besides the binary's own and the agent's scratch. Only
+    # set by editing the config file: a path typed into a chat must not widen this.
+    filesystem_extra_roots: list[str] = field(default_factory=list)
+    # Filesystem access includes run_shell unless this is switched off, which is
+    # only possible in the config file, for anyone wanting editing without a shell.
+    filesystem_shell: bool = True
+
     # OAuth consent — user must accept risk before keychain autoload
     oauth_consent_accepted: bool = False
 
@@ -106,6 +116,10 @@ class RikuganConfig:
     _encryption_block: dict = field(default_factory=dict, repr=False)
 
     _config_dir: str = field(default_factory=_default_config_dir, repr=False)
+
+    @property
+    def config_dir(self) -> str:
+        return self._config_dir
 
     @property
     def config_path(self) -> str:
@@ -225,11 +239,33 @@ class RikuganConfig:
             "a2a_agents",
             "bulk_renamer_batch_size",
             "bulk_renamer_max_concurrent",
+            "preserve_context",
+            "filesystem_access",
+            "filesystem_extra_roots",
+            "filesystem_shell",
             "oauth_consent_accepted",
             "encrypt_api_keys",
         ):
             if k in data:
                 setattr(self, k, data[k])
+
+    def save_setting(self, name: str, value: Any) -> None:
+        """Change one setting, here and on disk, leaving the rest of the file alone.
+
+        save() rewrites the keys from memory, and without the password it cannot
+        re-encrypt them. Code running mid-turn has no password to give.
+        """
+        setattr(self, name, value)
+        data: dict[str, Any] = {}
+        if os.path.exists(self.config_path):
+            with open(self.config_path, encoding="utf-8") as f:
+                data = json.load(f)
+        data[name] = value
+        os.makedirs(self._config_dir, exist_ok=True)
+        tmp_path = f"{self.config_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, self.config_path)
 
     def has_encrypted_keys(self) -> bool:
         """True if the config was loaded with encrypted keys pending decryption."""

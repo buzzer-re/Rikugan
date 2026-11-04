@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from ...core.errors import ToolError
 from ...core.logging import log_debug
 from ...tools.base import tool
-from .comment_utils import set_comment_at
+from .comment_utils import get_comment_at, set_comment_at
 from .compat import parse_addr_like, py_signature_accepts, require_bv
 from .fn_utils import get_function_at, get_function_name
 from .sym_utils import rename_symbol_at
@@ -213,3 +214,50 @@ def set_type(
                 continue
 
     return f"Failed to set type at 0x{ea:x}. Check syntax: {type_string}"
+
+
+# Undo's readers. Internal, so they add nothing to what the model is sent on each
+# request, and raw, because /undo passes the value straight back to the setter.
+
+
+def _function_for_undo(address: str, tool_name: str):
+    bv = require_bv()
+    ea = parse_addr_like(address)
+    func = get_function_at(bv, ea)
+    if func is None:
+        raise ToolError(f"No function at 0x{ea:x}", tool_name=tool_name)
+    return func
+
+
+@tool(category="annotations", internal=True)
+def read_function_name(address: Annotated[str, "Address in the function (hex string)"]) -> str:
+    """Read the name rename_function would replace."""
+    return get_function_name(_function_for_undo(address, "read_function_name"))
+
+
+@tool(category="annotations", internal=True)
+def read_comment(
+    address: Annotated[str, "Address (hex string)"],
+    repeatable: Annotated[bool, "Ignored: Binary Ninja has one comment per address"] = False,
+) -> str:
+    """Read the comment set_comment would replace."""
+    _ = repeatable
+    return get_comment_at(require_bv(), parse_addr_like(address))
+
+
+@tool(category="annotations", internal=True)
+def read_function_comment(
+    address: Annotated[str, "Function address (hex string)"],
+    repeatable: Annotated[bool, "Ignored: Binary Ninja has one comment per function"] = False,
+) -> str:
+    """Read the comment set_function_comment would replace."""
+    _ = repeatable
+    return str(getattr(_function_for_undo(address, "read_function_comment"), "comment", "") or "")
+
+
+@tool(category="annotations", internal=True)
+def read_function_prototype(address: Annotated[str, "Function address (hex string)"]) -> str:
+    """Read the prototype set_function_prototype would replace. Empty if it has none."""
+    func = _function_for_undo(address, "read_function_prototype")
+    function_type = getattr(func, "type", None) or getattr(func, "function_type", None)
+    return str(function_type) if function_type is not None else ""

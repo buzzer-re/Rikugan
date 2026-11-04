@@ -997,6 +997,33 @@ class QueuedMessageWidget(QFrame):
         layout.addWidget(self._badge)
 
 
+class _ElidingButton(QPushButton):
+    """A button that shortens its own label instead of cutting it in half.
+
+    Qt centres a label it cannot fit and clips both ends, which takes the
+    start of the sentence away with the end. Eliding keeps the beginning —
+    the part that tells the options apart — and the full text stays on the
+    tooltip.
+    """
+
+    def __init__(self, text: str, parent: QWidget = None):
+        super().__init__(parent)
+        self._full_text = text
+        self.setText(text)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        # Leave room for the button's own padding.
+        available = max(0, self.width() - 24)
+        if available <= 0:
+            return
+        metrics = self.fontMetrics()
+        self.setText(metrics.elidedText(self._full_text, Qt.TextElideMode.ElideRight, available))
+
+
 class UserQuestionWidget(QFrame):
     """Displays a question from the agent to the user with clickable option buttons."""
 
@@ -1051,20 +1078,20 @@ class UserQuestionWidget(QFrame):
         layout.addWidget(self._q_label)
 
         if options:
-            btn_layout = QHBoxLayout()
+            # One per row. Answers are whole phrases — "the .pak file format
+            # (how rl.data is laid out)" — and four of those side by side in a
+            # sidebar leaves each a few centred characters, cut at both ends.
+            btn_layout = QVBoxLayout()
             btn_layout.setContentsMargins(0, 4, 0, 0)
-            btn_layout.setSpacing(8)
+            btn_layout.setSpacing(4)
             button_css = _option_button_css(parent or self)
             for opt in options:
-                btn = QPushButton(opt)
+                btn = _ElidingButton(opt, self)
                 btn.setStyleSheet(host_stylesheet(button_css, button_css))
-                # Elide rather than clip: "Yes, apply all 4 renames" lost a
-                # character off each end at sidebar width.
                 btn.setToolTip(opt)
-                btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+                btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
                 btn.clicked.connect(lambda checked, o=opt: self._on_option(o))
                 btn_layout.addWidget(btn)
-            btn_layout.addStretch()
             layout.addLayout(btn_layout)
             self._buttons = btn_layout
 

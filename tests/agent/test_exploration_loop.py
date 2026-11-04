@@ -241,6 +241,29 @@ class TestExplorationModeEvents(unittest.TestCase):
         self.assertTrue(denied)
 
 
+def _rename_function_registry() -> ToolRegistry:
+    """rename_function as the hosts declare it, with the reader undo needs."""
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(
+        name="rename_function",
+        description="Rename a function",
+        parameters=[
+            ParameterSchema(name="address", type="string"),
+            ParameterSchema(name="new_name", type="string"),
+        ],
+        mutating=True,
+        handler=lambda address="", new_name="": f"Renamed {address}: sub_401000 → {new_name}",
+    ))
+    registry.register(ToolDefinition(
+        name="read_function_name",
+        description="Read a function's name",
+        parameters=[ParameterSchema(name="address", type="string")],
+        internal=True,
+        handler=lambda address="": "sub_401000",
+    ))
+    return registry
+
+
 class TestMutationTracking(unittest.TestCase):
     """Verify mutation log is populated on mutating tool calls."""
 
@@ -248,23 +271,13 @@ class TestMutationTracking(unittest.TestCase):
         """rename_function should be recorded in mutation log."""
         provider = MockProvider([
             _tool_call_response("rename_function", {
-                "old_name": "sub_401000",
+                "address": "0x401000",
                 "new_name": "main",
             }),
             _text_response("Renamed the function."),
         ])
 
-        registry = ToolRegistry()
-        registry.register(ToolDefinition(
-            name="rename_function",
-            description="Rename a function",
-            parameters=[
-                ParameterSchema(name="old_name", type="string"),
-                ParameterSchema(name="new_name", type="string"),
-            ],
-            mutating=True,
-            handler=lambda old_name="", new_name="": f"Renamed {old_name} to {new_name}",
-        ))
+        registry = _rename_function_registry()
 
         loop = AgentLoop(
             provider=provider,
@@ -279,31 +292,20 @@ class TestMutationTracking(unittest.TestCase):
         rec = loop._mutation_log[0]
         self.assertTrue(rec.reversible)
         self.assertEqual(rec.reverse_tool, "rename_function")
-        self.assertEqual(rec.reverse_arguments["old_name"], "main")
-        self.assertEqual(rec.reverse_arguments["new_name"], "sub_401000")
+        self.assertEqual(rec.reverse_arguments, {"address": "0x401000", "new_name": "sub_401000"})
 
 
     def test_mutation_emits_event(self):
         """Mutating tool should emit MUTATION_RECORDED event."""
         provider = MockProvider([
             _tool_call_response("rename_function", {
-                "old_name": "sub_401000",
+                "address": "0x401000",
                 "new_name": "main",
             }),
             _text_response("Done."),
         ])
 
-        registry = ToolRegistry()
-        registry.register(ToolDefinition(
-            name="rename_function",
-            description="Rename a function",
-            parameters=[
-                ParameterSchema(name="old_name", type="string"),
-                ParameterSchema(name="new_name", type="string"),
-            ],
-            mutating=True,
-            handler=lambda old_name="", new_name="": f"Renamed {old_name} to {new_name}",
-        ))
+        registry = _rename_function_registry()
 
         loop = AgentLoop(
             provider=provider,

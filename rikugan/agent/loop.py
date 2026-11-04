@@ -12,13 +12,15 @@ import traceback
 from collections.abc import Generator
 from typing import Any
 
-from ..constants import MCP_TOOL_PREFIX
+from ..constants import FILESYSTEM_CATEGORY, MCP_TOOL_PREFIX
+from ..core.chat_context import activate_session
 from ..core.config import RikuganConfig
 from ..core.errors import (
     CancellationError,
     ProviderError,
     RateLimitError,
     ToolError,
+    UndoNoLongerPossible,
 )
 from ..core.logging import log_debug, log_error, log_info
 from ..core.sanitize import (
@@ -30,7 +32,13 @@ from ..core.sanitize import (
 from ..core.types import Message, Role, TokenUsage, ToolCall, ToolResult
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
-from ..state.session import INTERNAL_EVENT_CANCELLED, INTERNAL_EVENT_KEY, SessionState
+from ..state.session import (
+    CONSENT_DENIED,
+    CONSENT_GRANTED,
+    INTERNAL_EVENT_CANCELLED,
+    INTERNAL_EVENT_KEY,
+    SessionState,
+)
 from ..tools.registry import ToolRegistry
 from .context_window import ContextWindowManager
 from .exploration_mode import (
@@ -46,7 +54,7 @@ from .modes.exploration import run_exploration_mode
 from .modes.normal import run_normal_loop
 from .modes.plan import run_plan_mode
 from .modes.research import run_research_mode
-from .mutation import MutationRecord, build_reverse_record, capture_pre_state
+from .mutation import MutationRecord, build_reverse_record, capture_pre_state, mutation_succeeded
 from .plan_mode import parse_plan as _parse_plan_impl
 from .subagent import SubagentRunner
 from .system_prompt import build_system_prompt
@@ -390,7 +398,7 @@ class AgentLoop:
         )
 
         # Mutation log for /undo support
-        self._mutation_log: list[MutationRecord] = []
+        # Delegated to the session — see the property below.
 
         # Exploration mode state (populated when /modify or /explore is used)
         self._exploration_state: ExplorationState | None = None
@@ -400,6 +408,22 @@ class AgentLoop:
         from .modes.research import ResearchState as _RS
 
         self._research_state: _RS | None = None
+
+    # A provider can ask us to wait hours after a rate limit. Sleeping that
+    # long inside a turn leaves the panel saying "working" while everything
+    # the user sends queues behind a turn that will not end today, so past
+    # this the turn fails and says when it can be tried again.
+    _MAX_RETRY_BACKOFF_SECONDS = 60.0
+
+    @property
+    def _mutation_log(self) -> list[MutationRecord]:
+        """The chat's mutation log.
+
+        A loop is constructed for every user message, so a log owned here
+        would be empty each time it was read — including by /undo, which is
+        itself a user message. The session outlives the loop, so it holds it.
+        """
+        return self.session.mutation_log
 
     @property
     def is_running(self) -> bool:
@@ -492,8 +516,13 @@ class AgentLoop:
             except queue.Empty:
                 continue  # poll timeout — retry until item arrives or cancelled
 
+    def _declared_tool_names(self) -> list[str]:
+        hidden = self._hidden_filesystem_tools()
+        return [name for name in self.tools.list_names() if name not in hidden]
+
     def _build_system_prompt(self) -> str:
         profile = self.config.get_active_profile()
+        workspace = self.session.files.workspace
         binary_info = None
         current_address = None
         current_function = None
@@ -523,7 +552,8 @@ class AgentLoop:
             binary_info=binary_info,
             current_function=current_function,
             current_address=current_address,
-            tool_names=self.tools.list_names(),
+            tool_names=self._declared_tool_names(),
+            workspace_summary=workspace.describe_for_prompt() if workspace is not None else None,
             skill_summary=skill_summary,
             idb_dir=idb_dir,
             profile=profile,
@@ -613,17 +643,33 @@ class AgentLoop:
         undone = 0
         errors = []
         for _ in range(count):
-            record = self._mutation_log.pop()
+            record = self._mutation_log[-1]
             if not record.reversible:
-                errors.append(f"Cannot undo: {record.description} (not reversible)")
+                self._mutation_log.pop()
+                yield TurnEvent.mutation_undone(record.description)
+                errors.append(f"Cannot undo: {record.description} ({record.irreversible_reason or 'not reversible'})")
                 continue
             try:
-                self.tools.execute(record.reverse_tool, record.reverse_arguments)
-                undone += 1
-                log_info(f"Undo: {record.description}")
+                outcome = self._run_tool(record.reverse_tool, record.reverse_arguments)
+                if not mutation_succeeded(record.reverse_tool, outcome):
+                    raise ToolError(outcome, tool_name=record.reverse_tool)
+            except UndoNoLongerPossible as e:
+                # Retrying cannot help, so holding the record would block every
+                # older undo behind it for good.
+                self._mutation_log.pop()
+                yield TurnEvent.mutation_undone(record.description)
+                errors.append(f"Cannot undo: {record.description} ({e})")
+                continue
             except ToolError as e:
+                # The mutation is still applied, so its record stays. Going on
+                # would reverse older mutations out of order, on top of it.
                 errors.append(f"Failed to undo {record.description}: {e}")
                 log_error(f"Undo failed: {record.description}: {e}")
+                break
+            self._mutation_log.pop()
+            undone += 1
+            log_info(f"Undo: {record.description}")
+            yield TurnEvent.mutation_undone(record.description)
 
         parts_out = []
         if undone:
@@ -771,6 +817,17 @@ class AgentLoop:
                         backoff = e.retry_after if e.retry_after > 0 else min(2**attempt, 10)
                     else:
                         backoff = min(2**attempt, 10)
+                    if backoff > self._MAX_RETRY_BACKOFF_SECONDS:
+                        # Waiting it out would strand the turn, and everything
+                        # the user sends behind it, for as long as the provider
+                        # named. End the turn and say so instead.
+                        raise RateLimitError(
+                            f"{self._format_provider_error_for_user(e)} "
+                            f"The provider asked to wait {backoff / 60:.0f} minutes, "
+                            "which is longer than a turn will hold. Try again later.",
+                            provider=getattr(e, "provider", ""),
+                            retry_after=backoff,
+                        ) from e
                     if silent_mode:
                         yield TurnEvent.error_event(
                             f"\u23f3 Retrying in {backoff:.0f}s (attempt {attempt + 2}/{max_retries})..."
@@ -1017,6 +1074,16 @@ class AgentLoop:
     @staticmethod
     def _describe_tool_call(name: str, args: dict[str, Any]) -> str:
         """Generate a brief human-readable description of what a tool will do."""
+        if name == "read_file":
+            return f"Read {args.get('file_path', '?')}"
+        if name == "write_file":
+            return f"Write {args.get('file_path', '?')}"
+        if name == "edit_file":
+            return f"Edit {args.get('file_path', '?')}"
+        if name == "run_shell":
+            return f"Run: {args.get('command', '?')}"
+        if name == "search_files":
+            return f"Search for {args.get('pattern', '?')!r} in {args.get('path') or 'the workspace'}"
         if name == "execute_python":
             code = args.get("code", args.get("script", ""))
             lines = code.strip().splitlines()
@@ -1068,6 +1135,52 @@ class AgentLoop:
             self._always_allow_scripts = True
             return True
         return decision == "allow"
+
+    def _run_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        """Execute a tool as part of this chat, so file tools can find its state."""
+        with activate_session(self.session, self._cancelled):
+            return self.tools.execute(name, arguments)
+
+    def _filesystem_allowed(self) -> bool:
+        """Whether this chat may use file tools right now, without asking."""
+        return self.config.filesystem_access or self.session.files.consent == CONSENT_GRANTED
+
+    def _hidden_filesystem_tools(self) -> set[str]:
+        """File tools not to offer: all if the user said no, the shell if it is off."""
+        if self.session.files.consent == CONSENT_DENIED and not self._filesystem_allowed():
+            return {d.name for d in self.tools.list_tools() if d.category == FILESYSTEM_CATEGORY}
+        return set() if self.config.filesystem_shell else {"run_shell"}
+
+    def _wait_for_filesystem_consent(self, tc: ToolCall) -> Generator[TurnEvent, None, bool]:
+        """Ask once per chat whether the agent may use files at all.
+
+        Separate from _wait_for_approval: "Always Allow" on a script answers a
+        different question, and must not silently open up the disk.
+        """
+        if self._filesystem_allowed():
+            return True
+        if self.session.files.consent == CONSENT_DENIED:
+            return False
+
+        description = (
+            f"{self._describe_tool_call(tc.name, tc.arguments)}\n"
+            "Allowing lets the agent read, write and search files in its workspace and run shell "
+            "commands for this chat, without asking again. Always Allow turns on Filesystem access "
+            "in Settings."
+        )
+        yield TurnEvent.tool_approval_request(tc.id, tc.name, json.dumps(tc.arguments, indent=2), description)
+
+        decision = self._wait_for_queue(self._tool_approval_queue).lower()
+        if decision not in ("allow", "allow_all"):
+            self.session.files.consent = CONSENT_DENIED
+            return False
+        self.session.files.consent = CONSENT_GRANTED
+        if decision == "allow_all":
+            try:
+                self.config.save_setting("filesystem_access", True)
+            except (OSError, ValueError) as e:
+                log_error(f"Could not save filesystem_access: {e}")
+        return True
 
     def _handle_exploration_report_tool(
         self,
@@ -1300,6 +1413,29 @@ class AgentLoop:
             yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
             return tr
 
+        defn = self.tools.get(tc.name)
+
+        # Same answer as for a tool that does not exist: this is not for the model.
+        if defn is not None and defn.internal:
+            content = f"Error: Unknown tool: {tc.name}"
+            tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=content, is_error=True)
+            yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
+            return tr
+
+        if tc.name == "run_shell" and not self.config.filesystem_shell:
+            content = "Error: shell commands are turned off in the configuration."
+            tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=content, is_error=True)
+            yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
+            return tr
+
+        if defn is not None and defn.category == FILESYSTEM_CATEGORY:
+            permitted = yield from self._wait_for_filesystem_consent(tc)
+            if not permitted:
+                content = "Filesystem access was denied by the user for this chat. Carry on without files."
+                tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=content, is_error=True)
+                yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
+                return tr
+
         # execute_python always requires explicit approval
         if tc.name == "execute_python":
             approved = yield from self._wait_for_approval(tc)
@@ -1309,7 +1445,6 @@ class AgentLoop:
                 yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
                 return tr
 
-        defn = self.tools.get(tc.name)
         is_mutating = defn is not None and defn.mutating
 
         if is_mutating and self.config.approve_mutations:
@@ -1329,17 +1464,28 @@ class AgentLoop:
             )
 
         log_debug(f"Executing tool {tc.name}")
+        log_length_before = len(self._mutation_log)
         try:
-            result = self.tools.execute(tc.name, tc.arguments)
+            result = self._run_tool(tc.name, tc.arguments)
             is_error = False
             # Hysteresis: decrement instead of resetting so a single success
             # after several failures doesn't fully clear the counter.
             self._consecutive_errors = max(0, self._consecutive_errors - 1)
-            if is_mutating:
+            if is_mutating and mutation_succeeded(tc.name, result):
                 record = build_reverse_record(tc.name, tc.arguments, pre_state)
                 if record is not None:
                     self._mutation_log.append(record)
                     log_debug(f"Mutation recorded: {record.description}")
+                    yield TurnEvent.mutation_recorded(
+                        tool_name=record.tool_name,
+                        description=record.description,
+                        reversible=record.reversible,
+                        reverse_tool=record.reverse_tool,
+                        reverse_args=record.reverse_arguments,
+                    )
+            elif defn is not None and defn.category == FILESYSTEM_CATEGORY:
+                # File tools write their own records: only they know the backup.
+                for record in self._mutation_log[log_length_before:]:
                     yield TurnEvent.mutation_recorded(
                         tool_name=record.tool_name,
                         description=record.description,
@@ -1420,6 +1566,10 @@ class AgentLoop:
             use_exploration_mode = True
 
         tools_schema = list(self.tools.to_provider_format())
+
+        hidden = self._hidden_filesystem_tools()
+        if hidden:
+            tools_schema = [t for t in tools_schema if t.get("function", {}).get("name") not in hidden]
 
         # Filter to skill-allowed tools if the skill restricts them
         if active_skill and active_skill.allowed_tools:
@@ -1590,6 +1740,9 @@ class AgentLoop:
 
 
 _EVENT_QUEUE_MAXSIZE = 500
+# Long enough that a busy UI never loses an event, short enough that a stalled
+# one cannot park the agent thread indefinitely.
+_EVENT_PUT_TIMEOUT = 30.0
 
 
 class BackgroundAgentRunner:
@@ -1629,14 +1782,14 @@ class BackgroundAgentRunner:
                         pending_text.append(event.text)
                         event = TurnEvent.text_delta("".join(pending_text))
                         pending_text.clear()
-                    self.event_queue.put(event)
+                    self._put(event)
                 else:
                     # Flush any pending text before non-delta events
                     if pending_text:
                         coalesced = TurnEvent.text_delta("".join(pending_text))
                         pending_text.clear()
-                        self.event_queue.put(coalesced)
-                    self.event_queue.put(event)
+                        self._put(coalesced)
+                    self._put(event)
         except Exception as e:
             log_error(f"BackgroundAgentRunner error: {e}\n{traceback.format_exc()}")
             if pending_text:
@@ -1658,7 +1811,21 @@ class BackgroundAgentRunner:
                     )
                 except queue.Full:
                     log_debug("Event queue full, dropping pending text in finally block")
-            self.event_queue.put(None)  # Sentinel
+            self._put(None)  # Sentinel
+
+    def _put(self, event) -> None:
+        """Hand an event to the UI, giving up rather than blocking for ever.
+
+        The queue is bounded and the UI drains it on a timer. A plain put()
+        blocks with no deadline, so a consumer that stops draining leaves this
+        thread parked inside it: the turn never ends, the runner is never
+        retired, and every message the user sends queues behind a turn that
+        cannot finish. Losing an event is recoverable; wedging the turn is not.
+        """
+        try:
+            self.event_queue.put(event, timeout=_EVENT_PUT_TIMEOUT)
+        except queue.Full:
+            log_error(f"Event queue full for {_EVENT_PUT_TIMEOUT}s; dropping {getattr(event, 'type', event)}")
 
     def cancel(self) -> None:
         self.agent_loop.cancel()

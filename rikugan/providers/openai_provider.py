@@ -119,6 +119,10 @@ class OpenAIProvider(LLMProvider):
             elif msg.role == Role.USER:
                 formatted.append({"role": "user", "content": msg.content})
             elif msg.role == Role.ASSISTANT:
+                if not msg.content and not msg.tool_calls:
+                    # Would go out as a message with neither content nor a
+                    # tool call, which is not a valid turn.
+                    continue
                 d: dict[str, Any] = {"role": "assistant"}
                 if msg.content:
                     d["content"] = msg.content

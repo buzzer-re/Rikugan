@@ -137,7 +137,12 @@ def execute_single_turn(
         last_usage,
         raw_parts,
     )
-    loop.session.add_message(assistant_msg)
+    # A reply with neither text nor a tool call says nothing, and storing it
+    # poisons the rest of the chat: it goes back out with every later request,
+    # and the API rejects a history containing an empty message. A refusal and
+    # an empty end_turn both arrive looking like this.
+    if assistant_text or tool_calls:
+        loop.session.add_message(assistant_msg)
 
     if not tool_calls:
         return TurnResult(text=assistant_text, usage=last_usage, finish_reason=finish_reason)

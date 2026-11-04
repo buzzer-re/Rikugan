@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Any
 from ..agent.loop import AgentLoop, BackgroundAgentRunner
 from ..agent.turn import TurnEvent
 from ..core.config import RikuganConfig
-from ..core.host import get_database_instance_id, set_database_instance_id
+from ..core.host import get_database_instance_id, get_database_path, get_input_path, set_database_instance_id
 from ..core.logging import log_debug, log_error, log_info
+from ..core.workspace import Workspace
 from ..mcp.manager import MCPManager
 from ..providers.registry import ProviderRegistry
 from ..skills.registry import SkillRegistry
@@ -76,6 +77,8 @@ class SessionControllerBase:
 
         self._runners: dict[str, BackgroundAgentRunner] = {}
         self._pending_messages: dict[str, list[str]] = {}
+        # Tabs told to stop whose runner has not torn down yet.
+        self._cancelling: set[str] = set()
 
     def _initialize_runtime(self) -> None:
         """Load heavy runtime components off the UI path."""
@@ -182,6 +185,7 @@ class SessionControllerBase:
             return
         self.cancel(tab_id)
         self._runners.pop(tab_id, None)
+        self._cancelling.discard(tab_id)
         self._pending_messages.pop(tab_id, None)
         if self.config.checkpoint_auto_save and session.messages:
             try:
@@ -262,6 +266,16 @@ class SessionControllerBase:
         return bool(self._runners)
 
     def is_tab_running(self, tab_id: str) -> bool:
+        """Whether this tab will still act on what the user sends.
+
+        A cancelled tab reports False from the moment it is told to stop, not
+        when its thread finally notices. The gap between the two is whatever
+        the agent is blocked on — a streaming read can hold it for the length
+        of the request timeout — and a message sent in that window used to be
+        queued behind a turn that was already being torn down.
+        """
+        if tab_id in self._cancelling:
+            return False
         runner = self._runners.get(tab_id)
         return runner is not None and runner.agent_loop.is_running
 
@@ -343,6 +357,15 @@ class SessionControllerBase:
             return f"Provider error: {e}"
 
         session = self._sessions[tab_id]
+        # Here on the UI thread: IDA's path queries are main-thread only, and a
+        # Binary Ninja view can change path when a raw file is saved as a database.
+        session.files.workspace = Workspace.for_database(
+            get_database_path(),
+            self.config.config_dir,
+            self._db_instance_id,
+            input_path=get_input_path(),
+            extra_roots=self.config.filesystem_extra_roots,
+        )
         loop = AgentLoop(
             provider,
             self._tool_registry,
@@ -352,6 +375,8 @@ class SessionControllerBase:
             host_name=self.host_name,
         )
         runner = BackgroundAgentRunner(loop)
+        # A tab told to stop is live again the moment a new turn starts on it.
+        self._cancelling.discard(tab_id)
         self._runners[tab_id] = runner
         runner.start(user_message)
         return None
@@ -378,6 +403,7 @@ class SessionControllerBase:
         self._pending_messages.pop(target, None)
         runner = self._runners.get(target)
         if runner:
+            self._cancelling.add(target)
             runner.cancel()
 
     def queue_message(self, text: str, tab_id: str | None = None) -> None:
@@ -389,6 +415,7 @@ class SessionControllerBase:
     def on_agent_finished(self, tab_id: str | None = None) -> str | None:
         target = tab_id or self._active_tab_id
         self._runners.pop(target, None)
+        self._cancelling.discard(target)
         pending = self._pending_messages.get(target, [])
         next_message = pending.pop(0) if pending else None
         if not pending:
@@ -460,6 +487,7 @@ class SessionControllerBase:
         session = self._sessions.get(tab_id)
         self.cancel(tab_id)
         self._runners.pop(tab_id, None)
+        self._cancelling.discard(tab_id)
         self._pending_messages.pop(tab_id, None)
         if session is not None:
             try:

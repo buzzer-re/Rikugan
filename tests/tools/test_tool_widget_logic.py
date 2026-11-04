@@ -21,6 +21,7 @@ from rikugan.ui.tool_widgets import (  # noqa: E402
     _format_tool_summary,
     _truncate_preview,
     _DEFAULT_TOOL_COLOR,
+    _approval_card_text,
 )
 
 
@@ -238,6 +239,41 @@ class TestFormatResultChip(unittest.TestCase):
 
     def test_plain_result_falls_back_to_a_check(self):
         self.assertEqual(_format_result_chip("some_tool", "done"), "\u2713")
+
+
+class TestApprovalCardText(unittest.TestCase):
+    """The card is the user's one chance to see what they are allowing."""
+
+    def test_names_the_tool_being_approved(self):
+        # It used to say "Approve execute_python?" whatever the tool was.
+        title, _, _ = _approval_card_text("rename_function", "{}", "Rename a -> b")
+        self.assertEqual(title, "Approve rename_function?")
+
+    def test_shows_the_description_for_a_tool_with_no_code(self):
+        _, info, _ = _approval_card_text("rename_function", '{"new_name": "b"}', "Rename a -> b")
+        self.assertEqual(info, "Rename a -> b")
+
+    def test_shows_the_arguments_for_a_tool_with_no_code(self):
+        # A description summarizes; what runs is the arguments.
+        args = '{"new_name": "b"}'
+        _, _, preview = _approval_card_text("rename_function", args, "Rename a -> b")
+        self.assertEqual(preview, args)
+
+    def test_no_arguments_means_no_preview(self):
+        _, _, preview = _approval_card_text("list_things", "{}", "Call list_things")
+        self.assertEqual(preview, "")
+
+    def test_a_script_is_still_previewed_as_code(self):
+        args = json.dumps({"code": "a = 1\nb = 2"})
+        title, info, preview = _approval_card_text("execute_python", args, "Run Python code")
+        self.assertEqual(title, "Approve execute_python?")
+        self.assertEqual(info, "Python code - 2 lines")
+        self.assertEqual(preview, "a = 1\nb = 2")
+
+    def test_a_one_line_script_reads_in_the_singular(self):
+        args = json.dumps({"code": "a = 1"})
+        _, info, _ = _approval_card_text("execute_python", args, "Run Python code")
+        self.assertEqual(info, "Python code - 1 line")
 
 
 if __name__ == "__main__":

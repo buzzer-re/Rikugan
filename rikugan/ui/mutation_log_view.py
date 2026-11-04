@@ -21,6 +21,14 @@ if TYPE_CHECKING:
     from ..agent.mutation import MutationRecord
 
 
+def _reversibility_tooltip(record: MutationRecord) -> str:
+    if record.reversible:
+        return "Reversible"
+    if record.irreversible_reason:
+        return f"Not reversible: {record.irreversible_reason}"
+    return "Not reversible"
+
+
 class MutationEntryWidget(QFrame):
     """Single mutation entry with description and undo status."""
 
@@ -41,7 +49,7 @@ class MutationEntryWidget(QFrame):
         self._indicator.setStyleSheet(
             "color: #4ec9b0; font-size: 14px;" if record.reversible else "color: #808080; font-size: 14px;"
         )
-        self._indicator.setToolTip("Reversible" if record.reversible else "Not reversible")
+        self._indicator.setToolTip(_reversibility_tooltip(record))
         layout.addWidget(self._indicator)
 
         # Description
@@ -132,13 +140,11 @@ class MutationLogPanel(QFrame):
         self._entries.append(entry)
         self._update_count()
 
-    def remove_last(self, count: int = 1) -> None:
-        """Remove the last N entries (after undo)."""
-        for _ in range(min(count, len(self._entries))):
-            entry = self._entries.pop()
-            self._entries_layout.removeWidget(entry)
-            entry.deleteLater()
-        self._update_count()
+    def set_records(self, records: list[MutationRecord]) -> None:
+        """Show exactly these records, replacing whatever is listed."""
+        self.clear_all()
+        for record in records:
+            self.add_mutation(record)
 
     def clear_all(self) -> None:
         """Clear all entries."""

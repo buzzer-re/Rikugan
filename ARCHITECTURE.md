@@ -15,7 +15,7 @@ This document describes the internal architecture of the Rikugan agent in full t
 7. [Exploration Mode](#exploration-mode)
 8. [Plan Mode](#plan-mode)
 9. [Subagents](#subagents)
-10. [Mutation Tracking and Undo](#mutation-tracking-and-undo)
+10. [Mutation Tracking and Undo](#mutation-tracking-and-undo) (see also [Files and Shell](#files-and-shell))
 11. [Context Window Management](#context-window-management)
 12. [Persistent Memory](#persistent-memory)
 13. [Session Management](#session-management)
@@ -130,7 +130,7 @@ Takes a list of `ToolCall` objects and executes each one. For each call:
 2. **Approval gate** — `execute_python` requires user approval unless previously allowed
 3. **Pre-state capture** — For mutating tools, `capture_pre_state()` calls getter tools to record the current state before mutation
 4. **Execution** — `ToolRegistry.execute(name, args)` dispatches to the handler
-5. **Mutation recording** — If `defn.mutating`, `build_reverse_record()` creates a `MutationRecord` and appends to `_mutation_log`. Yields a `MUTATION_RECORDED` event
+5. **Mutation recording** — If `defn.mutating`, `build_reverse_record()` creates a `MutationRecord` and appends to `session.mutation_log`. File tools append their own record. Either way a `MUTATION_RECORDED` event is yielded
 6. **Error handling** — `ToolError` and general `Exception` are caught and returned as error results
 7. **Result** — Each result becomes a `ToolResult` and yields a `TOOL_RESULT` event
 
@@ -188,6 +188,7 @@ All communication from the agent loop to the UI goes through `TurnEvent` objects
 | `SAVE_COMPLETED` | Patches saved to file | `text`, `metadata.patch_count` |
 | `SAVE_DISCARDED` | Patches discarded | `text`, `metadata.rolled_back` |
 | `MUTATION_RECORDED` | Mutation logged for undo | `tool_name`, `text`, `metadata.reversible`, `metadata.reverse_tool` |
+| `MUTATION_UNDONE` | A record left the mutation log | `text` |
 
 Each event type has a static factory method on `TurnEvent` for clean construction (e.g., `TurnEvent.text_delta("hello")`).
 
@@ -231,6 +232,9 @@ class ToolDefinition:
     mutating: bool = False              # marks tool as modifying the database
     timeout: Optional[float] = None     # per-tool timeout in seconds
     handler: Optional[Callable] = None
+    internal: bool = False              # hidden from the model; only Rikugan calls it
+    result_limit: Optional[int] = None  # characters allowed, if it bounds its own output
+    long_running: bool = False          # runs on its own executor
 ```
 
 Key flags:
@@ -253,7 +257,9 @@ Argument coercion in `execute()`:
 
 Timeout wrapping:
 ```python
-future = _executor.submit(defn.handler, **arguments)
+context = contextvars.copy_context()   # carries the active chat onto the worker
+executor = _long_running_executor if defn.long_running else _executor
+future = executor.submit(lambda: context.run(handler, **arguments))
 result = future.result(timeout=timeout)  # default 30s
 ```
 
@@ -277,6 +283,7 @@ Each host provides ~56 tools organized by category:
 | IL (BN) | `get_il`, `get_il_block`, `nop_instructions`, `redecompile_function` |
 | IL Analysis (BN) | `get_cfg`, `track_variable_ssa` |
 | IL Transform (BN) | `il_replace_expr`, `il_set_condition`, `il_nop_expr`, `il_remove_block`, `patch_branch`, `write_bytes`, `install_il_workflow` |
+| Filesystem | `read_file`, `write_file`, `edit_file`, `search_files`, `run_shell` (see [Files and Shell](#files-and-shell)) |
 
 ---
 
@@ -555,62 +562,107 @@ When a subagent running in explore mode finishes:
 
 **File**: `rikugan/agent/mutation.py`
 
-Every mutating tool call (`defn.mutating=True`) is recorded in `AgentLoop._mutation_log` for undo support.
+Every mutating tool call (`defn.mutating=True`) is recorded on `SessionState.mutation_log` for undo support. The log lives on the session because an `AgentLoop` is built per user message, and `/undo` is itself a user message, so a log owned by the loop would always be empty by the time it was read. `AgentLoop._mutation_log` is a property delegating to it, and subagents share the same list. It is not persisted: a reverse call only means something against a live database.
 
 ### `MutationRecord`
 
 ```python
 @dataclass
-class MutationRecord:
-    tool_name: str              # e.g., "rename_function"
-    arguments: Dict[str, Any]   # original arguments
-    reverse_tool: str           # tool to call for undo
-    reverse_arguments: Dict      # arguments for undo
+class MutationRecord:                    # rikugan/core/types.py
+    tool_name: str                       # e.g., "rename_function"
+    arguments: dict[str, Any]            # original arguments
+    reverse_tool: str                    # tool to call for undo
+    reverse_arguments: dict[str, Any]    # arguments for undo
     timestamp: float
-    description: str            # human-readable
-    reversible: bool            # False for execute_python, etc.
+    description: str                     # human-readable
+    reversible: bool = True
+    irreversible_reason: str = ""        # shown in /undo's reply and the panel tooltip
 ```
 
 ### `build_reverse_record()`
 
-Generates reverse operations for known tools:
+`_REVERSE_BUILDERS` generates reverse operations for tools where that is possible, and `_KNOWN_IRREVERSIBLE` lists the rest. `tests/agent/test_mutation_contract.py` fails for any mutating tool in neither.
 
 | Tool | Reverse Strategy |
 |------|-----------------|
-| `rename_function` | Swap `old_name` ↔ `new_name` |
-| `rename_variable` / `rename_single_variable` | Swap `variable_name` ↔ `new_name` |
-| `set_comment` | Restore `old_comment` (from pre-state) or `delete_comment` |
-| `set_function_comment` | Restore `old_comment` or `delete_function_comment` |
-| `rename_data` | Restore `old_name` (from pre-state) |
-| `set_function_prototype` | Restore `old_prototype` (from pre-state) |
-| `retype_variable` | Restore `old_type` (from pre-state) |
-| `execute_python` | **Not reversible** (`reversible=False`) |
+| `rename_function` | Restore the name read through `read_function_name` |
+| `rename_variable` | Swap `old_name` ↔ `new_name` |
+| `rename_address` | Restore the name read through `get_name_at`. An address that had none is recorded as non-reversible |
+| `set_comment`, `set_function_comment` | Write back the comment read through `read_comment` / `read_function_comment`, in the same slot. Writing an empty one is how both hosts remove it |
+| `set_pseudocode_comment` | The same, through `get_pseudocode_comment` (IDA only) |
+| `set_function_prototype` | Write back the type read through `read_function_prototype`. A function with none is recorded as non-reversible |
+| Everything in `_KNOWN_IRREVERSIBLE` | **Not reversible** (`reversible=False`) |
+
+`tests/agent/test_mutation_contract.py` also derives arguments from each tool's real parameters, and checks that every getter and reverse call is one that tool accepts, in both hosts. `tests/agent/test_undo_against_hosts.py` runs each round trip through the real tools over a fake database.
 
 ### `capture_pre_state()`
 
-For tools that need pre-mutation state (comments, prototypes, types), calls getter tools before the mutation:
+Calls getter tools before the mutation. The `read_*` readers are `internal`, so they add nothing to the tool list sent to the model, and return raw values, since `/undo` passes them straight back to the setter. If a read fails, it records `pre["_capture_failed"]`, and the mutation is logged as non-reversible with that reason rather than failing at undo time. A reader's "there is nothing" message must not be taken for a value: `get_name_at` says "No name at 0x...", which would otherwise become the name.
 
-```python
-# Before set_comment:
-old_comment = tool_executor("get_comment", {"address": address})
-# After: build_reverse_record uses old_comment for undo
-```
+`set_type`, `propagate_type` and `apply_type_to_variable` need a type-at-address reader that neither host has, so they stay non-reversible.
 
 ### `/undo [N]`
 
-The `/undo` command:
+The `/undo` command runs on a new loop over the same session:
 1. Parses the count (default 1)
-2. Iterates `_mutation_log` in reverse
-3. For each reversible record: calls `ToolRegistry.execute(reverse_tool, reverse_args)`
-4. Pops the record from the log
-5. Yields results as text events
+2. Takes records from the end of the log, newest first
+3. A non-reversible record is dropped with its reason
+4. Otherwise calls the reverse tool. On success the record is popped. On `ToolError` it **stays and undo stops**: the mutation is still applied, and carrying on would reverse older ones out of order
+5. `UndoNoLongerPossible` means a retry cannot help (a file changed since, a discarded backup), so the record is dropped and older undos continue
+6. Yields `MUTATION_UNDONE` for each record that left, then a summary
+
+Analysis tools report failure by returning text rather than raising, so `mutation_succeeded()` recognises how each reversible tool opens its message when it worked, and anything else counts as failed. It applies both ways: a reversal that failed keeps its record, and a mutation that failed adds none. A new reversible tool has to open with one of `_SUCCESS_PREFIXES`.
 
 ### UI Integration
 
-- `MUTATION_RECORDED` events flow to `RikuganPanelCore._on_mutation_recorded()`
-- A `MutationLogPanel` (in a horizontal `QSplitter` alongside the chat) shows the mutation history
-- "Mutations" toggle button appears after the first mutation
+- `MutationLogPanel` (in a horizontal `QSplitter` alongside the chat) lists the **active chat's** log. There is one panel per window and one log per chat, so `RikuganPanelCore._sync_mutation_panel()` reads the log rather than accumulating events, on `MUTATION_RECORDED`, `MUTATION_UNDONE`, a tab switch, a database change and the end of a turn. The last catches silent subagents, whose events do not arrive
 - "Undo Last" button submits `/undo 1` through the agent loop
+
+---
+
+## Files and Shell
+
+**Files**: `rikugan/core/workspace.py`, `rikugan/core/artifacts.py`, `rikugan/core/chat_context.py`, `rikugan/tools/filesystem.py`, `rikugan/tools/file_search.py`, `rikugan/tools/shell.py`
+
+Registered in both hosts, category `filesystem`. Neither host marshals this category onto its main thread. Per-chat state is `SessionState.files` (`FileAccess`), shared with subagents: the workspace, artifact store, read ledger and consent answer. Handlers find their chat through a context variable, which `AgentLoop._run_tool` sets and the registry carries onto the worker thread.
+
+### Workspace
+
+`SessionControllerBase.start_agent` builds a `Workspace` on the UI thread each turn, since IDA's path queries are main-thread only and a Binary Ninja view can change path. Roots are the binary's directory, `<config>/scratch/<db_instance_id>/` (addressed as `scratch/`) and `filesystem_extra_roots`. A binary directory that is the user's home or an ancestor of it is not used. See the [safety rules in AGENTS.md](AGENTS.md#filesystem-and-shell-safety).
+
+### Editing
+
+| Rule | Why |
+|------|-----|
+| Read before write | A session ledger of `path -> st_mtime_ns`. Refuses a file not read, or changed since. Prevents clobbering content the model never saw |
+| Exact match only | No regex, normalization or fuzzy application. A tool that sometimes guesses right is worse than one that fails loudly |
+| Unique by default | More than one match fails and lists every line number, or `replace_all` |
+| One diagnosis on failure | Names copied line numbers or differing whitespace, without applying anything |
+| Line endings kept | A CRLF file's strings are matched as CRLF, since `read_file` hides the `\r` |
+| Atomic | Temp file plus `os.replace()`, keeping the mode |
+
+### Undo for files
+
+Each change copies the old file to `scratch/.backups/` (capped at 200 files / 100 MB, oldest dropped) and appends a `MutationRecord` whose reverse is `restore_file_backup`, an `internal` tool: an agent able to call it could silently revert the user's edits. Restoring also restores the backup's mtime, which is what the previous edit recorded, so a chain of edits undoes one at a time. A file changed since is left alone and reported. What `run_shell` does is not undoable.
+
+### Oversized output
+
+`format_large_result` renders anything over budget (20,000 characters) as numbered head and tail, 60/40, with a notice directly under the title:
+
+```
+=== build.log ===
+⟦Showing lines 1-246 and 9936-10181 of 10181; 9,689 middle lines (1.8MB) elided. Continue with read_file("artifact://64", offset=247)⟧
+```
+
+The rest goes to an in-memory `ArtifactStore` (2 MB each, 8 MB per chat, 32 artifacts, least recently used dropped, ids never reused). Past 2 MB only both ends are saved, the notice says so, and a read landing in that gap says so too. The notice comes first because old tool results are later cut to their first 500 characters. These tools' results also get more room in `SessionState._truncate_results`: without it the model could not hold more than about 600 lines of a file.
+
+### Search and shell
+
+`search_files` uses ripgrep when `shutil.which("rg")` finds it and a Python scan otherwise, with the same rows from both. It names the engine in its result, because their regex dialects differ. Neither follows symlinks, and a search that stops early says why.
+
+`scratch/` means the agent's scratch directory only to the file tools. A shell would read it as a folder inside its working directory, so a file just written looks missing, and `mkdir scratch` leaves a stray folder beside the sample. `run_shell` therefore refuses that use before anything runs, unless such a folder exists, and exports `$SCRATCH`. `write_file` and the system prompt state the real paths.
+
+`run_shell` runs with `shell=True`, no stdin, its own process group and a timeout clamped to 240 s. Timeout and Stop kill the group. Its tool timeout is longer than that, since the registry's cannot stop a thread and would orphan the process. Capture keeps the head and tail of each stream and keeps draining past the limit, so a chatty command cannot block on a full pipe.
 
 ---
 
@@ -883,7 +935,21 @@ A `QTimer` fires every 50ms, calling `_poll_events()`:
 2. Routes each to `ChatView.handle_event()`
 3. Checks for `USER_QUESTION` / `SAVE_APPROVAL_REQUEST` to enable input
 4. Updates token display on `USAGE_UPDATE`
-5. Routes `MUTATION_RECORDED` to `MutationLogPanel`
+5. Refreshes `MutationLogPanel` on `MUTATION_RECORDED` and `MUTATION_UNDONE`
+
+### Tool review
+
+`ToolCallWidget` builds its expanded view on first open, since most cards are never opened. `tool_review.build_review()` turns a call's JSON into what it means, and `ToolReviewView` renders it, also on `ToolApprovalWidget`:
+
+| Tool | Shown as |
+|------|----------|
+| `write_file` | Highlighted file contents, by extension |
+| `edit_file` | Line diff, with `-`/`+` in the gutter and tinted lines |
+| `execute_python`, `run_shell` | Highlighted code |
+| `read_file`, `search_files` | What it covers: range, glob, mode |
+| Anything else | The raw arguments |
+
+Results lose the sanitizer's wrapper (`unwrap_tool_result`), which is for the model. `code_view.scan_line()` is free of Qt, so its behaviour is tested directly. It reads each line with one pattern, so the token that starts first wins, and carries state across lines for docstrings and block comments. Layout needs real Qt, which `tests/tools/test_tool_review.py::TestUnderRealQt` runs in a subprocess, because the rest of the suite has stubs where Qt should be.
 
 ### `ChatView`
 
@@ -1076,12 +1142,13 @@ LLM calls rename_function(old="sub_401000", new="main")
   ├─→ build_reverse_record() → MutationRecord(
   │     reverse_tool="rename_function",
   │     reverse_args={"old_name": "main", "new_name": "sub_401000"})
-  ├─→ _mutation_log.append(record)
+  ├─→ session.mutation_log.append(record)
   └─→ MUTATION_RECORDED event → UI (MutationLogPanel)
 
-User "/undo"
+User "/undo" (a new AgentLoop over the same session)
   │
-  ├─→ Pop last MutationRecord from _mutation_log
   ├─→ ToolRegistry.execute("rename_function", {"old_name": "main", "new_name": "sub_401000"})
-  └─→ TEXT_DONE "Undone: Rename function main → sub_401000"
+  ├─→ Pop the record from session.mutation_log
+  ├─→ MUTATION_UNDONE event → UI (MutationLogPanel)
+  └─→ TEXT_DONE "Undid 1 mutation(s)."
 ```

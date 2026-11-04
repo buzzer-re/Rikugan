@@ -35,6 +35,7 @@ from .qt_compat import (
 )
 from .styles import maybe_host_stylesheet
 
+FILESYSTEM_ACCESS_LABEL = "Filesystem access: Agent can use disk files to code, edit or read"
 _DEFAULT_MINIMAX_URL = "https://api.minimax.io/anthropic"
 _CUSTOM_PROVIDER_URL_PLACEHOLDER = "https://api.example.com/v1"
 
@@ -563,6 +564,18 @@ class SettingsDialog(QDialog):
         )
         behavior_form.addRow(self._preserve_context_cb)
 
+        # --- Filesystem access ---
+        self._filesystem_access_cb = QCheckBox(FILESYSTEM_ACCESS_LABEL)
+        self._filesystem_access_cb.setChecked(self._config.filesystem_access)
+        self._filesystem_access_cb.setToolTip(
+            "Lets the agent read, write and search files and run shell commands without asking. File "
+            "paths are limited to the binary's folder and the agent's scratch folder; anything else is "
+            "refused. Shell commands start there but are not confined to it. File writes can be undone "
+            "with /undo; what a command does cannot. Left off, the agent asks once per chat the first "
+            "time it needs any of this."
+        )
+        behavior_form.addRow(self._filesystem_access_cb)
+
         # --- API key encryption ---
         from ..core.crypto import is_available as crypto_available
 
@@ -982,6 +995,7 @@ class SettingsDialog(QDialog):
         self._config.max_retries = self._max_retries_spin.value()
         self._config.silent_retry_mode = self._silent_retry_cb.isChecked()
         self._config.preserve_context = self._preserve_context_cb.isChecked()
+        self._config.filesystem_access = self._filesystem_access_cb.isChecked()
         self._config.oauth_consent_accepted = self._oauth_cb.isChecked()
         if self._config.is_custom_provider(self._config.provider.name):
             self._config.provider.extra = dict(self._config.custom_providers.get(self._config.provider.name, {}))

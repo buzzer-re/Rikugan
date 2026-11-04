@@ -8,9 +8,12 @@ import time
 import uuid
 from dataclasses import dataclass, field, replace
 
+from ..constants import LARGE_RESULT_TOOLS
+from ..core.artifacts import INLINE_RESULT_BUDGET, ArtifactStore
 from ..core.logging import log_debug
 from ..core.sanitize import strip_injection_markers
-from ..core.types import Message, Role, TokenUsage, ToolResult
+from ..core.types import Message, MutationRecord, Role, TokenUsage, ToolResult
+from ..core.workspace import Workspace
 
 # ---------- Token estimation ----------
 
@@ -20,6 +23,10 @@ _CHARS_PER_TOKEN = 3.5
 _OLD_RESULT_THRESHOLD = 8
 _OLD_RESULT_MAX_CHARS = 500
 _RECENT_RESULT_MAX_CHARS = 8000
+# File contents are what a coding turn works from, so they stay longer and larger.
+# Allows for the wrapper the sanitizer puts around a result.
+_LARGE_RESULT_MAX_CHARS = INLINE_RESULT_BUDGET + 500
+_LARGE_RESULT_OLD_THRESHOLD = 24
 INTERNAL_EVENT_KEY = "rikugan_event"
 INTERNAL_EVENT_CANCELLED = "cancelled"
 
@@ -41,6 +48,13 @@ def _estimate_tokens(msg: Message) -> int:
     return max(1, int(chars / _CHARS_PER_TOKEN))
 
 
+def _result_limit(tool_name: str, age: int) -> int:
+    """How much of a result to keep, *age* messages from the end of the chat."""
+    if tool_name in LARGE_RESULT_TOOLS:
+        return _OLD_RESULT_MAX_CHARS if age > _LARGE_RESULT_OLD_THRESHOLD else _LARGE_RESULT_MAX_CHARS
+    return _OLD_RESULT_MAX_CHARS if age > _OLD_RESULT_THRESHOLD else _RECENT_RESULT_MAX_CHARS
+
+
 def _truncate_tool_result(tr: ToolResult, max_chars: int) -> ToolResult:
     """Return a truncated copy of a tool result if it exceeds max_chars."""
     if not tr.content or len(tr.content) <= max_chars:
@@ -52,6 +66,23 @@ def _truncate_tool_result(tr: ToolResult, max_chars: int) -> ToolResult:
         content=tr.content[:max_chars] + f"\n... [{omitted} chars omitted]",
         is_error=tr.is_error,
     )
+
+
+CONSENT_GRANTED = "granted"
+CONSENT_DENIED = "denied"
+
+
+@dataclass
+class FileAccess:
+    """What a chat's file tools remember. Shared with its subagents."""
+
+    workspace: Workspace | None = None
+    artifacts: ArtifactStore = field(default_factory=ArtifactStore)
+    # path -> st_mtime_ns when last read or written. Editing needs an entry here
+    # that still matches the disk, so nothing is overwritten sight unseen.
+    read_mtimes: dict[str, int] = field(default_factory=dict)
+    # "" until asked. The user's answer for this chat; see AgentLoop.
+    consent: str = ""
 
 
 @dataclass
@@ -78,6 +109,14 @@ class SessionState:
     idb_path: str = ""
     db_instance_id: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+    # Mutations made in this chat, newest last. Lives here rather than on
+    # AgentLoop because a loop is built fresh for every user message — and
+    # /undo is itself a user message, so a loop-local log is always empty by
+    # the time it is read. Not serialized: SessionHistory writes fields
+    # explicitly, and a reverse call only makes sense against a live database.
+    mutation_log: list[MutationRecord] = field(default_factory=list)
+    # Lives here for the same reason: consent asked for once must stay answered.
+    files: FileAccess = field(default_factory=FileAccess)
     # Subagent message logs, keyed by the spawn_subagent tool_call_id.
     # Stored separately from main messages to avoid burning context tokens.
     subagent_logs: dict[str, list[Message]] = field(default_factory=dict)
@@ -248,8 +287,7 @@ class SessionState:
                 result.append(msg)
                 continue
             age = n - idx
-            max_chars = _OLD_RESULT_MAX_CHARS if age > _OLD_RESULT_THRESHOLD else _RECENT_RESULT_MAX_CHARS
-            new_results = [_truncate_tool_result(tr, max_chars) for tr in msg.tool_results]
+            new_results = [_truncate_tool_result(tr, _result_limit(tr.name, age)) for tr in msg.tool_results]
             result.append(Message(role=Role.TOOL, tool_results=new_results))
         return result
 

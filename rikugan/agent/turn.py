@@ -38,6 +38,7 @@ class TurnEventType(str, Enum):
     SAVE_COMPLETED = "save_completed"
     SAVE_DISCARDED = "save_discarded"
     MUTATION_RECORDED = "mutation_recorded"
+    MUTATION_UNDONE = "mutation_undone"
     RESEARCH_NOTE_SAVED = "research_note_saved"
     RESEARCH_NOTE_REVIEWED = "research_note_reviewed"
     SUBAGENT_SPAWNED = "subagent_spawned"
@@ -327,6 +328,11 @@ class TurnEvent:
                 "reverse_args": reverse_args or {},
             },
         )
+
+    @staticmethod
+    def mutation_undone(description: str) -> TurnEvent:
+        """A record left the mutation log, so anything showing the log is stale."""
+        return TurnEvent(type=TurnEventType.MUTATION_UNDONE, text=description)
 
     @staticmethod
     def subagent_spawned(

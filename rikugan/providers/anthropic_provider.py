@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Generator
-from typing import Any, NoReturn
+from typing import Any, ClassVar, NoReturn
 
 from ..core.errors import (
     AuthenticationError,
@@ -224,19 +224,28 @@ class AnthropicProvider(LLMProvider):
             supports_cache_control=True,
         )
 
-    @staticmethod
-    def _model_limits(model_id: str) -> tuple[int, int]:
+    # Limits the API itself reported, keyed by model id. The table below is a
+    # fallback for working offline and for a model released after this build:
+    # it is a snapshot of a list that changes, and a wrong window either
+    # compacts a conversation that had room or overruns one that did not.
+    _LEARNED_LIMITS: ClassVar[dict[str, tuple[int, int]]] = {}
+
+    @classmethod
+    def _model_limits(cls, model_id: str) -> tuple[int, int]:
         """Return the model's context window and output cap.
 
-        An unknown model used to fall through to 200K/8192, which is wrong in
-        both directions for the Claude 5 family: it holds a megatoken of
-        context and writes up to 128K. Under-reporting the window makes the
-        context manager compact a conversation that had six times the room it
-        thought, and the output cap truncated every long answer at 8K.
+        Prefers what the Models API reported for this model id, which is
+        authoritative for the credentials in use. Falls back to a table that
+        cannot know about models newer than this build.
         """
+        learned = cls._LEARNED_LIMITS.get(model_id)
+        if learned:
+            return learned
         model = model_id.lower()
         # Claude 5 family: 1M context, 128K output.
         if any(tag in model for tag in ("fable-5", "mythos-5", "opus-5", "sonnet-5")):
+            return 1000000, 128000
+        if "haiku-5" in model:
             return 1000000, 128000
         if "haiku-4-5" in model:
             return 200000, 64000
@@ -256,6 +265,25 @@ class AnthropicProvider(LLMProvider):
     def _default_max_tokens(self) -> int:
         return self._model_limits(self.model)[1]
 
+    @classmethod
+    def _learn_limits(cls, model: Any) -> tuple[int, int]:
+        """Take a model's real limits from the API, remembering them.
+
+        The Models API reports ``max_input_tokens`` (the context window) and
+        ``max_tokens`` (the output cap). Reading them keeps a model released
+        after this build from being measured against a stale table — and the
+        numbers are for the credentials in use, which a table cannot be.
+        """
+        fallback = cls._model_limits(model.id)
+        window = getattr(model, "max_input_tokens", None)
+        output = getattr(model, "max_tokens", None)
+        learned = (
+            int(window) if isinstance(window, int) and window > 0 else fallback[0],
+            int(output) if isinstance(output, int) and output > 0 else fallback[1],
+        )
+        cls._LEARNED_LIMITS[model.id] = learned
+        return learned
+
     def _fetch_models_live(self) -> list[ModelInfo]:
         """Fetch models from the Anthropic API."""
         client = self._get_client()
@@ -264,8 +292,7 @@ class AnthropicProvider(LLMProvider):
         for m in response.data:
             model_id = m.id
             display_name = getattr(m, "display_name", model_id)
-            # API doesn't return context/output limits; use known defaults
-            ctx_window, max_output = self._model_limits(model_id)
+            ctx_window, max_output = self._learn_limits(m)
             models.append(
                 ModelInfo(
                     id=model_id,
@@ -351,6 +378,11 @@ class AnthropicProvider(LLMProvider):
                 formatted.append({"role": "user", "content": msg.content})
 
             elif msg.role == Role.ASSISTANT:
+                if not msg.content and not msg.tool_calls:
+                    # The API refuses a history holding an empty message, so
+                    # one saved before we stopped storing them would otherwise
+                    # fail every later request in that chat.
+                    continue
                 content: list = []
                 if msg.content:
                     content.append({"type": "text", "text": msg.content})

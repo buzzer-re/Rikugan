@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +20,9 @@ _DEFAULT_TOOL_TIMEOUT = 30.0
 
 # Shared executor — single thread is sufficient since IDA tools run on main thread via idasync
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-timeout")
+# Kept apart: two long shell commands would otherwise take both workers above, and
+# every other tool in every tab would time out waiting for a thread it never got.
+_long_running_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tool-long")
 
 
 class ToolRegistry:
@@ -153,17 +157,17 @@ class ToolRegistry:
 
     def _visible(self, defn: ToolDefinition) -> bool:
         """Whether the model is told about this tool."""
-        return defn.name not in self._shadowed and self._available(defn)
+        return not defn.internal and defn.name not in self._shadowed and self._available(defn)
 
     def get(self, name: str) -> ToolDefinition | None:
         return self._tools.get(name)
 
     def list_tools(self) -> list[ToolDefinition]:
-        return list(self._tools.values())
+        return [defn for defn in self._tools.values() if not defn.internal]
 
     def list_names(self) -> list[str]:
         """Names the model can see — shadowed tools stay callable but unlisted."""
-        return [name for name in self._tools if name not in self._shadowed]
+        return [name for name, defn in self._tools.items() if not defn.internal and name not in self._shadowed]
 
     def to_provider_format(self) -> list[dict[str, Any]]:
         if self._schema_cache is None:
@@ -197,7 +201,11 @@ class ToolRegistry:
             handler = self._dispatch_wrapper(handler)
 
         try:
-            future = _executor.submit(handler, **arguments)
+            # The worker thread would otherwise start with an empty context, and
+            # a handler could not tell which chat it is running for.
+            context = contextvars.copy_context()
+            executor = _long_running_executor if defn.long_running else _executor
+            future = executor.submit(lambda: context.run(handler, **arguments))
             result = future.result(timeout=timeout)
         except FuturesTimeoutError:
             future.cancel()
@@ -213,9 +221,10 @@ class ToolRegistry:
             raise ToolError(f"Tool {name} failed: {e}", tool_name=name) from e
 
         result_str = self._format_result(result)
-        if len(result_str) > TOOL_RESULT_TRUNCATE_LEN:
+        result_limit = defn.result_limit or TOOL_RESULT_TRUNCATE_LEN
+        if len(result_str) > result_limit:
             result_str = (
-                result_str[:TOOL_RESULT_TRUNCATE_LEN]
+                result_str[:result_limit]
                 + "\n... (truncated by global safety cap; use this tool's offset/limit or search parameters to continue)"
             )
 

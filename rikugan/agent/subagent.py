@@ -7,6 +7,7 @@ from typing import Any
 
 from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_info
+from ..core.types import Message, Role
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
 from ..state.session import SessionState
@@ -82,6 +83,12 @@ class SubagentRunner:
         from .loop import AgentLoop  # deferred to avoid circular import
 
         session = SessionState()
+        # Share the parent's mutation log so a subagent's renames are undoable
+        # too, and its file state so consent isn't asked twice; its own session
+        # is discarded when it finishes.
+        if self._parent_loop is not None:
+            session.mutation_log = self._parent_loop.session.mutation_log
+            session.files = self._parent_loop.session.files
         self._last_session = session
         loop = AgentLoop(
             provider=self.provider,
@@ -130,6 +137,7 @@ class SubagentRunner:
         user_goal: str,
         max_turns: int = 30,
         idb_path: str = "",
+        prior_context: str = "",
     ) -> Generator[TurnEvent, None, KnowledgeBase]:
         """Run exploration Phase 1 as an isolated subagent.
 
@@ -145,8 +153,22 @@ class SubagentRunner:
         from .loop import AgentLoop  # deferred to avoid circular import
 
         session = SessionState()
+        # Share the parent's mutation log so a subagent's renames are undoable
+        # too, and its file state so consent isn't asked twice; its own session
+        # is discarded when it finishes.
+        if self._parent_loop is not None:
+            session.mutation_log = self._parent_loop.session.mutation_log
+            session.files = self._parent_loop.session.files
         session.idb_path = idb_path
         self._last_session = session
+        if prior_context:
+            # An isolated context is the point — raw decompilation must not
+            # follow the goal in here. But a goal is often a reply to what came
+            # before ("continue", "do that one next"), and with nothing behind
+            # it the subagent can only report that it does not know what was
+            # meant. A digest of the conversation costs little and makes a
+            # referential goal resolvable.
+            session.add_message(Message(role=Role.USER, content=prior_context))
 
         loop = AgentLoop(
             provider=self.provider,

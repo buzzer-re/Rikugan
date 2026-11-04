@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from typing import Annotated
 
+from ...core.errors import ToolError
 from ...core.host import HAS_HEXRAYS as _HAS_HEXRAYS
 from ...core.logging import log_debug
 from ...tools.base import parse_addr, tool
@@ -130,3 +131,45 @@ def set_type(
     if ok:
         return f"Set type at 0x{ea:x}: {type_string}"
     return f"Failed to set type at 0x{ea:x}. Check syntax: {type_string}"
+
+
+# Undo's readers. Internal, so they add nothing to what the model is sent on each
+# request, and raw, because /undo passes the value straight back to the setter.
+
+
+@tool(category="annotations", internal=True)
+def read_function_name(address: Annotated[str, "Address in the function (hex string)"]) -> str:
+    """Read the name rename_function would replace."""
+    ea = parse_addr(address)
+    func = ida_funcs.get_func(ea)
+    if func is None:
+        raise ToolError(f"No function at 0x{ea:x}", tool_name="read_function_name")
+    return ida_name.get_name(func.start_ea) or ""
+
+
+@tool(category="annotations", internal=True)
+def read_comment(
+    address: Annotated[str, "Address (hex string)"],
+    repeatable: Annotated[bool, "Read the repeatable comment"] = False,
+) -> str:
+    """Read the comment set_comment would replace."""
+    return idc.get_cmt(parse_addr(address), repeatable) or ""
+
+
+@tool(category="annotations", internal=True)
+def read_function_comment(
+    address: Annotated[str, "Function address (hex string)"],
+    repeatable: Annotated[bool, "Read the repeatable comment"] = False,
+) -> str:
+    """Read the comment set_function_comment would replace."""
+    ea = parse_addr(address)
+    func = ida_funcs.get_func(ea)
+    if func is None:
+        raise ToolError(f"No function at 0x{ea:x}", tool_name="read_function_comment")
+    return ida_funcs.get_func_cmt(func, repeatable) or ""
+
+
+@tool(category="annotations", internal=True)
+def read_function_prototype(address: Annotated[str, "Function address (hex string)"]) -> str:
+    """Read the prototype set_function_prototype would replace. Empty if it has none."""
+    return idc.get_type(parse_addr(address)) or ""

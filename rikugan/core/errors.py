@@ -72,6 +72,10 @@ class ToolValidationError(ToolError):
     """Tool arguments failed validation."""
 
 
+class UndoNoLongerPossible(ToolError):
+    """A reverse operation can never succeed, so retrying it is pointless."""
+
+
 class AgentError(RikuganError):
     """Agent loop errors."""
 
