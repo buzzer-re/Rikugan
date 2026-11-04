@@ -657,6 +657,8 @@ The rest goes to an in-memory `ArtifactStore` (2 MB each, 8 MB per chat, 32 arti
 
 `search_files` uses ripgrep when `shutil.which("rg")` finds it and a Python scan otherwise, with the same rows from both. It names the engine in its result, because their regex dialects differ. Neither follows symlinks, and a search that stops early says why.
 
+`scratch/` means the agent's scratch directory only to the file tools. A shell would read it as a folder inside its working directory, so a file just written looks missing, and `mkdir scratch` leaves a stray folder beside the sample. `run_shell` therefore refuses that use before anything runs, unless such a folder exists, and exports `$SCRATCH`. `write_file` and the system prompt state the real paths.
+
 `run_shell` runs with `shell=True`, no stdin, its own process group and a timeout clamped to 240 s. Timeout and Stop kill the group. Its tool timeout is longer than that, since the registry's cannot stop a thread and would orphan the process. Capture keeps the head and tail of each stream and keeps draining past the limit, so a chatty command cannot block on a full pipe.
 
 ---
@@ -931,6 +933,20 @@ A `QTimer` fires every 50ms, calling `_poll_events()`:
 3. Checks for `USER_QUESTION` / `SAVE_APPROVAL_REQUEST` to enable input
 4. Updates token display on `USAGE_UPDATE`
 5. Refreshes `MutationLogPanel` on `MUTATION_RECORDED` and `MUTATION_UNDONE`
+
+### Tool review
+
+`ToolCallWidget` builds its expanded view on first open, since most cards are never opened. `tool_review.build_review()` turns a call's JSON into what it means, and `ToolReviewView` renders it, also on `ToolApprovalWidget`:
+
+| Tool | Shown as |
+|------|----------|
+| `write_file` | Highlighted file contents, by extension |
+| `edit_file` | Line diff, with `-`/`+` in the gutter and tinted lines |
+| `execute_python`, `run_shell` | Highlighted code |
+| `read_file`, `search_files` | What it covers: range, glob, mode |
+| Anything else | The raw arguments |
+
+Results lose the sanitizer's wrapper (`unwrap_tool_result`), which is for the model. `code_view.scan_line()` is free of Qt, so its behaviour is tested directly. It reads each line with one pattern, so the token that starts first wins, and carries state across lines for docstrings and block comments. Layout needs real Qt, which `tests/tools/test_tool_review.py::TestUnderRealQt` runs in a subprocess, because the rest of the suite has stubs where Qt should be.
 
 ### `ChatView`
 

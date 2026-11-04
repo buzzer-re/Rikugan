@@ -131,6 +131,8 @@ rikugan/
     ├── input_area.py         # User input text area with skill autocomplete
     ├── context_bar.py        # Binary context status bar
     ├── message_widgets.py    # Message bubble widgets (tool calls, exploration, approval)
+    ├── tool_review.py        # What a tool call will do, laid out for review (diffs, code, not JSON)
+    ├── code_view.py          # Read-only code display: syntax scanner, gutter, diff tints
     ├── mutation_log_view.py  # MutationLogPanel — mutation history with undo
     ├── markdown.py           # Markdown rendering for assistant messages
     ├── plan_view.py          # Plan-mode UI
@@ -217,6 +219,10 @@ The `execute_python` tool always requires explicit user approval before executio
 - On: the tools run without asking.
 - The answer lives on `SessionState.files`, because an `AgentLoop` is built per user message, and is separate from "Always Allow" on `execute_python`, which answers a different question.
 - `filesystem_shell: false` in the config file removes `run_shell`. `filesystem_extra_roots` adds directories, and is deliberately not settable from a chat.
+
+`scratch/` is a shorthand only the file tools understand. A shell reads it as a relative path, so `run_shell` refuses it before anything runs, unless such a folder really exists, and sets `$SCRATCH` instead.
+
+What a tool will do is shown for review through `ui/tool_review.py`, in the expanded tool card and on the approval card alike: `write_file` as highlighted code, `edit_file` as a diff, `execute_python` and `run_shell` as code. A tool with something a person should review belongs in `_BUILDERS` there rather than showing raw JSON.
 
 ### Prompt Injection Mitigation
 

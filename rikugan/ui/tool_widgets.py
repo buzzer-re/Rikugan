@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import json
 import re as _re
-from typing import ClassVar
 
+from ..core.sanitize import unwrap_tool_result
+from .code_view import LANGUAGE_JSON, CodeView
 from .qt_compat import (
-    QColor,
-    QFont,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
-    QSyntaxHighlighter,
     Qt,
-    QTextCharFormat,
     QTimer,
     QToolButton,
     QVBoxLayout,
@@ -28,7 +24,9 @@ from .styles import (
     get_chat_color_tokens,
     host_stylesheet,
 )
+from .tool_review import ToolReview, ToolReviewView, build_review, result_language
 
+_CODE_RESULT_TOOLS = frozenset({"read_file", "edit_file", "search_files", "run_shell", "execute_python"})
 _MAX_ARGS_DISPLAY = 2000
 _MAX_RESULT_DISPLAY = 3000
 _TOOL_PREVIEW_LINES = 3
@@ -224,6 +222,12 @@ _MUTATING_TOOLS = frozenset(
 for _t in _MUTATING_TOOLS:
     _TOOL_COLORS[_t] = "#c586c0"  # magenta/purple
 
+# Files and the shell act on the machine -> same family as other changes
+for _t in ("write_file", "edit_file", "run_shell"):
+    _TOOL_COLORS[_t] = "#c586c0"
+for _t in ("read_file", "search_files"):
+    _TOOL_COLORS[_t] = "#4ec9b0"
+
 # Exploration -> gold/amber
 for _t in ("exploration_report", "phase_transition"):
     _TOOL_COLORS[_t] = "#d7ba7d"
@@ -274,6 +278,28 @@ _CHECK = "\u2713"
 _CROSS = "\u2717"
 
 
+def _file_tool_chip(tool_name: str, text: str) -> str:
+    """The shape of a file tool's result. A failed command must not read as a tick."""
+    if tool_name == "run_shell":
+        exit_code = _re.match(r"Exit code (-?\d+)", text)
+        if exit_code:
+            return _CHECK if exit_code.group(1) == "0" else f"exit {exit_code.group(1)}"
+        return "stopped" if text.startswith("The command ") else ""
+    if tool_name == "read_file":
+        title = _re.match(r"=== .* \(([\d,]+) lines\) ===", text)
+        return f"{int(title.group(1).replace(',', '')):,} lines" if title else ""
+    if tool_name == "search_files":
+        if "No matches." in text[:300]:
+            return "0 rows"
+        rows = _re.search(r"Rows \d+-\d+ of (\d+):", text[:600])
+        return f"{int(rows.group(1)):,} rows" if rows else ""
+    return ""
+
+
+def _chip_means_failure(tool_name: str, chip: str) -> bool:
+    return tool_name == "run_shell" and chip != _CHECK
+
+
 def _format_result_chip(tool_name: str, result: str, is_error: bool = False) -> str:
     """Summarize a tool result as a short status chip for the call row.
 
@@ -286,6 +312,10 @@ def _format_result_chip(tool_name: str, result: str, is_error: bool = False) -> 
 
     short_name = _strip_mcp_prefix(tool_name)
     text = result or ""
+
+    file_chip = _file_tool_chip(short_name, text)
+    if file_chip:
+        return file_chip
 
     page = _PAGE_TOTAL_RE.match(text.lstrip())
     if page:
@@ -452,6 +482,17 @@ def _format_tool_summary(tool_name: str, args_text: str) -> str:
     elif short_name in ("create_struct",):
         name = _get("name", "struct_name")
         summary = name
+
+    elif short_name in ("read_file", "write_file", "edit_file"):
+        summary = _get("file_path")
+
+    elif short_name == "run_shell":
+        first_line = _get("command").strip().split("\n")[0]
+        summary = first_line
+
+    elif short_name == "search_files":
+        pattern = _get("pattern")
+        summary = f'"{pattern}"' if pattern else _get("glob", "path")
 
     elif short_name in ("execute_python",):
         code = _get("code", "script")
@@ -642,6 +683,10 @@ class ToolCallWidget(QFrame):
         self._expanded = False
         self._spin_idx = 0
         self._result_done = False
+        self._review: ToolReview | None = None
+        self._review_view: ToolReviewView | None = None
+        self._code_result = ""
+        self._result_view: CodeView | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
@@ -770,14 +815,31 @@ class ToolCallWidget(QFrame):
     def _toggle(self) -> None:
         self.setUpdatesEnabled(False)
         self._expanded = not self._expanded
+        if self._expanded:
+            self._render_details()
         self._detail_widget.setVisible(self._expanded)
         has_preview = bool(self._preview_label.text())
         self._preview_label.setVisible(not self._expanded and has_preview)
         self._toggle_btn.setText("\u25bc" if self._expanded else "\u25b6")
         self.setUpdatesEnabled(True)
 
+    def _render_details(self) -> None:
+        """Build the heavy views when first shown. Most cards are never opened."""
+        if self._review is not None and self._review_view is None:
+            self._args_label.setVisible(False)
+            self._review_view = ToolReviewView(self._review, parent=self._detail_widget)
+            self._detail_layout.insertWidget(0, self._review_view)
+        if self._code_result and self._result_view is None:
+            self._result_label.setVisible(False)
+            language = result_language(self._tool_name, self._args_text)
+            self._result_view = CodeView(self._code_result, language, line_numbers=False, parent=self._detail_widget)
+            self._detail_layout.addWidget(self._result_view)
+
     def set_arguments(self, args_text: str) -> None:
         self._args_text = args_text
+        self._review = build_review(self._tool_name, args_text)
+        if self._expanded:
+            self._render_details()
         # Update summary
         summary = _format_tool_summary(self._tool_name, args_text)
         if summary:
@@ -799,8 +861,13 @@ class ToolCallWidget(QFrame):
 
     def set_result(self, result: str, is_error: bool = False) -> None:
         self._stop_spinner()
+        result = unwrap_tool_result(result)
         self._result_text = result
         self._is_error = is_error
+        if not is_error and result and self._tool_name in _CODE_RESULT_TOOLS:
+            self._code_result = result
+            if self._expanded:
+                self._render_details()
         display = result[:_MAX_RESULT_DISPLAY] + "\n... (truncated)" if len(result) > _MAX_RESULT_DISPLAY else result
         self._result_label.setText(display)
         self._result_label.setVisible(True)
@@ -827,15 +894,19 @@ class ToolCallWidget(QFrame):
             )
             # Auto-expand on error
             self._expanded = True
+            self._render_details()
             self._detail_widget.setVisible(True)
             self._preview_label.setVisible(False)
             self._toggle_btn.setText("\u25bc")
         else:
-            self._status_label.setText(_format_result_chip(self._tool_name, result, False))
+            chip = _format_result_chip(self._tool_name, result, False)
+            self._status_label.setText(chip)
+            # A command can fail without the tool failing; it must not look fine.
+            failed = _chip_means_failure(self._tool_name, chip)
             self._status_label.setStyleSheet(
                 host_stylesheet(
-                    "color: #4ec9b0; font-size: 10px;",
-                    f"color: {_tool_ink('ok', self)}; {_native_text_style(size=10, bold=True)}",
+                    f"color: {'#f44747' if failed else '#4ec9b0'}; font-size: 10px;",
+                    f"color: {_tool_ink('error' if failed else 'ok', self)}; {_native_text_style(size=10, bold=True)}",
                 )
             )
         self._result_done = True
@@ -1193,129 +1264,6 @@ class ToolGroupWidget(QFrame):
         return self._count
 
 
-# ---------------------------------------------------------------------------
-# Python syntax highlighter (used by ToolApprovalWidget)
-# ---------------------------------------------------------------------------
-
-
-class _PythonHighlighter(QSyntaxHighlighter):
-    """Minimal VS Code-dark-style Python syntax highlighter."""
-
-    # Keyed by background: IDA drops our editor sheet on a light theme, so the
-    # same rule set has to be able to paint on either ground.
-    _RULES: ClassVar[dict[str, list]] = {}
-
-    def __init__(self, parent=None, background: str = "#1e1e2e"):
-        super().__init__(parent)
-        self._background = background
-        rules = _PythonHighlighter._RULES.get(background)
-        if rules is None:
-            rules = _PythonHighlighter._RULES[background] = self._build_rules(background)
-        self._rules = rules
-
-    @staticmethod
-    def _fmt(color: str, background: str = "#1e1e2e", bold: bool = False, italic: bool = False) -> QTextCharFormat:
-        f = QTextCharFormat()
-        # Code tokens are monospace and set solid, so the large-text threshold
-        # is enough and keeps the palette's hues apart.
-        f.setForeground(QColor(ensure_contrast(color, background, 3.5)))
-        if bold:
-            f.setFontWeight(QFont.Weight.Bold)
-        if italic:
-            f.setFontItalic(True)
-        return f
-
-    @staticmethod
-    def _build_rules(background: str = "#1e1e2e"):
-        rules = []
-        kw_fmt = _PythonHighlighter._fmt("#c586c0", background, bold=True)
-        for kw in (
-            "and",
-            "as",
-            "assert",
-            "async",
-            "await",
-            "break",
-            "class",
-            "continue",
-            "def",
-            "del",
-            "elif",
-            "else",
-            "except",
-            "finally",
-            "for",
-            "from",
-            "global",
-            "if",
-            "import",
-            "in",
-            "is",
-            "lambda",
-            "nonlocal",
-            "not",
-            "or",
-            "pass",
-            "raise",
-            "return",
-            "try",
-            "while",
-            "with",
-            "yield",
-        ):
-            rules.append((_re.compile(rf"\b{kw}\b"), kw_fmt))
-        # Built-ins
-        bi_fmt = _PythonHighlighter._fmt("#dcdcaa", background)
-        for bi in (
-            "print",
-            "len",
-            "range",
-            "int",
-            "str",
-            "bytes",
-            "list",
-            "dict",
-            "set",
-            "tuple",
-            "hex",
-            "ord",
-            "chr",
-            "type",
-            "isinstance",
-            "enumerate",
-            "zip",
-            "map",
-            "filter",
-            "sorted",
-            "open",
-            "True",
-            "False",
-            "None",
-        ):
-            rules.append((_re.compile(rf"\b{bi}\b"), bi_fmt))
-        # Numbers
-        rules.append((_re.compile(r"\b0[xX][0-9a-fA-F]+\b"), _PythonHighlighter._fmt("#b5cea8", background)))
-        rules.append((_re.compile(r"\b\d+\.?\d*\b"), _PythonHighlighter._fmt("#b5cea8", background)))
-        # Strings (single/double, including f/r/b prefixes)
-        str_fmt = _PythonHighlighter._fmt("#ce9178", background)
-        rules.append((_re.compile(r'[brfu]?""".*?"""', _re.DOTALL), str_fmt))
-        rules.append((_re.compile(r"[brfu]?'''.*?'''", _re.DOTALL), str_fmt))
-        rules.append((_re.compile(r'[brfu]?"[^"\n]*"'), str_fmt))
-        rules.append((_re.compile(r"[brfu]?'[^'\n]*'"), str_fmt))
-        # Comments
-        rules.append((_re.compile(r"#[^\n]*"), _PythonHighlighter._fmt("#6a9955", background, italic=True)))
-        # Decorators
-        rules.append((_re.compile(r"@\w+"), _PythonHighlighter._fmt("#dcdcaa", background)))
-        # self
-        rules.append((_re.compile(r"\bself\b"), _PythonHighlighter._fmt("#9cdcfe", background, italic=True)))
-        return rules
-
-    def highlightBlock(self, text: str) -> None:
-        for pattern, fmt in self._rules:
-            for m in pattern.finditer(text):
-                self.setFormat(m.start(), m.end() - m.start(), fmt)
-
-
 def _approval_card_text(tool_name: str, args_text: str, description: str) -> tuple[str, str, str]:
     """Return the (title, info line, preview) an approval card shows.
 
@@ -1385,9 +1333,14 @@ class ToolApprovalWidget(QFrame):
         )
         layout.addWidget(self._info)
 
-        editor = self._build_code_editor(preview, preview.strip().splitlines())
-        if editor is not None:
-            layout.addWidget(editor)
+        review = build_review(tool_name, args_text)
+        if review is not None:
+            # The card's fill differs by host, so its labels can't assume the tool card's.
+            ink = host_stylesheet("#d4d4d4", _tool_ink("text", self))
+            muted = host_stylesheet("#a8a8a8", _tool_ink("muted", self))
+            layout.addWidget(ToolReviewView(review, parent=self, ink=ink, muted=muted))
+        elif preview.strip():
+            layout.addWidget(CodeView(preview, LANGUAGE_JSON, line_numbers=False, parent=self))
 
         layout.addLayout(self._build_approval_buttons())
 
@@ -1402,38 +1355,6 @@ class ToolApprovalWidget(QFrame):
             return args.get("code", args.get("script", ""))
         except (json.JSONDecodeError, TypeError, AttributeError):
             return args_text
-
-    def _build_code_editor(self, code: str, lines: list) -> QPlainTextEdit | None:
-        """Build a read-only syntax-highlighted code editor, or None if no code."""
-        if not code.strip():
-            return None
-        self._code_edit = QPlainTextEdit()
-        self._code_edit.setReadOnly(True)
-        self._code_edit.setPlainText(code)
-        # The preview owns its background in every host: left to IDA's native
-        # theme the editor comes out white while the highlighter paints in the
-        # dark palette, which is the one surface where unreadable code is also
-        # a safety question — this is the script the user is approving.
-        theme = get_chat_color_tokens(self)
-        code_bg = theme["code_bg"]
-        self._code_edit.setStyleSheet(
-            "QPlainTextEdit { "
-            f"  color: {theme['text']}; background: {code_bg}; "
-            "  font-family: 'Consolas', 'Monaco', 'Courier New', monospace; "
-            f"  font-size: 11px; border: 1px solid {theme['border']}; border-radius: 4px; "
-            "  padding: 4px; "
-            "}"
-            f"QScrollBar:vertical {{ width: 8px; background: {code_bg}; }}"
-            f"QScrollBar::handle:vertical {{ background: {theme['border']}; border-radius: 4px; }}"
-            f"QScrollBar:horizontal {{ height: 8px; background: {code_bg}; }}"
-            f"QScrollBar::handle:horizontal {{ background: {theme['border']}; border-radius: 4px; }}"
-        )
-        self._code_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        visible_lines = min(len(lines), 15)
-        line_height = self._code_edit.fontMetrics().lineSpacing()
-        self._code_edit.setFixedHeight(line_height * visible_lines + 16)
-        self._highlighter = _PythonHighlighter(self._code_edit.document(), background=code_bg)
-        return self._code_edit
 
     def _build_approval_buttons(self) -> QHBoxLayout:
         """Build the Allow / Always Allow / Deny button row."""

@@ -239,6 +239,10 @@ class TestSmallOutputIsNeverElided(_ShellTest):
         result = self._run("seq 1 200000 >&2; echo line-one; echo line-two")
         self.assertIn("=== stdout ===\nline-one\nline-two", result)
 
+    def test_medium_streams_are_both_whole(self):
+        result = self._run("seq 1 300; seq 1 300 >&2")
+        self.assertNotIn("elided", result)
+
     def test_a_long_command_does_not_eat_the_budget(self):
         filler = "x" * 3000
         self.assertNotIn("elided", self._run(f": {filler}; echo fine; echo oops >&2"))

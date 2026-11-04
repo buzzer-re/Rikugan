@@ -60,14 +60,17 @@ QT_BINDING: str = _detect_binding()
 # ---------------------------------------------------------------------------
 
 if QT_BINDING == "PySide6":
-    from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
+    from PySide6.QtCore import QEvent, QObject, QRect, QSize, Qt, QTimer, Signal
     from PySide6.QtGui import (
         QColor,
         QFont,
         QIntValidator,
+        QPainter,
         QPalette,
         QSyntaxHighlighter,
+        QTextBlockFormat,
         QTextCharFormat,
+        QTextCursor,
         QTextDocument,
     )
     from PySide6.QtWidgets import (
@@ -111,15 +114,18 @@ if QT_BINDING == "PySide6":
         QWidget,
     )
 else:
-    from PyQt5.QtCore import QEvent, QObject, QSize, Qt, QTimer  # type: ignore[no-redef]  # noqa: F401
+    from PyQt5.QtCore import QEvent, QObject, QRect, QSize, Qt, QTimer  # type: ignore[no-redef]  # noqa: F401
     from PyQt5.QtCore import pyqtSignal as Signal  # type: ignore[no-redef,assignment]  # noqa: F401
     from PyQt5.QtGui import (  # type: ignore[no-redef]  # noqa: F401
         QColor,
         QFont,
         QIntValidator,
+        QPainter,
         QPalette,
         QSyntaxHighlighter,
+        QTextBlockFormat,
         QTextCharFormat,
+        QTextCursor,
         QTextDocument,
     )
     from PyQt5.QtWidgets import (  # type: ignore[no-redef]  # noqa: F401
