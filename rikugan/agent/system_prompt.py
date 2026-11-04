@@ -82,6 +82,7 @@ def build_system_prompt(
     skill_summary: str | None = None,
     idb_dir: str | None = None,
     profile: AnalysisProfile | None = None,
+    workspace_summary: str | None = None,
 ) -> str:
     """Build the full system prompt with optional binary context."""
     base_prompt = _HOST_PROMPTS.get(host_name, IDA_BASE_PROMPT)
@@ -117,6 +118,9 @@ def build_system_prompt(
             parts.append(NATIVE_MCP_SECTION)
         if "read_file" in tool_names:
             parts.append(FILESYSTEM_SECTION)
+            if workspace_summary:
+                # Paths can carry a hostile sample's file name.
+                parts.append(sanitize_binary_context(workspace_summary, "workspace"))
         if "run_shell" in tool_names:
             parts.append(SHELL_SECTION)
 

@@ -71,12 +71,9 @@ class TestResult(_ShellTest):
 
     def test_streams_are_labelled_separately(self):
         result = self._run("echo to-out; echo to-err >&2")
-        self.assertIn("=== stdout: ", result)
-        self.assertIn("=== stderr: ", result)
-        # Each stream's title quotes the command, so look at the output lines.
         lines = result.split("\n")
-        self.assertLess(lines.index("to-out"), [i for i, l in enumerate(lines) if l.startswith("=== stderr")][0])
-        self.assertGreater(lines.index("to-err"), [i for i, l in enumerate(lines) if l.startswith("=== stderr")][0])
+        self.assertLess(lines.index("to-out"), lines.index("=== stderr ==="))
+        self.assertGreater(lines.index("to-err"), lines.index("=== stderr ==="))
 
     def test_an_empty_stream_is_not_shown(self):
         self.assertNotIn("stderr", self._run("echo hi"))
@@ -210,7 +207,6 @@ class TestLargeOutput(_ShellTest):
 
     def test_a_flood_does_not_block_and_keeps_its_tail(self):
         with patch.object(shell, "_CAPTURE_HEAD_BYTES", 1000), patch.object(shell, "_CAPTURE_TAIL_BYTES", 1000):
-            # Computed, because each stream's title quotes the command itself.
             result = self._run("seq 1 100000; echo the-last-$((1 + 1))", timeout=30)
         self.assertIn("Exit code 0", result)
         self.assertIn("the-last-2", result)
@@ -227,6 +223,97 @@ class TestLargeOutput(_ShellTest):
         self.assertNotIn("truncated by global safety cap", self._run("seq 1 200000"))
 
 
+class TestSmallOutputIsNeverElided(_ShellTest):
+    def test_two_short_streams_are_both_whole(self):
+        # A two-line error once came back as "1 middle lines elided", because the
+        # budget left for it covered little more than its own text.
+        result = self._run("echo fine; echo line-one >&2; echo line-two >&2")
+        self.assertNotIn("elided", result)
+        self.assertIn("line-one\nline-two", result)
+
+    def test_a_short_stderr_beside_a_flood_is_whole(self):
+        result = self._run("seq 1 200000; echo line-one >&2; echo line-two >&2")
+        self.assertIn("=== stderr ===\nline-one\nline-two", result)
+
+    def test_a_short_stdout_beside_a_flood_is_whole(self):
+        result = self._run("seq 1 200000 >&2; echo line-one; echo line-two")
+        self.assertIn("=== stdout ===\nline-one\nline-two", result)
+
+    def test_a_long_command_does_not_eat_the_budget(self):
+        filler = "x" * 3000
+        self.assertNotIn("elided", self._run(f": {filler}; echo fine; echo oops >&2"))
+
+
+class TestScratch(_ShellTest):
+    def _registry_with_files(self):
+        from rikugan.tools import filesystem
+
+        self.registry.register_module(filesystem)
+
+    def test_a_written_file_is_on_the_same_disk_for_a_command(self):
+        # The agent reported write_file and run_shell as separate "namespaces".
+        self._registry_with_files()
+        with activate_session(self.session):
+            self.registry.execute("write_file", {"file_path": "scratch/hello.py", "content": "print('hi from disk')\n"})
+        self.assertIn("hi from disk", self._run('python3 "$SCRATCH/hello.py"'))
+
+    def test_a_command_writes_what_the_file_tools_read(self):
+        self._registry_with_files()
+        self._run('echo from-shell > "$SCRATCH/out.txt"')
+        with activate_session(self.session):
+            self.assertIn("from-shell", self.registry.execute("read_file", {"file_path": "scratch/out.txt"}))
+
+    def test_write_file_says_where_a_scratch_file_really_is(self):
+        self._registry_with_files()
+        with activate_session(self.session):
+            result = self.registry.execute("write_file", {"file_path": "scratch/a.py", "content": "x"})
+        self.assertIn(os.path.join(self.session.files.workspace.scratch_root, "a.py"), result)
+
+    def test_scratch_exists_for_a_first_command(self):
+        self.assertIn("Exit code 0", self._run('test -d "$SCRATCH"'))
+
+    def test_the_working_dir_shorthand_works(self):
+        self.assertIn(self.session.files.workspace.scratch_root, self._run("pwd", working_dir="scratch"))
+
+    def test_the_shorthand_in_a_command_is_refused_with_the_real_path(self):
+        result = self._run("python3 scratch/hello.py")
+        self.assertIn("refused", result)
+        self.assertIn("$SCRATCH", result)
+        self.assertIn(self.session.files.workspace.scratch_root, result)
+
+    def test_nothing_stray_is_left_beside_the_sample(self):
+        for command in (
+            "mkdir -p scratch",
+            "mkdir scratch && echo x > scratch/a.py",
+            "true; cd scratch",
+            "echo x > scratch/a.py",
+            "echo x >scratch/a.py",
+            "touch scratch",
+            "OUT=scratch/a.py true",
+            "tool --out=scratch/a.py",
+            'cat > scratch/a.py <<EOF\nprint(1)\nEOF',
+        ):
+            with self.subTest(command):
+                self.assertIn("nothing ran", self._run(command))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "scratch")))
+
+    def test_a_real_folder_with_that_name_is_left_to_work(self):
+        os.makedirs(os.path.join(self.root, "scratch"))
+        self.assertIn("Exit code 0", self._run("ls scratch/"))
+
+    def test_the_word_alone_is_not_a_path(self):
+        for command in ("grep -c scratch sample.exe", "echo scratch"):
+            with self.subTest(command):
+                self.assertNotIn("nothing ran", self._run(command))
+
+    def test_a_heredoc_body_may_mention_it(self):
+        target = os.path.join(self.session.files.workspace.scratch_root, "a.py")
+        result = self._run(f'mkdir -p "$SCRATCH"; cat > {target} <<EOF\nprint("scratch/x")\nEOF')
+        self.assertNotIn("nothing ran", result)
+        with open(target, encoding="utf-8") as f:
+            self.assertIn("scratch/x", f.read())
+
+
 class TestStreamBudgets(unittest.TestCase):
     def test_every_split_fits(self):
         sizes = (0, 10, 5_000, 9_000, 10_000, 15_000, 19_000, 100_000)
@@ -235,6 +322,10 @@ class TestStreamBudgets(unittest.TestCase):
                 with self.subTest(out=out, err=err):
                     a, b = shell._stream_budgets("o" * out, "e" * err)
                     self.assertLessEqual(a + b, INLINE_RESULT_BUDGET - 200)
+
+    def test_a_stream_that_fits_gets_what_it_needs(self):
+        _, err_budget = shell._stream_budgets("o" * 100_000, "e" * 50)
+        self.assertGreaterEqual(err_budget, 50 + len("=== stderr ===\n"))
 
 
 class TestAnalysedBinary(_ShellTest):

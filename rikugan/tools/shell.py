@@ -37,6 +37,7 @@ from .filesystem import refusals_as_text
 if TYPE_CHECKING:
     from ..core.workspace import Workspace
 
+SCRATCH_ENV_VAR = "SCRATCH"
 DEFAULT_TIMEOUT_SECONDS = 30
 MAX_TIMEOUT_SECONDS = 240
 # Past the longest command, so the command's own timeout always fires first. The
@@ -46,6 +47,9 @@ _TOOL_TIMEOUT_SECONDS = MAX_TIMEOUT_SECONDS + 15
 _CAPTURE_HEAD_BYTES = 4 * 1024 * 1024
 _CAPTURE_TAIL_BYTES = 4 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
+# The status line above the streams, and what each stream's title costs.
+_RESULT_OVERHEAD = 200
+_STREAM_TITLE_CHARS = 20
 _POLL_SECONDS = 0.05
 _TERMINATE_GRACE_SECONDS = 2.0
 # A background job can hold the pipe open after the shell itself has exited.
@@ -61,6 +65,7 @@ _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _COMMAND_SEPARATORS = frozenset({";", ";;", "&&", "||", "|", "|&", "&", "(", ")"})
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Commands that run their argument. Their flags and numbers are skipped.
+_DIRECTORY_COMMANDS = frozenset({"mkdir", "cd", "pushd", "ls", "rmdir", "rm", "touch", "cp", "mv", "find", "du"})
 _RUNNERS = frozenset(
     {
         "sudo",
@@ -81,15 +86,18 @@ _RUNNERS = frozenset(
 )
 
 
-def _command_words(command: str) -> list[str]:
-    """The words that would be run as programs, as far as the text can tell."""
+def _tokens(command: str) -> list[str]:
     lexer = shlex.shlex(command.replace("\n", ";"), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
-        tokens = list(lexer)
+        return list(lexer)
     except ValueError:  # unbalanced quotes: the shell will report it better
         return []
 
+
+def _command_words(command: str) -> list[str]:
+    """The words that would be run as programs, as far as the text can tell."""
+    tokens = _tokens(command)
     words: list[str] = []
     expecting_command = True
     after_runner = False
@@ -116,12 +124,53 @@ def _refuse_running_the_binary(command: str, cwd: str, workspace: Workspace) -> 
             )
 
 
-def _scrubbed_environment() -> dict[str, str]:
-    return {
+def _means_the_scratch_shorthand(command: str) -> bool:
+    """Whether the command uses scratch/ as a relative path.
+
+    Only the first line of a heredoc counts, since the rest is file content. A
+    bare "scratch" only counts for commands that take a directory: in
+    "grep scratch notes.txt" it is just a word.
+    """
+    if "<<" in command:
+        command = command.split("\n", 1)[0]
+    program = ""
+    for token in _tokens(command):
+        if token in _COMMAND_SEPARATORS:
+            program = ""
+            continue
+        if not program and not _ENV_ASSIGNMENT.match(token):
+            program = os.path.basename(token)
+        if token.rsplit("=", 1)[-1].startswith("scratch/"):
+            return True
+        if token == "scratch" and program in _DIRECTORY_COMMANDS:
+            return True
+    return False
+
+
+def _refuse_scratch_shorthand(command: str, cwd: str, workspace: Workspace) -> None:
+    """Stop scratch/ quietly meaning a different folder than it does for file tools.
+
+    The file tools resolve it to the agent's scratch directory, but a shell sees
+    an ordinary relative path. So a file just written looks missing, and the
+    obvious workaround, mkdir scratch, leaves a stray folder beside the sample.
+    """
+    if os.path.lexists(os.path.join(cwd, "scratch")) or not _means_the_scratch_shorthand(command):
+        return
+    raise PathRefused(
+        f"Error: refused, and nothing ran — in a shell, scratch/ would be a folder inside {cwd}, not your "
+        f"scratch directory. It is the same disk, at a different path: use $SCRATCH (which is "
+        f"{workspace.scratch_root}), or pass working_dir='scratch'."
+    )
+
+
+def _shell_environment(workspace: Workspace) -> dict[str, str]:
+    env = {
         name: value
         for name, value in os.environ.items()
         if name not in _HOST_ONLY_ENV and not _SECRET_ENV_NAME.search(name)
     }
+    env[SCRATCH_ENV_VAR] = workspace.scratch_root
+    return env
 
 
 class _BoundedPipe(threading.Thread):
@@ -209,29 +258,31 @@ def _wait_for_exit(process: subprocess.Popen, timeout: int) -> str:
 
 
 def _stream_budgets(stdout: str, stderr: str) -> tuple[int, int]:
-    """Share the result between the streams: each gets half, or what the other left."""
-    half = (INLINE_RESULT_BUDGET - 200) // 2
-    if not stderr:
-        return half * 2, 0
-    if not stdout:
-        return 0, half * 2
-    stdout_budget = max(half, half * 2 - len(stderr) - 50)
-    stderr_budget = max(half, half * 2 - len(stdout) - 50)
-    if stdout_budget > half:
-        return stdout_budget, half * 2 - stdout_budget
-    if stderr_budget > half:
-        return half * 2 - stderr_budget, stderr_budget
+    """Share the result so a stream that fits is shown whole, whatever the other does.
+
+    A short error beside a flood of output is the part worth reading.
+    """
+    total = INLINE_RESULT_BUDGET - _RESULT_OVERHEAD
+    half = total // 2
+    needs_out = len(stdout) + _STREAM_TITLE_CHARS
+    needs_err = len(stderr) + _STREAM_TITLE_CHARS
+    if needs_out + needs_err <= total:
+        return needs_out, needs_err
+    if needs_err <= half:
+        return total - needs_err, needs_err
+    if needs_out <= half:
+        return needs_out, total - needs_out
     return half, half
 
 
 def _working_directory(raw: str, workspace: Workspace) -> str:
+    # Before anything else: $SCRATCH and working_dir='scratch' both promise it exists.
+    os.makedirs(workspace.scratch_root, exist_ok=True)
     if raw:
         cwd = workspace.resolve(raw)
         if not os.path.isdir(cwd):
             raise PathRefused(f"Error: working_dir '{raw}' is not a directory.")
         return cwd
-    # With no usable binary directory this is scratch, which may not exist yet.
-    os.makedirs(workspace.default_root, exist_ok=True)
     return workspace.default_root
 
 
@@ -243,7 +294,8 @@ def _working_directory(raw: str, workspace: Workspace) -> str:
     description=(
         "Run a shell command in the workspace, for building, testing or inspecting files. stdout and stderr "
         "come back separately with the exit code; large output shows both ends with an artifact:// handle. "
-        "Commands get no input. Prefer search_files to grep and read_file to cat. Changes made this way are "
+        "Commands get no input. The scratch directory is $SCRATCH here: scratch/ only works in the file tools. "
+        "Prefer search_files to grep and read_file to cat. Changes made this way are "
         "not undoable. Never runs the binary being analysed."
     ),
 )
@@ -265,6 +317,7 @@ def run_shell(
     assert workspace is not None
     cwd = _working_directory(working_dir, workspace)
     _refuse_running_the_binary(command, cwd, workspace)
+    _refuse_scratch_shorthand(command, cwd, workspace)
     seconds = max(1, min(timeout, MAX_TIMEOUT_SECONDS))
 
     started = time.monotonic()
@@ -272,7 +325,7 @@ def run_shell(
         command,
         shell=True,
         cwd=cwd,
-        env=_scrubbed_environment(),
+        env=_shell_environment(workspace),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -296,9 +349,9 @@ def run_shell(
     stdout, stderr = out.text(), err.text()
     stdout_budget, stderr_budget = _stream_budgets(stdout, stderr)
     if stdout:
-        lines.append(format_large_result(f"stdout: {command}", stdout, files.artifacts, budget=stdout_budget))
+        lines.append(format_large_result("stdout", stdout, files.artifacts, budget=stdout_budget))
     if stderr:
-        lines.append(format_large_result(f"stderr: {command}", stderr, files.artifacts, budget=stderr_budget))
+        lines.append(format_large_result("stderr", stderr, files.artifacts, budget=stderr_budget))
     if not stdout and not stderr:
         lines.append("(no output)")
     return "\n".join(lines)

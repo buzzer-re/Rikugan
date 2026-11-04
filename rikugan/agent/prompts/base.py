@@ -149,7 +149,11 @@ are refused, and the refusal lists what is allowed.
 SHELL_SECTION = """\
 ## Shell Commands
 run_shell runs a command in the workspace, for building, testing and inspecting
-files. It gets no input, so anything interactive will fail or wait for its
+files. All these tools use the same disk, so a file from write_file is there for
+a command at once. The one difference is the scratch/ shorthand, which only the
+file tools understand: in a command write $SCRATCH instead, or pass
+working_dir='scratch'. Do not create a scratch folder of your own.
+Commands get no input, so anything interactive will fail or wait for its
 timeout. Prefer search_files to grep and read_file to cat: they keep results
 readable. Unlike file edits, what a command changes cannot be undone with /undo,
 and a file it touches has to be read again before you edit it. Never run a command

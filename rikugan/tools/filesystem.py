@@ -224,7 +224,9 @@ def write_file(
     line_count = len(_file_lines(content)) if content else 0
     verb = "Replaced" if existed else "Created"
     _record_change(session, "write_file", path, backup, f"{verb} {file_path}")
-    return f"{verb} {file_path} ({line_count} lines)."
+    # Say where it really is: a shell does not know the scratch/ shorthand.
+    where = "" if path == file_path else f" It is at {path}."
+    return f"{verb} {file_path} ({line_count} lines).{where}"
 
 
 def _uses_crlf(text: str) -> bool:

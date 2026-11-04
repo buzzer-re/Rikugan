@@ -522,6 +522,7 @@ class AgentLoop:
 
     def _build_system_prompt(self) -> str:
         profile = self.config.get_active_profile()
+        workspace = self.session.files.workspace
         binary_info = None
         current_address = None
         current_function = None
@@ -552,6 +553,7 @@ class AgentLoop:
             current_function=current_function,
             current_address=current_address,
             tool_names=self._declared_tool_names(),
+            workspace_summary=workspace.describe_for_prompt() if workspace is not None else None,
             skill_summary=skill_summary,
             idb_dir=idb_dir,
             profile=profile,

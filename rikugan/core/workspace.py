@@ -132,9 +132,18 @@ class Workspace:
         parts = []
         if self.binary_root:
             parts.append(f"{self.binary_root} (binary directory)")
-        parts.append(f"{SCRATCH_ALIAS}/ (agent scratch)")
+        parts.append(f"{SCRATCH_ALIAS}/ (agent scratch, at {self.scratch_root})")
         parts.extend(f"{root} (configured)" for root in self.extra_roots)
         return "Allowed: " + ", ".join(parts) + "."
+
+    def describe_for_prompt(self) -> str:
+        """Where things really are, so the model has one picture of the disk."""
+        lines = []
+        if self.binary_root:
+            lines.append(f"Binary directory: {self.binary_root} (relative paths and commands start here)")
+        lines.append(f"Scratch directory: {self.scratch_root}")
+        lines.extend(f"Also allowed: {root}" for root in self.extra_roots)
+        return "\n".join(lines)
 
     def contains(self, path: str) -> bool:
         return any(_within(path, root) for root in self.roots)
