@@ -1066,3 +1066,83 @@ class TestQueuedMessageIsDispatched(unittest.TestCase):
         RikuganPanelCore._on_agent_finished(panel, "t1")
         self.assertEqual(panel._started, [])
         panel._chat_views["t1"].remove_queued_messages.assert_called_once()
+
+
+class TestMutationPanelFollowsTheActiveChat(unittest.TestCase):
+    """One panel per window, one log per chat: it must show the chat /undo acts on."""
+
+    def _panel(self):
+        panel = _make_panel()
+        panel._mutation_panel = MagicMock()
+        panel._ctrl = MagicMock()
+        panel._ctrl.active_tab_id = "t1"
+        self.logs = {"t1": ["mine"], "t2": ["theirs"]}
+        panel._ctrl.get_session.side_effect = lambda tab: types.SimpleNamespace(mutation_log=self.logs[tab])
+        return panel
+
+    def test_lists_the_active_chats_log(self):
+        panel = self._panel()
+        RikuganPanelCore._sync_mutation_panel(panel)
+        panel._mutation_panel.set_records.assert_called_once_with(["mine"])
+
+    def test_following_a_tab_switch_shows_that_chats_log(self):
+        panel = self._panel()
+        panel._ctrl.active_tab_id = "t2"
+        RikuganPanelCore._sync_mutation_panel(panel)
+        panel._mutation_panel.set_records.assert_called_once_with(["theirs"])
+
+    def test_no_session_empties_the_panel(self):
+        panel = self._panel()
+        panel._ctrl.get_session.side_effect = None
+        panel._ctrl.get_session.return_value = None
+        RikuganPanelCore._sync_mutation_panel(panel)
+        panel._mutation_panel.set_records.assert_called_once_with([])
+
+    def test_lists_a_copy_the_agent_thread_cannot_change_underneath_it(self):
+        panel = self._panel()
+        RikuganPanelCore._sync_mutation_panel(panel)
+        listed = panel._mutation_panel.set_records.call_args.args[0]
+        self.assertIsNot(listed, self.logs["t1"])
+
+    def test_a_finished_turn_catches_mutations_no_event_announced(self):
+        # A silent subagent writes to the shared log but forwards no events.
+        panel = self._panel()
+        panel._chat_views = {"t1": MagicMock()}
+        panel._ctrl.on_agent_finished.return_value = None
+        panel._set_running = lambda running, tab_id=None: None
+        RikuganPanelCore._on_agent_finished(panel, "t1")
+        panel._mutation_panel.set_records.assert_called_once_with(["mine"])
+
+    def test_another_tabs_turn_finishing_leaves_the_panel_alone(self):
+        panel = self._panel()
+        panel._chat_views = {"t2": MagicMock()}
+        panel._ctrl.on_agent_finished.return_value = None
+        panel._set_running = lambda running, tab_id=None: None
+        RikuganPanelCore._on_agent_finished(panel, "t2")
+        panel._mutation_panel.set_records.assert_not_called()
+
+
+class TestMutationEventsRefreshThePanel(unittest.TestCase):
+    def _send(self, event_name, tab_id):
+        panel = _make_panel()
+        panel._mutation_panel = MagicMock()
+        panel._ctrl = MagicMock()
+        panel._ctrl.active_tab_id = "t1"
+        panel._ctrl.get_session.return_value = types.SimpleNamespace(mutation_log=["record"])
+        panel._chat_views = {"t1": MagicMock(), "t2": MagicMock()}
+        panel._tab_status = {}
+        panel._pending_answer_tabs = set()
+        # Whichever TurnEventType the panel was imported with: this file may stub it.
+        event_types = sys.modules["rikugan.ui.panel_core"].TurnEventType
+        event = MagicMock(usage=None, type=getattr(event_types, event_name))
+        RikuganPanelCore._on_event(panel, tab_id, event)
+        return panel._mutation_panel.set_records
+
+    def test_an_undo_in_the_active_chat_refreshes(self):
+        self._send("MUTATION_UNDONE", "t1").assert_called_once_with(["record"])
+
+    def test_a_new_mutation_in_the_active_chat_refreshes(self):
+        self._send("MUTATION_RECORDED", "t1").assert_called_once_with(["record"])
+
+    def test_a_background_chats_mutation_does_not_touch_the_panel(self):
+        self._send("MUTATION_RECORDED", "t2").assert_not_called()

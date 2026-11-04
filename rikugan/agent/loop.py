@@ -629,17 +629,24 @@ class AgentLoop:
         undone = 0
         errors = []
         for _ in range(count):
-            record = self._mutation_log.pop()
+            record = self._mutation_log[-1]
             if not record.reversible:
-                errors.append(f"Cannot undo: {record.description} (not reversible)")
+                self._mutation_log.pop()
+                yield TurnEvent.mutation_undone(record.description)
+                errors.append(f"Cannot undo: {record.description} ({record.irreversible_reason or 'not reversible'})")
                 continue
             try:
                 self.tools.execute(record.reverse_tool, record.reverse_arguments)
-                undone += 1
-                log_info(f"Undo: {record.description}")
             except ToolError as e:
+                # The mutation is still applied, so its record stays. Going on
+                # would reverse older mutations out of order, on top of it.
                 errors.append(f"Failed to undo {record.description}: {e}")
                 log_error(f"Undo failed: {record.description}: {e}")
+                break
+            self._mutation_log.pop()
+            undone += 1
+            log_info(f"Undo: {record.description}")
+            yield TurnEvent.mutation_undone(record.description)
 
         parts_out = []
         if undone:

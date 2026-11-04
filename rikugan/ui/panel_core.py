@@ -10,7 +10,6 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from ..agent.mutation import MutationRecord
 from ..agent.turn import TurnEvent, TurnEventType
 from ..core.config import RikuganConfig
 from ..core.host import get_current_address
@@ -2027,6 +2026,7 @@ class RikuganPanelCore(QWidget):
         if self._chat_sidebar is not None:
             self._chat_sidebar.select_chat(tab_id)
         self._sync_header_title(tab_id)
+        self._sync_mutation_panel()
         self._set_running(self._ctrl.is_tab_running(tab_id), tab_id=tab_id)
 
     def _tab_id_at_index(self, index: int) -> str | None:
@@ -2204,6 +2204,7 @@ class RikuganPanelCore(QWidget):
         else:
             self._create_tab(self._ctrl.active_tab_id, "Untitled")
         self._try_restore_session()
+        self._sync_mutation_panel()
 
     def _on_submit(self, text: str) -> None:
         if not text or self._is_shutdown:
@@ -2440,8 +2441,9 @@ class RikuganPanelCore(QWidget):
             pass  # informational — the turn is still healthy
         else:
             self._tab_status[tab_id] = "running"
-        if event.type == TurnEventType.MUTATION_RECORDED:
-            self._on_mutation_recorded(event)
+        if event.type in (TurnEventType.MUTATION_RECORDED, TurnEventType.MUTATION_UNDONE):
+            if tab_id == self._ctrl.active_tab_id:
+                self._sync_mutation_panel()
 
     def _on_tool_approval(self, tool_call_id: str, decision: str) -> None:
         """Forward tool approval to the agent loop."""
@@ -2468,6 +2470,10 @@ class RikuganPanelCore(QWidget):
         if self._is_shutdown:
             return
         tab_id = tab_id or self._ctrl.active_tab_id
+
+        # A silent subagent writes to the log without its events reaching here.
+        if tab_id == self._ctrl.active_tab_id:
+            self._sync_mutation_panel()
 
         # Clear approval state — if the agent crashed mid-approval the
         # buttons are stale and free-text input must be restored.
@@ -2607,22 +2613,17 @@ class RikuganPanelCore(QWidget):
 
     # --- Mutation log integration ---
 
-    def _on_mutation_recorded(self, event: TurnEvent) -> None:
-        """Handle a MUTATION_RECORDED event by adding it to the mutation log panel."""
+    def _sync_mutation_panel(self) -> None:
+        """List the active chat's mutations.
+
+        The log belongs to the chat and there is one panel per window, so the
+        panel reads the log rather than accumulating events: otherwise it would
+        offer another tab's mutations to an /undo that runs against this one.
+        """
         if self._mutation_panel is None:
             return
-        meta = event.metadata
-        record = MutationRecord(
-            tool_name=event.tool_name,
-            arguments={},
-            reverse_tool=meta.get("reverse_tool", ""),
-            reverse_arguments=meta.get("reverse_args", {}),
-            description=event.text,
-            reversible=meta.get("reversible", False),
-        )
-        self._mutation_panel.add_mutation(record)
-        if self._mutations_btn is not None:
-            self._mutations_btn.setVisible(True)
+        session = self._ctrl.get_session(self._ctrl.active_tab_id)
+        self._mutation_panel.set_records(list(session.mutation_log) if session is not None else [])
 
     def _on_toggle_mutation_log(self) -> None:
         """Toggle visibility of the mutation log panel."""

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from tests.qt_stubs import ensure_pyside6_stubs
 ensure_pyside6_stubs()
@@ -86,60 +86,64 @@ class TestUpdateCount(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# remove_last
+# set_records
 # ---------------------------------------------------------------------------
 
-class TestRemoveLast(unittest.TestCase):
-    def _panel_with_n(self, n: int, reversible: bool = True):
+class TestSetRecords(unittest.TestCase):
+    def _listed(self, panel):
+        return [e.record for e in panel._entries]
+
+    def _show(self, panel, records):
+        def entry(_index, record, _parent):
+            widget = MagicMock()
+            widget.record = record
+            return widget
+
+        panel._entries_widget = MagicMock()
+        panel._entries_layout.count.return_value = 1
+        with patch("rikugan.ui.mutation_log_view.MutationEntryWidget", entry):
+            panel.set_records(records)
+
+    def test_lists_the_records_in_order(self):
         panel = _make_panel()
-        for _ in range(n):
-            entry = MagicMock()
-            entry.record = _make_record(reversible=reversible)
-            panel._entries.append(entry)
-        return panel
+        records = [_make_record(description="a"), _make_record(description="b")]
+        self._show(panel, records)
+        self.assertEqual(self._listed(panel), records)
 
-    def test_remove_one(self):
-        panel = self._panel_with_n(3)
-        panel.remove_last(1)
-        self.assertEqual(len(panel._entries), 2)
+    def test_replaces_what_was_listed(self):
+        # Switching to a chat must not leave the previous chat's entries behind.
+        panel = _make_panel()
+        self._show(panel, [_make_record(description="other chat")])
+        kept = [_make_record(description="this chat")]
+        self._show(panel, kept)
+        self.assertEqual(self._listed(panel), kept)
 
-    def test_remove_multiple(self):
-        panel = self._panel_with_n(5)
-        panel.remove_last(3)
-        self.assertEqual(len(panel._entries), 2)
+    def test_an_empty_log_empties_the_panel(self):
+        panel = _make_panel()
+        self._show(panel, [_make_record()])
+        self._show(panel, [])
+        self.assertEqual(panel._entries, [])
+        panel._undo_btn.setEnabled.assert_called_with(False)
 
-    def test_remove_more_than_available(self):
-        panel = self._panel_with_n(2)
-        panel.remove_last(10)
-        self.assertEqual(len(panel._entries), 0)
 
-    def test_remove_zero(self):
-        panel = self._panel_with_n(3)
-        panel.remove_last(0)
-        self.assertEqual(len(panel._entries), 3)
+class TestReversibilityTooltip(unittest.TestCase):
+    def _tooltip(self, record):
+        from rikugan.ui.mutation_log_view import _reversibility_tooltip
 
-    def test_remove_from_empty(self):
-        panel = self._panel_with_n(0)
-        panel.remove_last(5)  # must not raise
-        self.assertEqual(len(panel._entries), 0)
+        return _reversibility_tooltip(record)
 
-    def test_remove_last_pops_tail(self):
-        panel = self._panel_with_n(3)
-        last_entry = panel._entries[-1]
-        panel.remove_last(1)
-        self.assertNotIn(last_entry, panel._entries)
+    def test_says_why_a_mutation_cannot_be_undone(self):
+        record = _make_record(reversible=False)
+        record.irreversible_reason = "no getter for the prior value"
+        self.assertIn("no getter for the prior value", self._tooltip(record))
 
-    def test_remove_calls_delete_later(self):
-        panel = self._panel_with_n(2)
-        entry_to_remove = panel._entries[-1]
-        panel.remove_last(1)
-        entry_to_remove.deleteLater.assert_called_once()
+    def test_no_reason_still_reads_cleanly(self):
+        record = _make_record(reversible=False)
+        record.irreversible_reason = ""
+        self.assertEqual(self._tooltip(record), "Not reversible")
 
-    def test_remove_calls_remove_widget(self):
-        panel = self._panel_with_n(2)
-        entry_to_remove = panel._entries[-1]
-        panel.remove_last(1)
-        panel._entries_layout.removeWidget.assert_called_with(entry_to_remove)
+    def test_reversible(self):
+        self.assertEqual(self._tooltip(_make_record()), "Reversible")
 
 
 # ---------------------------------------------------------------------------
