@@ -242,6 +242,22 @@ def get_database_path() -> str:
     return ""
 
 
+def get_input_path() -> str:
+    """Return the path of the file being analysed, as opposed to its database."""
+    if is_ida():
+        try:
+            return (_idaapi.get_input_file_path() or "") if _idaapi else ""
+        except Exception:
+            return ""
+
+    if is_binary_ninja():
+        bv = get_binary_ninja_view()
+        fobj = getattr(bv, "file", None)
+        return str(getattr(fobj, "original_filename", "") or "")
+
+    return ""
+
+
 def get_database_instance_id() -> str:
     """Read the Rikugan instance UUID stored in the current IDB/BNDB.
 

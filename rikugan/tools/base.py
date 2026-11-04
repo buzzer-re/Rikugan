@@ -59,6 +59,12 @@ class ToolDefinition:
     timeout: float | None = None  # per-tool timeout in seconds (None = use default)
     handler: Callable | None = field(default=None, repr=False)
     requires: list[str] = field(default_factory=list)
+    # Hidden from the model and refused if it names one anyway; only Rikugan calls
+    # it. Undo's reverse operations need to be registered tools, but one the agent
+    # could call would let it silently revert the user's own edits.
+    internal: bool = False
+    # Characters allowed in the result, for a tool that bounds its own output.
+    result_limit: int | None = None
 
     def to_json_schema(self) -> dict[str, Any]:
         properties: dict[str, Any] = {}
@@ -194,6 +200,8 @@ def tool(
     mutating: bool = False,
     timeout: float | None = None,
     requires: list[str] | None = None,
+    internal: bool = False,
+    result_limit: int | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to register a function as an agent tool.
 
@@ -225,6 +233,8 @@ def tool(
             timeout=timeout,
             handler=func,
             requires=effective_requires,
+            internal=internal,
+            result_limit=result_limit,
         )
 
         @functools.wraps(func)

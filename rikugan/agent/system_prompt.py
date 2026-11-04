@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from ..core.logging import log_debug
 from ..core.profile import IOC_FILTER_CATEGORIES
 from ..core.sanitize import sanitize_binary_context, sanitize_memory
+from .prompts.base import FILESYSTEM_SECTION
 from .prompts.binja import BINJA_BASE_PROMPT, NATIVE_MCP_SECTION, NATIVE_MCP_TOOL_PREFIX
 from .prompts.ida import IDA_BASE_PROMPT
 
@@ -114,6 +115,8 @@ def build_system_prompt(
         # the agent is never told to prefer tools it does not have.
         if any(name.startswith(NATIVE_MCP_TOOL_PREFIX) for name in tool_names):
             parts.append(NATIVE_MCP_SECTION)
+        if "read_file" in tool_names:
+            parts.append(FILESYSTEM_SECTION)
 
     if skill_summary:
         parts.append(f"\n## Skills\n{skill_summary}")

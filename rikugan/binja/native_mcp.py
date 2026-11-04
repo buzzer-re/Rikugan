@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..constants import MCP_TOOL_PREFIX
+from ..constants import FILESYSTEM_CATEGORY, MCP_TOOL_PREFIX
 from ..core.logging import log_debug, log_info
 from ..mcp.client import MCPClient
 from ..mcp.config import MCPServerConfig
@@ -105,4 +105,8 @@ def superseded_builtins(registry) -> list[str]:
     them. Turning the toggle off brings Rikugan's tools, and undo tracking,
     back.
     """
-    return [defn.name for defn in registry.list_tools() if not defn.name.startswith(MCP_TOOL_PREFIX)]
+    return [
+        defn.name
+        for defn in registry.list_tools()
+        if not defn.name.startswith(MCP_TOOL_PREFIX) and defn.category != FILESYSTEM_CATEGORY
+    ]

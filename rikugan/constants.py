@@ -18,6 +18,10 @@ CHECKPOINTS_DIR_NAME = "checkpoints"
 DEFAULT_CONTEXT_WINDOW = 200000
 
 TOOL_RESULT_TRUNCATE_LEN = 8000
+# Tools whose results are worth more room than the default, because they render
+# their own oversized output and a coding session needs to hold whole files.
+FILESYSTEM_CATEGORY = "filesystem"
+LARGE_RESULT_TOOLS = frozenset({"read_file", "search_files", "run_shell"})
 
 SYSTEM_PROMPT_VERSION = 1
 CONFIG_SCHEMA_VERSION = 2

@@ -92,19 +92,59 @@ class TestBinaryNinjaPolicy(unittest.TestCase):
                 self.assertFalse(_needs_main_thread(_defn(name)))
 
     def test_the_flag_gates_the_whole_behavior(self):
-        """Turning the setting off restores main-thread dispatch for everything."""
+        """Turning the setting off restores main-thread dispatch for every BN API tool."""
         import rikugan.binja.tools.registry as bn_registry
 
         class _Cfg:
             binja_background_tools = False
 
-        self.assertIsNone(bn_registry.create_default_registry(_Cfg())._marshal_policy)
-        self.assertIsNone(bn_registry.create_default_registry()._marshal_policy)
+        for registry in (bn_registry.create_default_registry(_Cfg()), bn_registry.create_default_registry()):
+            for name in ("decompile_function", "get_il", "list_functions"):
+                with self.subTest(tool=name):
+                    self.assertTrue(registry._marshal_policy(registry.get(name)))
 
         class _On:
             binja_background_tools = True
 
-        self.assertIsNotNone(bn_registry.create_default_registry(_On())._marshal_policy)
+        registry = bn_registry.create_default_registry(_On())
+        self.assertFalse(registry._marshal_policy(registry.get("list_functions")))
+        self.assertTrue(registry._marshal_policy(registry.get("jump_to")))
+
+
+
+def _defn_in(category):
+    return type("_Defn", (), {"category": category, "name": "x", "mutating": False})()
+
+
+class TestFileToolsNeverBlockTheHost(unittest.TestCase):
+    """Marshalled, a slow file tool freezes the whole window, and the registry's
+    timeout cannot rescue it: a started future cannot be cancelled."""
+
+    FILE_TOOLS = ("read_file", "write_file", "edit_file", "restore_file_backup")
+
+    def test_binary_ninja_either_way(self):
+        import rikugan.binja.tools.registry as bn_registry
+
+        for background in (True, False):
+            config = type("_Cfg", (), {"binja_background_tools": background})()
+            registry = bn_registry.create_default_registry(config)
+            for name in self.FILE_TOOLS:
+                with self.subTest(tool=name, background=background):
+                    self.assertFalse(registry._marshal_policy(registry._tools[name]))
+
+    def test_ida(self):
+        from rikugan.constants import FILESYSTEM_CATEGORY
+        from rikugan.ida.tools.registry import _needs_main_thread
+
+        self.assertFalse(_needs_main_thread(_defn_in(FILESYSTEM_CATEGORY)))
+        self.assertTrue(_needs_main_thread(_defn_in("decompiler")))
+
+    def test_they_are_not_mutating_or_they_would_marshal_and_flush_the_cache(self):
+        from rikugan.tools import filesystem
+
+        for name in self.FILE_TOOLS:
+            with self.subTest(tool=name):
+                self.assertFalse(getattr(filesystem, name)._tool_definition.mutating)
 
 
 if __name__ == "__main__":

@@ -12,13 +12,15 @@ import traceback
 from collections.abc import Generator
 from typing import Any
 
-from ..constants import MCP_TOOL_PREFIX
+from ..constants import FILESYSTEM_CATEGORY, MCP_TOOL_PREFIX
+from ..core.chat_context import activate_session
 from ..core.config import RikuganConfig
 from ..core.errors import (
     CancellationError,
     ProviderError,
     RateLimitError,
     ToolError,
+    UndoNoLongerPossible,
 )
 from ..core.logging import log_debug, log_error, log_info
 from ..core.sanitize import (
@@ -30,7 +32,13 @@ from ..core.sanitize import (
 from ..core.types import Message, Role, TokenUsage, ToolCall, ToolResult
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
-from ..state.session import INTERNAL_EVENT_CANCELLED, INTERNAL_EVENT_KEY, SessionState
+from ..state.session import (
+    CONSENT_DENIED,
+    CONSENT_GRANTED,
+    INTERNAL_EVENT_CANCELLED,
+    INTERNAL_EVENT_KEY,
+    SessionState,
+)
 from ..tools.registry import ToolRegistry
 from .context_window import ContextWindowManager
 from .exploration_mode import (
@@ -508,6 +516,13 @@ class AgentLoop:
             except queue.Empty:
                 continue  # poll timeout — retry until item arrives or cancelled
 
+    def _declared_tool_names(self) -> list[str]:
+        names = self.tools.list_names()
+        if not self._filesystem_hidden():
+            return names
+        hidden = {d.name for d in self.tools.list_tools() if d.category == FILESYSTEM_CATEGORY}
+        return [name for name in names if name not in hidden]
+
     def _build_system_prompt(self) -> str:
         profile = self.config.get_active_profile()
         binary_info = None
@@ -539,7 +554,7 @@ class AgentLoop:
             binary_info=binary_info,
             current_function=current_function,
             current_address=current_address,
-            tool_names=self.tools.list_names(),
+            tool_names=self._declared_tool_names(),
             skill_summary=skill_summary,
             idb_dir=idb_dir,
             profile=profile,
@@ -636,7 +651,14 @@ class AgentLoop:
                 errors.append(f"Cannot undo: {record.description} ({record.irreversible_reason or 'not reversible'})")
                 continue
             try:
-                self.tools.execute(record.reverse_tool, record.reverse_arguments)
+                self._run_tool(record.reverse_tool, record.reverse_arguments)
+            except UndoNoLongerPossible as e:
+                # Retrying cannot help, so holding the record would block every
+                # older undo behind it for good.
+                self._mutation_log.pop()
+                yield TurnEvent.mutation_undone(record.description)
+                errors.append(f"Cannot undo: {record.description} ({e})")
+                continue
             except ToolError as e:
                 # The mutation is still applied, so its record stays. Going on
                 # would reverse older mutations out of order, on top of it.
@@ -1051,6 +1073,12 @@ class AgentLoop:
     @staticmethod
     def _describe_tool_call(name: str, args: dict[str, Any]) -> str:
         """Generate a brief human-readable description of what a tool will do."""
+        if name == "read_file":
+            return f"Read {args.get('file_path', '?')}"
+        if name == "write_file":
+            return f"Write {args.get('file_path', '?')}"
+        if name == "edit_file":
+            return f"Edit {args.get('file_path', '?')}"
         if name == "execute_python":
             code = args.get("code", args.get("script", ""))
             lines = code.strip().splitlines()
@@ -1102,6 +1130,49 @@ class AgentLoop:
             self._always_allow_scripts = True
             return True
         return decision == "allow"
+
+    def _run_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        """Execute a tool as part of this chat, so file tools can find its state."""
+        with activate_session(self.session):
+            return self.tools.execute(name, arguments)
+
+    def _filesystem_allowed(self) -> bool:
+        """Whether this chat may use file tools right now, without asking."""
+        return self.config.filesystem_access or self.session.files.consent == CONSENT_GRANTED
+
+    def _filesystem_hidden(self) -> bool:
+        """Whether to stop offering file tools because the user said no."""
+        return self.session.files.consent == CONSENT_DENIED and not self._filesystem_allowed()
+
+    def _wait_for_filesystem_consent(self, tc: ToolCall) -> Generator[TurnEvent, None, bool]:
+        """Ask once per chat whether the agent may use files at all.
+
+        Separate from _wait_for_approval: "Always Allow" on a script answers a
+        different question, and must not silently open up the disk.
+        """
+        if self._filesystem_allowed():
+            return True
+        if self.session.files.consent == CONSENT_DENIED:
+            return False
+
+        description = (
+            f"{self._describe_tool_call(tc.name, tc.arguments)}\n"
+            "Allowing lets the agent read, write and search files in its workspace for this chat, "
+            "without asking again. Always Allow turns on Filesystem access in Settings."
+        )
+        yield TurnEvent.tool_approval_request(tc.id, tc.name, json.dumps(tc.arguments, indent=2), description)
+
+        decision = self._wait_for_queue(self._tool_approval_queue).lower()
+        if decision not in ("allow", "allow_all"):
+            self.session.files.consent = CONSENT_DENIED
+            return False
+        self.session.files.consent = CONSENT_GRANTED
+        if decision == "allow_all":
+            try:
+                self.config.save_setting("filesystem_access", True)
+            except (OSError, ValueError) as e:
+                log_error(f"Could not save filesystem_access: {e}")
+        return True
 
     def _handle_exploration_report_tool(
         self,
@@ -1334,6 +1405,23 @@ class AgentLoop:
             yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
             return tr
 
+        defn = self.tools.get(tc.name)
+
+        # Same answer as for a tool that does not exist: this is not for the model.
+        if defn is not None and defn.internal:
+            content = f"Error: Unknown tool: {tc.name}"
+            tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=content, is_error=True)
+            yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
+            return tr
+
+        if defn is not None and defn.category == FILESYSTEM_CATEGORY:
+            permitted = yield from self._wait_for_filesystem_consent(tc)
+            if not permitted:
+                content = "Filesystem access was denied by the user for this chat. Carry on without files."
+                tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=content, is_error=True)
+                yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
+                return tr
+
         # execute_python always requires explicit approval
         if tc.name == "execute_python":
             approved = yield from self._wait_for_approval(tc)
@@ -1343,7 +1431,6 @@ class AgentLoop:
                 yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
                 return tr
 
-        defn = self.tools.get(tc.name)
         is_mutating = defn is not None and defn.mutating
 
         if is_mutating and self.config.approve_mutations:
@@ -1363,8 +1450,9 @@ class AgentLoop:
             )
 
         log_debug(f"Executing tool {tc.name}")
+        log_length_before = len(self._mutation_log)
         try:
-            result = self.tools.execute(tc.name, tc.arguments)
+            result = self._run_tool(tc.name, tc.arguments)
             is_error = False
             # Hysteresis: decrement instead of resetting so a single success
             # after several failures doesn't fully clear the counter.
@@ -1374,6 +1462,16 @@ class AgentLoop:
                 if record is not None:
                     self._mutation_log.append(record)
                     log_debug(f"Mutation recorded: {record.description}")
+                    yield TurnEvent.mutation_recorded(
+                        tool_name=record.tool_name,
+                        description=record.description,
+                        reversible=record.reversible,
+                        reverse_tool=record.reverse_tool,
+                        reverse_args=record.reverse_arguments,
+                    )
+            elif defn is not None and defn.category == FILESYSTEM_CATEGORY:
+                # File tools write their own records: only they know the backup.
+                for record in self._mutation_log[log_length_before:]:
                     yield TurnEvent.mutation_recorded(
                         tool_name=record.tool_name,
                         description=record.description,
@@ -1454,6 +1552,10 @@ class AgentLoop:
             use_exploration_mode = True
 
         tools_schema = list(self.tools.to_provider_format())
+
+        if self._filesystem_hidden():
+            hidden = {d.name for d in self.tools.list_tools() if d.category == FILESYSTEM_CATEGORY}
+            tools_schema = [t for t in tools_schema if t.get("function", {}).get("name") not in hidden]
 
         # Filter to skill-allowed tools if the skill restricts them
         if active_skill and active_skill.allowed_tools:

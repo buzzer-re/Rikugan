@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Any
 from ..agent.loop import AgentLoop, BackgroundAgentRunner
 from ..agent.turn import TurnEvent
 from ..core.config import RikuganConfig
-from ..core.host import get_database_instance_id, set_database_instance_id
+from ..core.host import get_database_instance_id, get_database_path, get_input_path, set_database_instance_id
 from ..core.logging import log_debug, log_error, log_info
+from ..core.workspace import Workspace
 from ..mcp.manager import MCPManager
 from ..providers.registry import ProviderRegistry
 from ..skills.registry import SkillRegistry
@@ -356,6 +357,15 @@ class SessionControllerBase:
             return f"Provider error: {e}"
 
         session = self._sessions[tab_id]
+        # Here on the UI thread: IDA's path queries are main-thread only, and a
+        # Binary Ninja view can change path when a raw file is saved as a database.
+        session.files.workspace = Workspace.for_database(
+            get_database_path(),
+            self.config.config_dir,
+            self._db_instance_id,
+            input_path=get_input_path(),
+            extra_roots=self.config.filesystem_extra_roots,
+        )
         loop = AgentLoop(
             provider,
             self._tool_registry,
