@@ -66,7 +66,7 @@ def _workspace(files: FileAccess) -> Workspace:
     return files.workspace
 
 
-def _refusals_as_text(func: Callable[..., str]) -> Callable[..., str]:
+def refusals_as_text(func: Callable[..., str]) -> Callable[..., str]:
     """Hand refusals back as text, which the model can read and correct.
 
     Raising would count towards the consecutive-error limit that disables tools,
@@ -128,7 +128,7 @@ def _read_page(title: str, lines: list[str], offset: int, limit: int) -> str:
         "names the call to continue with. Read a file before writing or editing it."
     ),
 )
-@_refusals_as_text
+@refusals_as_text
 def read_file(
     file_path: Annotated[str, "File to read, relative to the binary's directory or under scratch/, or artifact://N"],
     offset: Annotated[int, "1-based line to start from"] = 1,
@@ -201,7 +201,7 @@ def _record_change(session: SessionState, tool_name: str, path: str, backup: str
         "Use edit_file to change part of an existing file. New scripts and notes belong under scratch/."
     ),
 )
-@_refusals_as_text
+@refusals_as_text
 def write_file(
     file_path: Annotated[str, "File to write, relative to the binary's directory or under scratch/"],
     content: Annotated[str, "The complete new contents of the file"],
@@ -281,7 +281,7 @@ def _edit_snippet(text: str, position: int, new: str) -> str:
         "it unique. Do not include the line numbers read_file shows. Fails rather than guessing."
     ),
 )
-@_refusals_as_text
+@refusals_as_text
 def edit_file(
     file_path: Annotated[str, "File to edit, relative to the binary's directory or under scratch/"],
     old_string: Annotated[str, "The exact text to replace"],

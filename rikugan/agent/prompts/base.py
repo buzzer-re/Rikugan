@@ -132,6 +132,10 @@ are refused, and the refusal lists what is allowed.
   unique unless you pass replace_all. Copy it from read_file's output, leaving
   out the line number and tab that begin each line. Include enough surrounding
   lines to make it unique. Prefer edit_file to rewriting a whole file.
+- Use search_files rather than reading through a tree: it finds text
+  (mode='content'), the files containing it (mode='files_with_matches'), or files
+  by name (mode='files' with a glob). The result names its regex engine, ripgrep
+  or Python; their dialects differ, so write the pattern for the one in use.
 - A large result shows its head and tail with a notice between them, like
   ⟦Showing lines 1-246 and 9936-10181 of 10181; ...⟧. The middle is elided, not
   empty, and the notice names the call that reads it.

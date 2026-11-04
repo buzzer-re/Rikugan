@@ -5,7 +5,7 @@ from __future__ import annotations
 from rikugan.constants import FILESYSTEM_CATEGORY
 from rikugan.core.host import HAS_HEXRAYS
 from rikugan.core.thread_safety import idasync
-from rikugan.tools import filesystem
+from rikugan.tools import file_search, filesystem
 from rikugan.tools.registry import ToolRegistry
 
 from . import (
@@ -35,6 +35,7 @@ _TOOL_MODULES = (
     scripting,
     microcode,
     filesystem,
+    file_search,
 )
 
 

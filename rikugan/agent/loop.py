@@ -1079,6 +1079,8 @@ class AgentLoop:
             return f"Write {args.get('file_path', '?')}"
         if name == "edit_file":
             return f"Edit {args.get('file_path', '?')}"
+        if name == "search_files":
+            return f"Search for {args.get('pattern', '?')!r} in {args.get('path') or 'the workspace'}"
         if name == "execute_python":
             code = args.get("code", args.get("script", ""))
             lines = code.strip().splitlines()

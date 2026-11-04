@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from ...constants import FILESYSTEM_CATEGORY
 from ...core.thread_safety import idasync
-from ...tools import filesystem
+from ...tools import file_search, filesystem
 from ...tools.registry import ToolRegistry
 from . import (  # type: ignore[assignment]
     annotations,
@@ -40,6 +40,7 @@ _TOOL_MODULES = (
     il_analysis,
     il_transform,
     filesystem,
+    file_search,
 )
 
 
