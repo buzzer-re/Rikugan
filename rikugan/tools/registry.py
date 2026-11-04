@@ -20,6 +20,9 @@ _DEFAULT_TOOL_TIMEOUT = 30.0
 
 # Shared executor — single thread is sufficient since IDA tools run on main thread via idasync
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-timeout")
+# Kept apart: two long shell commands would otherwise take both workers above, and
+# every other tool in every tab would time out waiting for a thread it never got.
+_long_running_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tool-long")
 
 
 class ToolRegistry:
@@ -201,7 +204,8 @@ class ToolRegistry:
             # The worker thread would otherwise start with an empty context, and
             # a handler could not tell which chat it is running for.
             context = contextvars.copy_context()
-            future = _executor.submit(lambda: context.run(handler, **arguments))
+            executor = _long_running_executor if defn.long_running else _executor
+            future = executor.submit(lambda: context.run(handler, **arguments))
             result = future.result(timeout=timeout)
         except FuturesTimeoutError:
             future.cancel()

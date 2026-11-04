@@ -65,6 +65,8 @@ class ToolDefinition:
     internal: bool = False
     # Characters allowed in the result, for a tool that bounds its own output.
     result_limit: int | None = None
+    # Takes long enough that it must not queue in front of ordinary tool calls.
+    long_running: bool = False
 
     def to_json_schema(self) -> dict[str, Any]:
         properties: dict[str, Any] = {}
@@ -202,6 +204,7 @@ def tool(
     requires: list[str] | None = None,
     internal: bool = False,
     result_limit: int | None = None,
+    long_running: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to register a function as an agent tool.
 
@@ -235,6 +238,7 @@ def tool(
             requires=effective_requires,
             internal=internal,
             result_limit=result_limit,
+            long_running=long_running,
         )
 
         @functools.wraps(func)

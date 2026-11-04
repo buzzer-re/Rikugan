@@ -120,7 +120,7 @@ class TestFileToolsNeverBlockTheHost(unittest.TestCase):
     """Marshalled, a slow file tool freezes the whole window, and the registry's
     timeout cannot rescue it: a started future cannot be cancelled."""
 
-    FILE_TOOLS = ("read_file", "write_file", "edit_file", "restore_file_backup")
+    FILE_TOOLS = ("read_file", "write_file", "edit_file", "restore_file_backup", "search_files", "run_shell")
 
     def test_binary_ninja_either_way(self):
         import rikugan.binja.tools.registry as bn_registry
@@ -139,12 +139,21 @@ class TestFileToolsNeverBlockTheHost(unittest.TestCase):
         self.assertFalse(_needs_main_thread(_defn_in(FILESYSTEM_CATEGORY)))
         self.assertTrue(_needs_main_thread(_defn_in("decompiler")))
 
-    def test_they_are_not_mutating_or_they_would_marshal_and_flush_the_cache(self):
-        from rikugan.tools import filesystem
+    def test_ida_registers_them(self):
+        from rikugan.ida.tools.registry import _TOOL_MODULES
+        from rikugan.tools import file_search, filesystem, shell
 
+        for module in (filesystem, file_search, shell):
+            with self.subTest(module=module.__name__):
+                self.assertIn(module, _TOOL_MODULES)
+
+    def test_they_are_not_mutating_or_they_would_marshal_and_flush_the_cache(self):
+        import rikugan.binja.tools.registry as bn_registry
+
+        registry = bn_registry.create_default_registry()
         for name in self.FILE_TOOLS:
             with self.subTest(tool=name):
-                self.assertFalse(getattr(filesystem, name)._tool_definition.mutating)
+                self.assertFalse(registry._tools[name].mutating)
 
 
 if __name__ == "__main__":

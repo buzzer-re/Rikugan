@@ -227,7 +227,14 @@ def _take_chars(lines: list[str], budget: int) -> list[str]:
     return taken
 
 
-def format_large_result(title: str, text: str, store: ArtifactStore, *, footer: str = "") -> str:
+def format_large_result(
+    title: str,
+    text: str,
+    store: ArtifactStore,
+    *,
+    footer: str = "",
+    budget: int = INLINE_RESULT_BUDGET,
+) -> str:
     """Render *text* for the model, within budget however large it is.
 
     Output that fits comes back as it is. Anything larger is saved to *store*
@@ -236,12 +243,12 @@ def format_large_result(title: str, text: str, store: ArtifactStore, *, footer: 
     """
     header = f"=== {_short_title(title)} ==="
     closing = f"\n— {footer} —" if footer else ""
-    if len(header) + 1 + len(text) + len(closing) <= INLINE_RESULT_BUDGET:
+    if len(header) + 1 + len(text) + len(closing) <= budget:
         return f"{header}\n{text.rstrip(chr(10))}{closing}"
 
     lines = _split_lines(text)
     artifact = store.save(title, lines)
-    body_budget = INLINE_RESULT_BUDGET - _NOTICE_RESERVE - len(header) - len(closing)
+    body_budget = budget - _NOTICE_RESERVE - len(header) - len(closing)
     head = take_within_budget(lines, 1, int(body_budget * _HEAD_SHARE))
     tail_budget = body_budget - sum(len(line) + 1 for line in head)
     # Taken from the far end, and never reaching back over what the head shows.

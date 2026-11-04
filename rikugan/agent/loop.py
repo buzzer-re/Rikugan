@@ -517,11 +517,8 @@ class AgentLoop:
                 continue  # poll timeout — retry until item arrives or cancelled
 
     def _declared_tool_names(self) -> list[str]:
-        names = self.tools.list_names()
-        if not self._filesystem_hidden():
-            return names
-        hidden = {d.name for d in self.tools.list_tools() if d.category == FILESYSTEM_CATEGORY}
-        return [name for name in names if name not in hidden]
+        hidden = self._hidden_filesystem_tools()
+        return [name for name in self.tools.list_names() if name not in hidden]
 
     def _build_system_prompt(self) -> str:
         profile = self.config.get_active_profile()
@@ -1079,6 +1076,8 @@ class AgentLoop:
             return f"Write {args.get('file_path', '?')}"
         if name == "edit_file":
             return f"Edit {args.get('file_path', '?')}"
+        if name == "run_shell":
+            return f"Run: {args.get('command', '?')}"
         if name == "search_files":
             return f"Search for {args.get('pattern', '?')!r} in {args.get('path') or 'the workspace'}"
         if name == "execute_python":
@@ -1135,16 +1134,18 @@ class AgentLoop:
 
     def _run_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """Execute a tool as part of this chat, so file tools can find its state."""
-        with activate_session(self.session):
+        with activate_session(self.session, self._cancelled):
             return self.tools.execute(name, arguments)
 
     def _filesystem_allowed(self) -> bool:
         """Whether this chat may use file tools right now, without asking."""
         return self.config.filesystem_access or self.session.files.consent == CONSENT_GRANTED
 
-    def _filesystem_hidden(self) -> bool:
-        """Whether to stop offering file tools because the user said no."""
-        return self.session.files.consent == CONSENT_DENIED and not self._filesystem_allowed()
+    def _hidden_filesystem_tools(self) -> set[str]:
+        """File tools not to offer: all if the user said no, the shell if it is off."""
+        if self.session.files.consent == CONSENT_DENIED and not self._filesystem_allowed():
+            return {d.name for d in self.tools.list_tools() if d.category == FILESYSTEM_CATEGORY}
+        return set() if self.config.filesystem_shell else {"run_shell"}
 
     def _wait_for_filesystem_consent(self, tc: ToolCall) -> Generator[TurnEvent, None, bool]:
         """Ask once per chat whether the agent may use files at all.
@@ -1159,8 +1160,9 @@ class AgentLoop:
 
         description = (
             f"{self._describe_tool_call(tc.name, tc.arguments)}\n"
-            "Allowing lets the agent read, write and search files in its workspace for this chat, "
-            "without asking again. Always Allow turns on Filesystem access in Settings."
+            "Allowing lets the agent read, write and search files in its workspace and run shell "
+            "commands for this chat, without asking again. Always Allow turns on Filesystem access "
+            "in Settings."
         )
         yield TurnEvent.tool_approval_request(tc.id, tc.name, json.dumps(tc.arguments, indent=2), description)
 
@@ -1416,6 +1418,12 @@ class AgentLoop:
             yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
             return tr
 
+        if tc.name == "run_shell" and not self.config.filesystem_shell:
+            content = "Error: shell commands are turned off in the configuration."
+            tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=content, is_error=True)
+            yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
+            return tr
+
         if defn is not None and defn.category == FILESYSTEM_CATEGORY:
             permitted = yield from self._wait_for_filesystem_consent(tc)
             if not permitted:
@@ -1555,8 +1563,8 @@ class AgentLoop:
 
         tools_schema = list(self.tools.to_provider_format())
 
-        if self._filesystem_hidden():
-            hidden = {d.name for d in self.tools.list_tools() if d.category == FILESYSTEM_CATEGORY}
+        hidden = self._hidden_filesystem_tools()
+        if hidden:
             tools_schema = [t for t in tools_schema if t.get("function", {}).get("name") not in hidden]
 
         # Filter to skill-allowed tools if the skill restricts them

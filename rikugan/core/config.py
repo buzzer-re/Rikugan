@@ -100,6 +100,9 @@ class RikuganConfig:
     # Directories usable besides the binary's own and the agent's scratch. Only
     # set by editing the config file: a path typed into a chat must not widen this.
     filesystem_extra_roots: list[str] = field(default_factory=list)
+    # Filesystem access includes run_shell unless this is switched off, which is
+    # only possible in the config file, for anyone wanting editing without a shell.
+    filesystem_shell: bool = True
 
     # OAuth consent — user must accept risk before keychain autoload
     oauth_consent_accepted: bool = False
@@ -239,6 +242,7 @@ class RikuganConfig:
             "preserve_context",
             "filesystem_access",
             "filesystem_extra_roots",
+            "filesystem_shell",
             "oauth_consent_accepted",
             "encrypt_api_keys",
         ):

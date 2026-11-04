@@ -381,6 +381,91 @@ class TestBinaryNinjaServerLeavesFileToolsOn(unittest.TestCase):
         self.assertEqual(native_mcp.superseded_builtins(registry), [])
 
 
+class TestShellSwitch(_Base):
+    """Filesystem access includes the shell unless the config file says otherwise."""
+
+    def setUp(self):
+        super().setUp()
+        from rikugan.tools import shell
+
+        self.registry.register_module(shell)
+        self.config.filesystem_access = True
+
+    def test_offered_by_default(self):
+        self.assertIn("run_shell", self._loop()._declared_tool_names())
+
+    def test_switched_off_it_is_not_offered(self):
+        self.config.filesystem_shell = False
+        loop = self._loop()
+        self.assertNotIn("run_shell", loop._declared_tool_names())
+        self.assertNotIn("run_shell", [t["function"]["name"] for t in loop._build_tools_schema(None, False)])
+        self.assertIn("read_file", loop._declared_tool_names())
+
+    def test_switched_off_it_is_refused_even_if_named(self):
+        self.config.filesystem_shell = False
+        marker = os.path.join(self.bin_dir, "ran")
+        _, result = self._call(self._loop(), "run_shell", command=f"touch {marker}")
+        self.assertTrue(result.is_error)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_the_first_use_prompt_mentions_the_shell(self):
+        self.config.filesystem_access = False
+        self._write("a.txt", "x")
+        events, _ = self._call(self._loop(), "read_file", answer="allow", file_path="a.txt")
+        self.assertIn("shell", self._asked(events)[0].text)
+
+    def test_a_shell_call_shows_its_command_when_asking(self):
+        self.config.filesystem_access = False
+        events, _ = self._call(self._loop(), "run_shell", answer="deny", command="make all")
+        self.assertIn("Run: make all", self._asked(events)[0].text)
+
+
+class TestStopReachesTheShell(_Base):
+    def test_cancelling_the_loop_stops_a_running_command(self):
+        import threading
+        import time
+
+        from rikugan.tools import shell
+
+        self.registry.register_module(shell)
+        self.config.filesystem_access = True
+        loop = self._loop()
+        threading.Timer(0.3, loop.cancel).start()
+        started = time.monotonic()
+        _, result = self._call(loop, "run_shell", command="sleep 30", timeout=60)
+        self.assertLess(time.monotonic() - started, 6)
+        self.assertIn("cancelled by the user", result.content)
+
+
+class TestLongToolsDoNotStarveOthers(unittest.TestCase):
+    def test_other_tools_run_while_long_ones_hold_their_threads(self):
+        import threading
+
+        from rikugan.tools.base import tool
+
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        @tool(category="x", long_running=True, timeout=10)
+        def slow() -> str:
+            """Hold a thread."""
+            release.wait(10)
+            return "done"
+
+        @tool(category="x", timeout=2)
+        def quick() -> str:
+            """Return at once."""
+            return "quick"
+
+        registry = ToolRegistry()
+        registry.register_function(slow)
+        registry.register_function(quick)
+        holders = [threading.Thread(target=registry.execute, args=("slow", {}), daemon=True) for _ in range(3)]
+        for holder in holders:
+            holder.start()
+        self.assertEqual(registry.execute("quick", {}), "quick")
+
+
 class TestOldResultsLastLonger(unittest.TestCase):
     def test_a_recent_file_read_keeps_its_budget(self):
         self.assertGreater(_result_limit("read_file", 1), 20_000)
@@ -407,6 +492,13 @@ class TestSystemPrompt(unittest.TestCase):
 
     def test_not_described_otherwise(self):
         self.assertNotIn("## Files on Disk", self._prompt(["decompile_function"]))
+
+    def test_the_shell_is_only_described_when_it_is_offered(self):
+        self.assertNotIn("## Shell Commands", self._prompt(["read_file"]))
+        self.assertIn("## Shell Commands", self._prompt(["read_file", "run_shell"]))
+
+    def test_the_rule_against_running_the_binary_names_the_shell(self):
+        self.assertIn("run_shell included", self._prompt(["decompile_function"]))
 
     def test_warns_against_instructions_inside_results(self):
         self.assertIn("<tool_result>", self._prompt(["read_file"]))

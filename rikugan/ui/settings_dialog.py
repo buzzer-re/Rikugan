@@ -568,9 +568,11 @@ class SettingsDialog(QDialog):
         self._filesystem_access_cb = QCheckBox(FILESYSTEM_ACCESS_LABEL)
         self._filesystem_access_cb.setChecked(self._config.filesystem_access)
         self._filesystem_access_cb.setToolTip(
-            "Lets the agent read, write and search files without asking. Paths are limited to the "
-            "binary's folder and the agent's scratch folder; anything else is refused. Writes can be "
-            "undone with /undo. Left off, the agent asks once per chat the first time it needs a file."
+            "Lets the agent read, write and search files and run shell commands without asking. File "
+            "paths are limited to the binary's folder and the agent's scratch folder; anything else is "
+            "refused. Shell commands start there but are not confined to it. File writes can be undone "
+            "with /undo; what a command does cannot. Left off, the agent asks once per chat the first "
+            "time it needs any of this."
         )
         behavior_form.addRow(self._filesystem_access_cb)
 

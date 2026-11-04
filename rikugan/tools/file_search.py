@@ -106,7 +106,7 @@ def _capture_bounded(argv: list[str], cwd: str) -> tuple[bytes, str, int | None,
     size = 0
     try:
         assert process.stdout is not None
-        while chunk := process.stdout.read(_READ_CHUNK):
+        while chunk := os.read(process.stdout.fileno(), _READ_CHUNK):
             chunks.append(chunk)
             size += len(chunk)
             if size >= _MAX_OUTPUT_BYTES:
@@ -299,6 +299,7 @@ def _file_access() -> FileAccess:
 @tool(
     category=FILESYSTEM_CATEGORY,
     timeout=_SEARCH_SECONDS + 5,
+    long_running=True,
     result_limit=INLINE_RESULT_BUDGET,
     description=(
         "Search files with a regular expression, or list files. mode='content' (default) gives "
