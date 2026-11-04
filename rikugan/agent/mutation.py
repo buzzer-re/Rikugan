@@ -2,24 +2,14 @@
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
 from typing import Any
 
 from ..core.logging import log_debug
+from ..core.types import MutationRecord
 
-
-@dataclass
-class MutationRecord:
-    """Records a single mutation for undo capability."""
-
-    tool_name: str
-    arguments: dict[str, Any]
-    reverse_tool: str
-    reverse_arguments: dict[str, Any]
-    timestamp: float = field(default_factory=time.time)
-    description: str = ""
-    reversible: bool = True
+# Re-exported: the record itself lives in core.types so SessionState can hold
+# one without importing the agent package.
+__all__ = ["MutationRecord", "build_reverse_record", "capture_pre_state"]
 
 
 # ---------------------------------------------------------------------------

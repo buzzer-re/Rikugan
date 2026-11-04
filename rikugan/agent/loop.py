@@ -390,7 +390,7 @@ class AgentLoop:
         )
 
         # Mutation log for /undo support
-        self._mutation_log: list[MutationRecord] = []
+        # Delegated to the session — see the property below.
 
         # Exploration mode state (populated when /modify or /explore is used)
         self._exploration_state: ExplorationState | None = None
@@ -406,6 +406,16 @@ class AgentLoop:
     # the user sends queues behind a turn that will not end today, so past
     # this the turn fails and says when it can be tried again.
     _MAX_RETRY_BACKOFF_SECONDS = 60.0
+
+    @property
+    def _mutation_log(self) -> list[MutationRecord]:
+        """The chat's mutation log.
+
+        A loop is constructed for every user message, so a log owned here
+        would be empty each time it was read — including by /undo, which is
+        itself a user message. The session outlives the loop, so it holds it.
+        """
+        return self.session.mutation_log
 
     @property
     def is_running(self) -> bool:

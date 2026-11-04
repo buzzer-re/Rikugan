@@ -230,3 +230,24 @@ def parse_save_decision(raw: str) -> UserAnswer:
     if text in _SAVE_WORDS:
         return UserAnswer(UserDecision.SAVE)
     return UserAnswer(UserDecision.DISCARD)
+
+
+@dataclass
+class MutationRecord:
+    """A single mutation, and how to put it back.
+
+    Lives here rather than in ``agent.mutation`` so it can be held by
+    ``SessionState`` without the state layer importing the agent, and so it
+    falls under the type checker.
+    """
+
+    tool_name: str
+    arguments: dict[str, Any]
+    reverse_tool: str
+    reverse_arguments: dict[str, Any]
+    timestamp: float = field(default_factory=time.time)
+    description: str = ""
+    reversible: bool = True
+    # Why the reverse could not be worked out, when it could not be. Shown on
+    # the mutation row so the user learns at the time, not at undo time.
+    irreversible_reason: str = ""

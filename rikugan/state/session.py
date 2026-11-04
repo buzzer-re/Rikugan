@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 
 from ..core.logging import log_debug
 from ..core.sanitize import strip_injection_markers
-from ..core.types import Message, Role, TokenUsage, ToolResult
+from ..core.types import Message, MutationRecord, Role, TokenUsage, ToolResult
 
 # ---------- Token estimation ----------
 
@@ -78,6 +78,12 @@ class SessionState:
     idb_path: str = ""
     db_instance_id: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+    # Mutations made in this chat, newest last. Lives here rather than on
+    # AgentLoop because a loop is built fresh for every user message — and
+    # /undo is itself a user message, so a loop-local log is always empty by
+    # the time it is read. Not serialized: SessionHistory writes fields
+    # explicitly, and a reverse call only makes sense against a live database.
+    mutation_log: list[MutationRecord] = field(default_factory=list)
     # Subagent message logs, keyed by the spawn_subagent tool_call_id.
     # Stored separately from main messages to avoid burning context tokens.
     subagent_logs: dict[str, list[Message]] = field(default_factory=dict)

@@ -83,6 +83,10 @@ class SubagentRunner:
         from .loop import AgentLoop  # deferred to avoid circular import
 
         session = SessionState()
+        # Share the parent's mutation log so a subagent's renames are undoable
+        # too; its own session is discarded when it finishes.
+        if self._parent_loop is not None:
+            session.mutation_log = self._parent_loop.session.mutation_log
         self._last_session = session
         loop = AgentLoop(
             provider=self.provider,
@@ -147,6 +151,10 @@ class SubagentRunner:
         from .loop import AgentLoop  # deferred to avoid circular import
 
         session = SessionState()
+        # Share the parent's mutation log so a subagent's renames are undoable
+        # too; its own session is discarded when it finishes.
+        if self._parent_loop is not None:
+            session.mutation_log = self._parent_loop.session.mutation_log
         session.idb_path = idb_path
         self._last_session = session
         if prior_context:
