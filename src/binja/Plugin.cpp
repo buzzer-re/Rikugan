@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <vector>
 
 #include <QFileInfo>
@@ -107,6 +108,17 @@ QWidget* fullWindowTab(UIContext* ui) {
     return nullptr;
 }
 
+// A Binary Ninja window for UI work started outside a click: the active one, which is null while another program has
+// the focus, else the one showing Rikugan, else any.
+UIContext* someWindow() {
+    if (UIContext* ui = UIContext::activeContext()) return ui;
+    for (const QPointer<rk::PanelCore>& p : g_panels)
+        if (p)
+            if (UIContext* ui = UIContext::contextForWidget(p)) return ui;
+    const std::set<UIContext*> all = UIContext::allContexts();
+    return all.empty() ? nullptr : *all.begin();
+}
+
 // open_database: Binary Ninja opens a file's tab asynchronously (a large binary loads after
 // openFilename returns), so the tool waits for OnAfterOpenFile to hand over the new tab's database, by file path.
 struct PendingTabs {
@@ -147,7 +159,7 @@ void showLocation(const std::shared_ptr<rk::DbContext>& db, uint64_t offset) {
 // The panel's "Open a binary…" and recent chats: a tab already showing that database comes to the front.
 bool openInBinja(QWidget* anchor, const QString& file, const QString& dbId) {
     UIContext* ui = UIContext::contextForWidget(anchor);
-    if (!ui) ui = UIContext::activeContext();
+    if (!ui) ui = someWindow();
     if (!ui) return false;
     if (!dbId.isEmpty())
         for (QWidget* tab : ui->getTabs()) {
@@ -314,7 +326,7 @@ void closeFullWindow(QWidget* host) {
 // the Rikugan sidebar closes: one panel shows the chat. A tab already showing that database comes to the front.
 void openFullWindow(QWidget* from, const std::shared_ptr<rk::DbContext>& db) {
     UIContext* ui = from ? UIContext::contextForWidget(from) : nullptr;
-    if (!ui) ui = UIContext::activeContext();
+    if (!ui) ui = someWindow();
     if (!ui) return;
     registerTabs(ui);
     // one full-window tab per window: its manager reaches every database's chats
@@ -414,10 +426,11 @@ BINARYNINJAPLUGIN bool UIPluginInit() {
             g_pendingTabs.opened[key] = nullptr;
         }
         std::shared_ptr<rk::DbContext> db;
-        bool started = false;
+        bool window = false, started = false;
         ExecuteOnMainThreadAndWait([&] {
-            UIContext* ui = UIContext::activeContext();
+            UIContext* ui = someWindow();
             if (!ui) return;
+            window = true;
             // a tab already showing it
             for (QWidget* tab : ui->getTabs()) {
                 ViewFrame* frame = ui->getViewFrameForTab(tab);
@@ -442,7 +455,8 @@ BINARYNINJAPLUGIN bool UIPluginInit() {
             g_pendingTabs.opened.erase(key);
         }
         if (!db && error)
-            *error = !started                      ? QStringLiteral("Binary Ninja did not open it")
+            *error = !window                       ? QStringLiteral("no Binary Ninja window to open it in")
+                     : !started                    ? QStringLiteral("Binary Ninja refused to open it (see its log)")
                      : token && token->cancelled() ? QStringLiteral("cancelled while Binary Ninja was loading it")
                                                    : QStringLiteral("Binary Ninja is still loading it after 10 minutes");
         return db;
