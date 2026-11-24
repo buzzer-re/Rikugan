@@ -104,7 +104,6 @@ QString databaseLine(const DbContext& db, const QString& self) {
     const QString path = db.host->databasePath().isEmpty() ? db.host->inputPath() : db.host->databasePath();
     QString line = QStringLiteral("- %1  %2  (%3)").arg(db.dbId, QFileInfo(path).fileName(), path);
     if (db.dbId == self) line += QStringLiteral("  [this chat's database]");
-    else if (databases::openedByRikugan(db.dbId)) line += QStringLiteral("  [opened by Rikugan, not shown in a tab]");
     return sanitize::stripInjectionMarkers(line);
 }
 
@@ -119,28 +118,22 @@ ToolResult openDatabase(ToolCall& call) {
     ChatContext& chat = chatOf(call);
     const QString path = QFileInfo(expandHome(call.str("path").trimmed())).absoluteFilePath();
     if (call.str("path").trimmed().isEmpty()) return ToolResult::error(QStringLiteral("Error: 'path' is required."));
-    const bool inTab = call.boolean("in_tab") && databases::canOpenTab();
-    // one loaded in the background still gets its tab when asked for one
-    if (auto open = databases::find(path); open && !(inTab && databases::openedByRikugan(open->dbId)))
+    if (auto open = databases::find(path))
         return ToolResult::ok(QStringLiteral("Already open:\n%1").arg(databaseLine(*open, chat.dbId)));
     if (!QFileInfo(path).isFile()) return ToolResult::error(QStringLiteral("Error: no such file: %1").arg(path));
     // the path comes from the model: the user says yes first
     if (!chat.ui) return ToolResult::error(QStringLiteral("Error: no user is attached to this chat to approve opening a file."));
     const QString open = QStringLiteral("Open it");
-    const QString how = inTab ? QStringLiteral("in a new tab") : QStringLiteral("as another database (analysed in the background, the current view stays as it is)");
     const UserAnswer a = chat.ui->askUser(
-        QStringLiteral("Rikugan wants to open %1 %2. Reason: %3")
-            .arg(path, how, call.str("reason").isEmpty() ? QStringLiteral("not given") : call.str("reason")),
+        QStringLiteral("Rikugan wants to open %1 in a new tab. Reason: %2")
+            .arg(path, call.str("reason").isEmpty() ? QStringLiteral("not given") : call.str("reason")),
         {open, QStringLiteral("Don't open")}, call.token());
     if (a.cancelled || a.text != open) return ToolResult::ok(QStringLiteral("The user declined to open %1.").arg(path));
     QString error;
-    const auto db = inTab ? databases::openTab(path, call.token(), &error) : databases::load(path, call.token(), &error);
+    const auto db = databases::openTab(path, call.token(), &error);
     if (!db) return ToolResult::error(QStringLiteral("Error: could not open %1: %2").arg(path, error));
-    if (inTab)
-        return ToolResult::ok(QStringLiteral("Opened in a new tab (its analysis runs in the background; the user can chat "
-                                             "there too):\n%1\nUse ask_database with this id to work on it.")
-                                  .arg(databaseLine(*db, chat.dbId)));
-    return ToolResult::ok(QStringLiteral("Opened and analysed:\n%1\nUse ask_database with this id to work on it.")
+    return ToolResult::ok(QStringLiteral("Opened in a new tab (its analysis runs in the background; the user can chat "
+                                         "there too):\n%1\nUse ask_database with this id to work on it.")
                               .arg(databaseLine(*db, chat.dbId)));
 }
 
@@ -164,15 +157,6 @@ ToolResult askDatabase(ToolCall& call) {
     ToolResult r = ToolResult::ok(sanitize::stripInjectionMarkers(out.text.isEmpty() ? QStringLiteral("(Subagent produced no output)") : out.text));
     r.details.insert(QStringLiteral("subagentId"), out.id);
     return r;
-}
-
-ToolResult closeDatabase(ToolCall& call) {
-    const QString id = call.str("database");
-    const auto db = databases::find(id);
-    if (!db || !databases::openedByRikugan(db->dbId))
-        return ToolResult::error(QStringLiteral("Error: '%1' is not a database Rikugan opened (the user's tabs stay open).").arg(id));
-    databases::close(db->dbId);
-    return ToolResult::ok(QStringLiteral("Closed %1.").arg(db->dbId));
 }
 
 ToolResult explorationReport(ToolCall& call) {
@@ -302,19 +286,17 @@ void registerChatTools(ToolRegistry& r) {
         0, 20000, researchNote});
     r.add(ToolSpec{
         "list_databases", "chat",
-        "List the databases open in this host: this chat's own, the user's other tabs, and the ones opened with "
-        "open_database. Each has an id for ask_database.",
+        "List the databases open in this host: this chat's own and the other tabs (the ones opened with open_database "
+        "too). Each has an id for ask_database.",
         {}, 0, 20000, listDatabases});
     r.add(ToolSpec{
         "open_database", "chat",
-        "Open a file on disk (a binary or a .bndb) as another database, to compare it with this one or study it on its "
-        "own. It opens in a new tab of the host's window, a view the user sees and can chat in; with in_tab false it is "
-        "analysed in the background with no tab instead. This chat's database is not touched. The user approves first. "
-        "Returns the database id; then use ask_database. Prefer this over loading files with execute_python.",
+        "Open a file on disk (a binary or a .bndb) in a new tab of the host's window, a view the user sees and can chat "
+        "in, to compare it with this one or study it on its own. Returns once the tab shows; its analysis goes on in the "
+        "background. This chat's database is not touched. The user approves first. Returns the database id; then use "
+        "ask_database. Prefer this over loading files with execute_python.",
         {ToolParam{"path", ToolParam::String, "Absolute path of the file to open.", {}, {}, {}},
-         ToolParam{"reason", ToolParam::String, "Why you need it (shown to the user).", QString(), {}, {}},
-         ToolParam{"in_tab", ToolParam::Boolean,
-                   "Open it in a new tab of the host's window (a view the user sees). False: in the background, no tab.", true, {}, {}}},
+         ToolParam{"reason", ToolParam::String, "Why you need it (shown to the user).", QString(), {}, {}}},
         Blocking | Exclusive, 20000, openDatabase});
     r.add(ToolSpec{
         "ask_database", "chat",
@@ -325,11 +307,6 @@ void registerChatTools(ToolRegistry& r) {
          ToolParam{"task", ToolParam::String, "What to find out there, with the names and addresses that matter.", {}, {}, {}},
          ToolParam{"max_turns", ToolParam::Integer, "Maximum turns for the subagent (default: 20).", 20, {}, {}}},
         Blocking, 20000, askDatabase});
-    r.add(ToolSpec{
-        "close_database", "chat",
-        "Close a database you opened with open_database when you no longer need it. The user's own tabs cannot be closed.",
-        {ToolParam{"database", ToolParam::String, "Database id from open_database.", {}, {}, {}}},
-        0, 20000, closeDatabase});
 }
 
 bool chatToolVisible(const ChatContext& chat, const QString& name) {
@@ -345,8 +322,8 @@ bool chatToolVisible(const ChatContext& chat, const QString& name) {
     if (name == QLatin1String("spawn_subagent")) return chat.depth == 0;
     // a host that opens a second database (Binary Ninja); a subagent on another database does not branch further
     if (name == QLatin1String("list_databases") || name == QLatin1String("open_database") ||
-        name == QLatin1String("ask_database") || name == QLatin1String("close_database"))
-        return chat.depth == 0 && databases::canLoad();
+        name == QLatin1String("ask_database"))
+        return chat.depth == 0 && databases::canOpenTab();
     if (name == QLatin1String("exploration_report") || name == QLatin1String("research_note")) return chat.toolShown(name);
     return true;
 }

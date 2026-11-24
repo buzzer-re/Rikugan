@@ -15,8 +15,7 @@ class BnPython;
 
 class BnHost : public rk::Host {
 public:
-    // ownsFile: a view Rikugan loaded itself (open_database, no tab); its file closes with the host
-    explicit BnHost(BinaryNinja::Ref<BinaryNinja::BinaryView> view, bool ownsFile = false);
+    explicit BnHost(BinaryNinja::Ref<BinaryNinja::BinaryView> view);
     ~BnHost() override;
 
     BnHost(const BnHost&) = delete;
@@ -57,7 +56,6 @@ private:
     BnPython& python();
 
     BinaryNinja::Ref<BinaryNinja::BinaryView> view_;
-    bool ownsFile_ = false;
     std::atomic<bool> hasLocation_{false};
     std::atomic<uint64_t> location_{0};
     std::mutex idMu_;

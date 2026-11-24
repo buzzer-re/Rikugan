@@ -19,15 +19,10 @@ constexpr const char* kInstanceIdKey = "rikugan_db_id";
 
 }  // namespace
 
-BnHost::BnHost(Ref<BinaryView> view, bool ownsFile) : view_(std::move(view)), ownsFile_(ownsFile) {}
+BnHost::BnHost(Ref<BinaryView> view) : view_(std::move(view)) {}
 
 BnHost::~BnHost() {
     python_.reset();  // its interpreter holds the view
-    if (ownsFile_ && view_) {
-        Ref<FileMetadata> file = view_->GetFile();
-        view_ = nullptr;
-        if (file) file->Close();  // the views and their analysis go with it
-    }
 }
 
 void BnHost::setCurrentLocation(uint64_t addr) {

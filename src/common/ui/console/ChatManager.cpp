@@ -104,8 +104,6 @@ void ChatManager::refresh() {
     QList<PaletteEntry> entries;
     sectionDb_.clear();
     for (const std::shared_ptr<DbContext>& db : databases::all()) {
-        // the ones open_database loaded have no view: their chats are the agents' (Agents, Ctrl+J)
-        if (databases::openedByRikugan(db->dbId)) continue;
         const QString path = db->host->databasePath().isEmpty() ? db->host->inputPath() : db->host->databasePath();
         QString section = QFileInfo(path).fileName();
         if (section.isEmpty()) section = db->dbId;

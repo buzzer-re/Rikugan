@@ -107,7 +107,7 @@ QWidget* fullWindowTab(UIContext* ui) {
     return nullptr;
 }
 
-// open_database with in_tab: Binary Ninja opens a file's tab asynchronously (a large binary loads after
+// open_database: Binary Ninja opens a file's tab asynchronously (a large binary loads after
 // openFilename returns), so the tool waits for OnAfterOpenFile to hand over the new tab's database, by file path.
 struct PendingTabs {
     std::mutex mu;
@@ -405,20 +405,7 @@ BINARYNINJAPLUGIN bool UIPluginInit() {
             {"synMeta", getThemeColor(DataSymbolColor)},
         };
     });
-    // open_database: the file is analysed in the background, with no tab, so the user's view and the panel's chats
-    // stay where they are
-    rk::databases::setLoader([](const QString& path, const std::shared_ptr<rk::CancelToken>& token,
-                                QString* error) -> std::shared_ptr<rk::DbContext> {
-        Ref<BinaryView> bv = Load(path.toStdString(), true, "{}", [token](size_t, size_t) { return !(token && token->cancelled()); });
-        if (!bv) {
-            if (error) *error = token && token->cancelled() ? QStringLiteral("cancelled") : QStringLiteral("Binary Ninja could not load it");
-            return nullptr;
-        }
-        std::shared_ptr<rk::DbContext> db;
-        ExecuteOnMainThreadAndWait([&] { db = rk::DbContext::create(std::make_unique<rk::binja::BnHost>(bv, true)); });
-        return db;
-    });
-    // open_database with in_tab: a tab of the user's, opened on the main thread; the full-window chats stay in front
+    // open_database: a new tab of the user's, opened on the main thread; the full-window chats stay in front
     rk::databases::setTabOpener([](const QString& path, const std::shared_ptr<rk::CancelToken>& token,
                                    QString* error) -> std::shared_ptr<rk::DbContext> {
         const QString key = samePath(path);

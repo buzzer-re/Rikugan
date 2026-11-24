@@ -179,10 +179,10 @@ omc frames -> SessionListener -> EventQueue -> ChatSession::frame -> TranscriptM
   open are answered "cancelled" so nothing keeps the composer locked.
 - A queued message's **Send now** stops the run and sends that message first, the rest after it.
 - **Other databases** (`agent/Databases.h`, Binary Ninja): every `DbContext` registers itself. `list_databases`
-  lists them, `open_database` loads a file in the background with `BinaryNinja::Load` (no tab, so the user's view and
-  the panel's chats stay put; the user approves the path first), `ask_database` runs a subagent on another database
-  with that database's tools in a read-only phase and its own undo list, and `close_database` closes what Rikugan
-  opened. They are offered only where the host can load a second database, and not to subagents.
+  lists them, `open_database` opens a file in a new tab (`databases::setTabOpener`: `UIContext::openFilename`, then
+  waits for that file's `OnAfterOpenFile`; the user approves the path first), and `ask_database` runs a subagent on
+  another database with that database's tools in a read-only phase and its own undo list. They are offered only where
+  the host can open another tab, and not to subagents.
 - A session omc refused to start (no model yet) is opened again on the next prompt, so a model connected afterwards
   works without restarting the host. Logins and keys reach omc at once: Rikugan makes it re-read `auth.json`.
 - Each typed prompt gets a `<rikugan_context>` block (cursor address, function) unless `auto_context` is off or the

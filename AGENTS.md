@@ -115,7 +115,8 @@ Full window: the header's expand button (`PanelCore::setWindowToggle`) moves the
 (Binary Ninja: a tab of its own, the Rikugan sidebar closes; IDA: the dock tabbed beside the disassembly) and shows
 `ChatManager` at its right: every open database's chats (`databases::all()`), refreshed on `ChatHub::chatsChanged` /
 `databasesChanged`. Choosing a chat turns the panel to its database. Binary Ninja registers every tab's database while
-the full-window tab is open, and `open_database` opens a file in a new tab by default (`in_tab`; `databases::setTabOpener`, which waits for Binary Ninja's asynchronous `OnAfterOpenFile`).
+the full-window tab is open, and `open_database` opens a file in a new tab (`databases::setTabOpener`,
+which waits for Binary Ninja's asynchronous `OnAfterOpenFile`).
 
 ## Commands and Modes
 

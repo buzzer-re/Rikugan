@@ -53,7 +53,7 @@ Skills live in `skills/<slug>/` and are not listed here. Their frontmatter `name
   - `{{notes_dir}}` = absolute path of the research notes directory (`<binary dir>/notes`).
 - `system/shell.md` — section, added after `filesystem.md` when `bash` is enabled. No placeholders.
 - `system/databases.md` — section, added when the host can open a second database (Binary Ninja) and the chat is not a
-  subagent: `list_databases`, `open_database`, `ask_database`, `close_database`. No placeholders.
+  subagent: `list_databases`, `open_database`, `ask_database`. No placeholders.
 - `system/host_mcp.md` — section, added when the user switched the database to the host's own MCP tools (Binary
   Ninja's MCP server, `HostMcp`) and the server listed tools.
   - `{{server}}` = the host's name (`Binary Ninja`).

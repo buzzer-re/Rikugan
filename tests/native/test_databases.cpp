@@ -1,6 +1,5 @@
-// The databases a chat can reach beyond its own: open_database asks first and opens through the host's loader,
-// list_databases shows them, close_database closes only what Rikugan opened, and every database is found by id
-// or by file path.
+// The databases a chat can reach beyond its own: open_database asks first and opens the file in a host tab,
+// list_databases shows them, and every database is found by id or by file path.
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -60,14 +59,14 @@ class DatabasesTest : public QObject {
     }
 
 private Q_SLOTS:
-    void openAsksThenLoadsAndCloseKeepsUserTabs() {
+    void openAsksThenOpensATab() {
         const auto mine = makeDb("dbs-mine", touch("mine.bndb"));
         const auto userTab = makeDb("dbs-tab", touch("tab.bndb"));
         const QString other = touch("other.elf");
-        int loads = 0;
-        rk::databases::setLoader([&](const QString& path, const std::shared_ptr<rk::CancelToken>&, QString*) {
-            ++loads;
-            return makeDb("dbs-loaded", path);
+        std::vector<std::shared_ptr<rk::DbContext>> tabs;  // the host holds its tabs' databases
+        rk::databases::setTabOpener([&](const QString& path, const std::shared_ptr<rk::CancelToken>&, QString*) {
+            tabs.push_back(makeDb("dbs-opened", path));
+            return tabs.back();
         });
 
         auto ui = std::make_shared<FakeUi>();
@@ -84,30 +83,25 @@ private Q_SLOTS:
 
         ui->reply = "Don't open";
         QVERIFY(run("open_database", {{"path", other}}).contains("declined"));
-        QCOMPARE(loads, 0);
+        QVERIFY(tabs.empty());
         QCOMPARE(ui->asked.size(), 1);
 
         ui->reply = "Open it";
-        QVERIFY(run("open_database", {{"path", other}}).contains("dbs-loaded"));
-        QCOMPARE(loads, 1);
-        // the same file again: already open, no second load and no second question
+        const QString opened = run("open_database", {{"path", other}});
+        QVERIFY2(opened.contains("dbs-opened") && opened.contains("new tab"), qPrintable(opened));
+        QCOMPARE(tabs.size(), size_t(1));
+        // the same file again: already open, no second tab and no second question
         QVERIFY(run("open_database", {{"path", other}}).contains("Already open"));
-        QCOMPARE(loads, 1);
+        QCOMPARE(tabs.size(), size_t(1));
         QCOMPARE(ui->asked.size(), 2);
 
         const QString list = run("list_databases", {});
         QVERIFY2(list.contains("dbs-mine") && list.contains("this chat's database"), qPrintable(list));
-        QVERIFY(list.contains("dbs-tab"));
-        QVERIFY(list.contains("dbs-loaded") && list.contains("opened by Rikugan"));
-        QCOMPARE(rk::databases::find(other)->dbId, QString("dbs-loaded"));  // by path too
-
-        QVERIFY_THROWS_EXCEPTION(rk::ToolError, run("close_database", {{"database", "dbs-tab"}}));
+        QVERIFY(list.contains("dbs-tab") && list.contains("dbs-opened"));
+        QCOMPARE(rk::databases::find(other)->dbId, QString("dbs-opened"));  // by path too
         QVERIFY_THROWS_EXCEPTION(rk::ToolError, run("ask_database", {{"database", "dbs-mine"}, {"task", "x"}}));
-        QVERIFY(run("close_database", {{"database", "dbs-loaded"}}).contains("Closed"));
-        QVERIFY(!rk::databases::find("dbs-loaded"));
-        QVERIFY(rk::databases::find("dbs-tab"));
 
-        rk::databases::setLoader(nullptr);
+        rk::databases::setTabOpener(nullptr);
     }
 };
 RK_TEST(DatabasesTest)
