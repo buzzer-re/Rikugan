@@ -161,6 +161,13 @@ void paintKind(QPainter& p, const QString& kind, const QColor& c, int s) {
         p.drawLine(QPointF(m - 1, m + 1), QPointF(2.5, s - 2.5));
         p.drawLine(QPointF(2.5, s - 6.5), QPointF(2.5, s - 2.5));
         p.drawLine(QPointF(2.5, s - 2.5), QPointF(6.5, s - 2.5));
+    } else if (kind == QLatin1String("collapse")) {  // two arrows in from the corners: back to the smaller view
+        p.drawLine(QPointF(s - 2.5, 2.5), QPointF(m + 1, m - 1));
+        p.drawLine(QPointF(m + 1, m - 5), QPointF(m + 1, m - 1));
+        p.drawLine(QPointF(m + 1, m - 1), QPointF(m + 5, m - 1));
+        p.drawLine(QPointF(2.5, s - 2.5), QPointF(m - 1, m + 1));
+        p.drawLine(QPointF(m - 5, m + 1), QPointF(m - 1, m + 1));
+        p.drawLine(QPointF(m - 1, m + 1), QPointF(m - 1, m + 5));
     } else if (kind == QLatin1String("search")) {  // a magnifier
         p.drawEllipse(QPointF(m - 1.2, m - 1.2), m - 4, m - 4);
         p.drawLine(QPointF(m + 2, m + 2), QPointF(s - 2.5, s - 2.5));

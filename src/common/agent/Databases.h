@@ -33,9 +33,17 @@ void setLoader(Loader loader);
 bool canLoad();
 // Loads `path` (or returns the database already open for it) and keeps it alive.
 std::shared_ptr<DbContext> load(const QString& path, const std::shared_ptr<CancelToken>& token, QString* error);
+
+// How the host opens a file in a tab of its window (a view of the user's, with its own chats): on a tool worker.
+// Hosts with one database per window (IDA) set none.
+using TabOpener = std::function<std::shared_ptr<DbContext>(const QString& path, QString* error)>;
+void setTabOpener(TabOpener opener);
+bool canOpenTab();
+// Opens `path` in a host tab (or returns the tab already showing it).
+std::shared_ptr<DbContext> openTab(const QString& path, QString* error);
 // Releases a database load() opened; false for any other.
 bool close(const QString& dbId);
-// Plugin shutdown: releases every loaded database.
+// Plugin shutdown: releases every loaded database (and forgets the loader and the tab opener).
 void releaseAll();
 
 }  // namespace databases

@@ -29,6 +29,7 @@
 #include "common/agent/ChatExport.h"
 #include "common/agent/ChatSession.h"
 #include "common/agent/CommandRouter.h"
+#include "common/agent/Databases.h"
 #include "common/agent/DbContext.h"
 #include "common/agent/RecentSessions.h"
 #include "common/agent/Skills.h"
@@ -43,6 +44,7 @@
 #include "common/ui/console/ActivityStrip.h"
 #include "common/ui/console/AgentsPanel.h"
 #include "common/ui/console/Composer.h"
+#include "common/ui/console/ChatManager.h"
 #include "common/ui/console/ConsoleHeader.h"
 #include "common/ui/console/HostMcpBar.h"
 #include "common/ui/console/GetStarted.h"
@@ -77,15 +79,6 @@ QString modelOf(const QJsonObject& state) {
     return provider.isEmpty() ? id : provider + QLatin1Char('/') + id;
 }
 
-QString relativeTime(qint64 ms) {
-    if (!ms) return {};
-    const qint64 s = (QDateTime::currentMSecsSinceEpoch() - ms) / 1000;
-    if (s < 60) return QStringLiteral("just now");
-    if (s < 3600) return QStringLiteral("%1m ago").arg(s / 60);
-    if (s < 86400) return QStringLiteral("%1h ago").arg(s / 3600);
-    return QDateTime::fromMSecsSinceEpoch(ms).toString(QStringLiteral("MMM d"));
-}
-
 }  // namespace
 
 struct PanelCore::Impl {
@@ -98,6 +91,7 @@ struct PanelCore::Impl {
     QString current;  // chat id; empty: no chat (the welcome screen)
 
     ConsoleHeader* header = nullptr;
+    ChatManager* manager = nullptr;  // the full-window panel's list of every database's chats
     ActivityStrip* strip = nullptr;
     QStackedWidget* pages = nullptr;
     QSplitter* split = nullptr;
@@ -166,6 +160,7 @@ struct PanelCore::Impl {
 
     // ---- chrome for the current chat ----
     void syncChrome() {
+        manager->setCurrent(db ? db->dbId : QString(), current);
         if (pages->currentIndex() == kSetupPage) return;  // its own title; the chat's chrome comes back when it closes
         if (!agentId.isEmpty()) return syncAgentChrome();
         ChatSession* c = chat();
@@ -229,11 +224,7 @@ struct PanelCore::Impl {
     // A row of the no-database welcome: the file dialog, or a recent chat's file (its chat opens with it).
     void openFromWelcome(const QString& key) {
         if (!opener || db) return;
-        if (key == kOpenKey) {
-            const QString file = QFileDialog::getOpenFileName(q, QObject::tr("Open a binary"));
-            if (!file.isEmpty()) opener(file, {});
-            return;
-        }
+        if (key == kOpenKey) return openFile();
         bool ok = false;
         const qsizetype i = key.toLongLong(&ok);
         if (!ok || i < 0 || i >= recent.size()) return;
@@ -341,6 +332,30 @@ struct PanelCore::Impl {
         selectChat(s->chatId());
         composer->focusInput();
         return s;
+    }
+
+    // A chat from the manager, of any open database: the panel turns to that database and shows it (empty chatId: a
+    // new chat there).
+    void showChatOf(const QString& dbId, const QString& chatId) {
+        const std::shared_ptr<DbContext> target = databases::find(dbId);
+        if (!target) return;
+        if (target != db) {
+            pendingDb = dbId;
+            pendingChat = chatId;  // restoreChats opens it
+            q->setDatabase(target);
+        } else if (!chatId.isEmpty()) {
+            if (!chats().contains(chatId))
+                if (const ChatEntry* e = db->chats->find(chatId)) addChat(*e);
+            selectChat(chatId);
+        }
+        if (chatId.isEmpty()) newChat();
+    }
+
+    // "Open a binary…" from the manager.
+    void openFile() {
+        if (!opener) return;
+        const QString file = QFileDialog::getOpenFileName(q, QObject::tr("Open a binary"));
+        if (!file.isEmpty()) opener(file, {});
     }
 
     // A deleted chat: it closes for good.
@@ -853,7 +868,16 @@ struct PanelCore::Impl {
 void PanelCore::Impl::build() {
     q->setObjectName(QStringLiteral("rk_root"));
     q->setAttribute(Qt::WA_StyledBackground);
-    auto* layout = new QVBoxLayout(q);
+    // the chat column, and the chat manager at its right (full window only)
+    auto* outer = new QHBoxLayout(q);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+    auto* column = new QWidget(q);
+    outer->addWidget(column, 1);
+    manager = new ChatManager(q);
+    manager->hide();
+    outer->addWidget(manager);
+    auto* layout = new QVBoxLayout(column);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
@@ -970,6 +994,11 @@ void PanelCore::Impl::build() {
     });
     QObject::connect(welcome, &WelcomeView::openRequested, q, [this](const QString& key) { openFromWelcome(key); });
 
+    QObject::connect(manager, &ChatManager::chatActivated, q, [this](const QString& dbId, const QString& chatId) {
+        showChatOf(dbId, chatId);
+    });
+    QObject::connect(manager, &ChatManager::newChatRequested, q, [this](const QString& dbId) { showChatOf(dbId, {}); });
+    QObject::connect(manager, &ChatManager::openRequested, q, [this] { openFile(); });
     QObject::connect(agents, &AgentsPanel::closeRequested, q, [this] { toggleAgents(false); });
     QObject::connect(agents, &AgentsPanel::summaryForChat, q, [this](const QString& t) { submit(t); });
     QObject::connect(agents, &AgentsPanel::openChatRequested, q, [this](const QString& id) { openAgentChat(id); });
@@ -1140,10 +1169,15 @@ void PanelCore::addToBulkRenamer(const QList<quint64>& functionAddresses) {
 
 void PanelCore::showTools() { d->pages->setCurrentIndex(1); }
 
-void PanelCore::setFullWindowOpener(std::function<void()> open) {
-    QObject::disconnect(d->header, &ConsoleHeader::fullWindowRequested, this, nullptr);
-    d->header->setFullWindowShown(bool(open));
-    if (open) QObject::connect(d->header, &ConsoleHeader::fullWindowRequested, this, std::move(open));
+void PanelCore::setManagerShown(bool shown) {
+    d->manager->setCanOpen(bool(d->opener));
+    d->manager->setVisible(shown);
+}
+
+void PanelCore::setWindowToggle(bool fullWindow, std::function<void()> toggle) {
+    QObject::disconnect(d->header, &ConsoleHeader::windowToggleRequested, this, nullptr);
+    d->header->setWindowToggle(bool(toggle), fullWindow);
+    if (toggle) QObject::connect(d->header, &ConsoleHeader::windowToggleRequested, this, std::move(toggle));
 }
 
 void PanelCore::openSettings() {

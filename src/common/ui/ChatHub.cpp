@@ -37,8 +37,11 @@ LiveChat& ChatHub::add(const std::shared_ptr<DbContext>& db, const ChatEntry& en
         it->state = st;
         Q_EMIT stateChanged(chatId);
     });
+    connect(s, &ChatSession::busyChanged, this, &ChatHub::chatsChanged);
+    connect(s, &ChatSession::entryChanged, this, &ChatHub::chatsChanged);
     LiveChat& c = chats_[dbId][chatId];
     c = LiveChat{s, m, {}};
+    Q_EMIT chatsChanged();
     return c;
 }
 
@@ -47,6 +50,7 @@ void ChatHub::remove(const QString& dbId, const QString& chatId) {
     if (current_.value(dbId) == chatId) current_.remove(dbId);
     if (c.model) c.model->deleteLater();
     if (c.session) c.session->deleteLater();
+    Q_EMIT chatsChanged();
 }
 
 void ChatHub::closeDatabase(const QString& dbId) {
@@ -58,6 +62,7 @@ void ChatHub::closeDatabase(const QString& dbId) {
         delete c.model;
         delete c.session;
     }
+    Q_EMIT chatsChanged();
 }
 
 void ChatHub::settingsChanged() {

@@ -49,10 +49,15 @@ public:
     void closeAll();
     // Settings were saved: every chat takes them (ChatSession::settingsChanged).
     void settingsChanged();
+    // The host opened or closed a database (the chat manager lists every open one).
+    void notifyDatabasesChanged() { Q_EMIT databasesChanged(); }
 
 Q_SIGNALS:
     // A chat's state changed (the panel showing it updates its chrome).
     void stateChanged(const QString& chatId);
+    // A chat came or went, started or stopped working, or was renamed.
+    void chatsChanged();
+    void databasesChanged();
 
 private:
     explicit ChatHub(QObject* parent);

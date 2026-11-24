@@ -4,6 +4,7 @@
 
 #include <QPointer>
 #include <QString>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -150,11 +151,35 @@ struct RikuganPlugmod : public plugmod_t, public event_listener_t {
             panel = new rk::PanelCore(w);
             layout->addWidget(panel);
             panel->setDatabase(db);
+            setFullWindow(false, false);
             display_widget(widget, WOPN_DP_TAB | WOPN_RESTORE | WOPN_PERSIST);
         } else {
             activate_widget(widget, true);
         }
         return panel.data();
+    }
+
+    // The full-window view: the panel as a tab beside the disassembly, as large as IDA's main area, with the chat
+    // manager at its right; back: docked at the disassembly's right. `move`: false only to set the header button.
+    void setFullWindow(bool full, bool move = true) {
+        if (!panel) return;
+        if (move && widget) {
+            const char* dest = nullptr;
+            for (const char* name : {"IDA View-A", "Pseudocode-A", "Hex View-1"})
+                if (find_widget(name)) {
+                    dest = name;
+                    break;
+                }
+            if (dest) set_dock_pos(kTitle, dest, full ? DP_TAB : DP_RIGHT);
+            activate_widget(widget, true);
+        }
+        panel->setManagerShown(full);
+        // the click comes from the panel's own header: the move happens once it has returned
+        panel->setWindowToggle(full, [this, full] {
+            QTimer::singleShot(0, rk::uiAnchor(), [full] {
+                if (g_mod) g_mod->setFullWindow(!full);
+            });
+        });
     }
 
     void togglePanel() {

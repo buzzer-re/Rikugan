@@ -35,7 +35,6 @@ ConsoleHeader::ConsoleHeader(QWidget* parent) : QWidget(parent) {
     row->addWidget(mcp_);
     full_ = new QToolButton(this);
     full_->setIconSize(QSize(12, 12));
-    full_->setToolTip(tr("Open in full window"));
     full_->setCursor(Qt::PointingHandCursor);
     full_->hide();
     row->addWidget(full_);
@@ -75,7 +74,7 @@ ConsoleHeader::ConsoleHeader(QWidget* parent) : QWidget(parent) {
     connect(palette_, &QToolButton::clicked, this, &ConsoleHeader::paletteRequested);
     connect(add_, &QToolButton::clicked, this, &ConsoleHeader::newChatRequested);
     connect(mcp_, &QToolButton::clicked, this, &ConsoleHeader::hostMcpClicked);
-    connect(full_, &QToolButton::clicked, this, &ConsoleHeader::fullWindowRequested);
+    connect(full_, &QToolButton::clicked, this, &ConsoleHeader::windowToggleRequested);
     connect(&ThemeNotifier::instance(), &ThemeNotifier::changed, this, &ConsoleHeader::restyle);
     restyle();
     setTitle(tr("New chat"));
@@ -127,9 +126,11 @@ void ConsoleHeader::setHostMcp(bool shown, bool on, bool busy, const QString& to
     fit();
 }
 
-void ConsoleHeader::setFullWindowShown(bool shown) {
+void ConsoleHeader::setWindowToggle(bool shown, bool full) {
+    fullWindow_ = full;
+    full_->setToolTip(full ? tr("Back to the sidebar") : tr("Open in full window"));
     full_->setVisible(shown);
-    fit();
+    restyle();
 }
 
 QWidget* ConsoleHeader::titleButton() const { return title_; }
@@ -142,7 +143,7 @@ void ConsoleHeader::restyle() {
     title_->setIcon(kindIcon(titleIcon_, t.fg));
     palette_->setFont(t.uiSmall);
     palette_->setIcon(kindIcon(QStringLiteral("search"), t.fg2));
-    full_->setIcon(kindIcon(QStringLiteral("expand"), t.fg2));
+    full_->setIcon(kindIcon(fullWindow_ ? QStringLiteral("collapse") : QStringLiteral("expand"), t.fg2));
     mcp_->setFont(t.uiSmall);
     setStyleSheet(QStringLiteral("#rk_header { background: %1; border-bottom: 1px solid %2; }"
                                  "#rk_header QToolButton { color: %3; border: none; border-radius: 5px; padding: 3px 7px; }"

@@ -36,8 +36,11 @@ public:
     void addToBulkRenamer(const QList<quint64>& functionAddresses);
     void showTools();
     void openSettings();
-    // The header's full-window button runs `open` (Binary Ninja's sidebar and panes); unset: no button.
-    void setFullWindowOpener(std::function<void()> open);
+    // The header's full-window toggle runs `toggle` (Binary Ninja): `fullWindow` panels (the window-sized tab) show
+    // it as "back to the sidebar", the others as "open in full window". Unset: no button.
+    void setWindowToggle(bool fullWindow, std::function<void()> toggle);
+    // The chat manager at the panel's right: every open database's chats, one click away (the full-window panel).
+    void setManagerShown(bool shown);
 
 protected:
     void showEvent(QShowEvent* event) override;

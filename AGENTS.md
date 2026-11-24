@@ -111,6 +111,12 @@ rows, subagent task cards); streaming changes only the tail row, repainted at mo
 virtualized `QListView`; its delegate paints rows from cached `QTextDocument`s. Pickers (slash, Ctrl+K, Ctrl+M,
 chat switcher) are child widgets built once and only filtered. Timers run only while a chat works.
 
+Full window: the header's expand button (`PanelCore::setWindowToggle`) moves the chat into a window-sized tab
+(Binary Ninja: a tab of its own, the Rikugan sidebar closes; IDA: the dock tabbed beside the disassembly) and shows
+`ChatManager` at its right: every open database's chats (`databases::all()`), refreshed on `ChatHub::chatsChanged` /
+`databasesChanged`. Choosing a chat turns the panel to its database. Binary Ninja registers every tab's database while
+the full-window tab is open, and `open_database` with `in_tab` opens a file in a new tab (`databases::setTabOpener`).
+
 ## Commands and Modes
 
 | Input | Handled by |

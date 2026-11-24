@@ -21,8 +21,9 @@ public:
     void setUndoAvailable(bool available);
     // The host MCP switch: shown only on a host with an MCP server.
     void setHostMcp(bool shown, bool on, bool busy, const QString& tooltip);
-    // The button that opens the panel in a window-sized tab: shown only where the host offers one.
-    void setFullWindowShown(bool shown);
+    // The full-window toggle, shown only where the host offers one: expands a sidebar panel into a window-sized tab
+    // (`full` false), or takes that tab back to the sidebar (`full` true).
+    void setWindowToggle(bool shown, bool full);
     QWidget* titleButton() const;
 
 Q_SIGNALS:
@@ -39,7 +40,7 @@ Q_SIGNALS:
     void renamerRequested();
     void settingsRequested();
     void hostMcpClicked();
-    void fullWindowRequested();
+    void windowToggleRequested();
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -54,6 +55,7 @@ private:
     bool mcpOn_ = false;
     bool mcpBusy_ = false;
     QToolButton* full_ = nullptr;
+    bool fullWindow_ = false;
     QToolButton* palette_ = nullptr;
     QToolButton* add_ = nullptr;
     QToolButton* more_ = nullptr;

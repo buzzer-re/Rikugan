@@ -6,6 +6,7 @@
 
 #include <QImage>
 #include <QPointer>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <binaryninjaapi.h>
@@ -32,6 +33,7 @@
 #include "common/ui/ChatHub.h"
 #include "common/ui/PanelCore.h"
 #include "common/ui/Theme.h"
+#include "common/util/ModuleLifetime.h"
 #include "common/util/CrashGuard.h"
 #include "common/util/Log.h"
 
@@ -89,7 +91,22 @@ std::shared_ptr<rk::DbContext> dbFor(const BinaryViewRef& bv) {
     if (it != g_dbs.end()) return it->second;
     auto db = rk::DbContext::create(std::make_unique<rk::binja::BnHost>(bv));
     g_dbs[key] = db;
+    rk::ui::ChatHub::instance().notifyDatabasesChanged();
     return db;
+}
+
+constexpr const char* kFullWindowTab = "rikugan_full_window";
+
+QWidget* fullWindowTab(UIContext* ui) {
+    for (QWidget* tab : ui->getTabs())
+        if (tab->objectName() == QLatin1String(kFullWindowTab)) return tab;
+    return nullptr;
+}
+
+// The full-window chat manager lists every view: each open tab's database exists once it is open.
+void registerTabs(UIContext* ui) {
+    for (QWidget* tab : ui->getTabs())
+        if (ViewFrame* frame = ui->getViewFrameForTab(tab)) dbFor(frame->getCurrentBinaryView());
 }
 
 rk::binja::BnHost* bnHost(const std::shared_ptr<rk::DbContext>& db) {
@@ -123,9 +140,9 @@ bool openInBinja(QWidget* anchor, const QString& file, const QString& dbId) {
 
 void openFullWindow(QWidget* from, const std::shared_ptr<rk::DbContext>& db);
 
-// A panel for `bv`'s database inside `parent` (the sidebar, a full-window tab, a pane). `fullWindowButton`: its
-// header offers the full-window tab (not in that tab itself).
-rk::PanelCore* newPanel(QWidget* parent, const BinaryViewRef& bv, bool fullWindowButton = true) {
+// A panel for `bv`'s database inside `parent` (the sidebar, a pane; the full-window tab sets its own toggle). Its
+// header button opens the full-window tab.
+rk::PanelCore* newPanel(QWidget* parent, const BinaryViewRef& bv) {
     auto* layout = new QVBoxLayout(parent);
     layout->setContentsMargins(0, 0, 0, 0);
     auto* panel = new rk::PanelCore(parent);
@@ -133,12 +150,10 @@ rk::PanelCore* newPanel(QWidget* parent, const BinaryViewRef& bv, bool fullWindo
     panel->setFileOpener(QStringLiteral("binja"),
                          [parent](const QString& file, const QString& dbId) { return openInBinja(parent, file, dbId); });
     if (auto db = dbFor(bv)) panel->setDatabase(db);
-    if (fullWindowButton) {
-        QPointer<rk::PanelCore> keep = panel;
-        panel->setFullWindowOpener([keep] {
-            if (keep) openFullWindow(keep, keep->database());
-        });
-    }
+    QPointer<rk::PanelCore> keep = panel;
+    panel->setWindowToggle(false, [keep] {
+        if (keep) openFullWindow(keep, keep->database());
+    });
     g_panels.emplace_back(panel);
     return panel;
 }
@@ -191,8 +206,13 @@ public:
             });
             rk::ui::ChatHub::instance().closeDatabase(it->second->dbId);  // its chats end with the file
             g_dbs.erase(it);
+            rk::ui::ChatHub::instance().notifyDatabasesChanged();
         }
         return true;
+    }
+    void OnAfterOpenFile(UIContext* context, FileContext*, ViewFrame* frame) override {
+        // the full-window chat manager lists it at once
+        if (frame && fullWindowTab(context)) dbFor(frame->getCurrentBinaryView());
     }
     void OnAfterSaveFile(UIContext*, FileContext* file, ViewFrame*) override {
         // "Save as" moves the database: its chats are reopened from the new file
@@ -235,27 +255,63 @@ void runAction(const rk::ActionDef& def, BinaryView* bv, uint64_t addr) {
     });
 }
 
-constexpr const char* kFullWindowTab = "rikugan_full_window";
+// Back from the full-window tab `host`: the tab showing its database comes to the front with the Rikugan sidebar
+// open, and the full-window tab closes.
+void closeFullWindow(QWidget* host) {
+    UIContext* ui = UIContext::contextForWidget(host);
+    if (!ui) return;
+    auto* panel = host->findChild<rk::PanelCore*>();
+    const std::shared_ptr<rk::DbContext> db = panel ? panel->database() : nullptr;
+    if (db)
+        for (QWidget* tab : ui->getTabs()) {
+            ViewFrame* frame = ui->getViewFrameForTab(tab);
+            const BinaryViewRef bv = frame ? frame->getCurrentBinaryView() : nullptr;
+            if (bv && dbFor(bv) == db) {
+                ui->activateTab(tab);
+                break;
+            }
+        }
+    if (Sidebar* sb = ui->sidebar()) sb->activate(QString::fromLatin1(kSidebarName));
+    ui->closeTab(host);
+}
 
-// The panel in a tab of its own, as large as Binary Ninja's window, for `db` (the one `from`'s window shows). A tab
-// already showing that database comes to the front.
+// The panel in a tab of its own, as large as Binary Ninja's window, for `db` (the one `from`'s window shows), and
+// the Rikugan sidebar closes: one panel shows the chat. A tab already showing that database comes to the front.
 void openFullWindow(QWidget* from, const std::shared_ptr<rk::DbContext>& db) {
     UIContext* ui = from ? UIContext::contextForWidget(from) : nullptr;
     if (!ui) ui = UIContext::activeContext();
     if (!ui) return;
-    for (QWidget* tab : ui->getTabs()) {
-        if (tab->objectName() != QLatin1String(kFullWindowTab)) continue;
-        auto* panel = tab->findChild<rk::PanelCore*>();
-        if (panel && panel->database() == db) {
-            ui->activateTab(tab);
-            return;
-        }
+    registerTabs(ui);
+    // one full-window tab per window: its manager reaches every database's chats
+    if (QWidget* existing = fullWindowTab(ui)) {
+        if (auto* panel = existing->findChild<rk::PanelCore*>(); panel && db) panel->setDatabase(db);
+        ui->activateTab(existing);
+    } else {
+        auto* host = new QWidget;
+        host->setObjectName(QLatin1String(kFullWindowTab));
+        rk::PanelCore* panel = newPanel(host, nullptr);
+        QPointer<QWidget> keep = host;
+        // a binary opened from the manager gets its tab; the chats stay in front
+        panel->setFileOpener(QStringLiteral("binja"), [keep](const QString& file, const QString& dbId) {
+            if (!keep) return false;
+            const bool opened = openInBinja(keep, file, dbId);
+            if (UIContext* u = UIContext::contextForWidget(keep)) {
+                registerTabs(u);
+                u->activateTab(keep);
+            }
+            return opened;
+        });
+        panel->setManagerShown(true);
+        if (db) panel->setDatabase(db);
+        panel->setWindowToggle(true, [keep] {
+            // the click comes from inside the tab: close it once the click has returned
+            QTimer::singleShot(0, rk::uiAnchor(), [keep] {
+                if (keep) closeFullWindow(keep);
+            });
+        });
+        ui->createTabForWidget(QString::fromLatin1(kSidebarName), host);
     }
-    auto* host = new QWidget;
-    host->setObjectName(QLatin1String(kFullWindowTab));
-    rk::PanelCore* panel = newPanel(host, nullptr, false);
-    if (db) panel->setDatabase(db);
-    ui->createTabForWidget(QString::fromLatin1(kSidebarName), host);
+    if (Sidebar* sb = ui->sidebar()) sb->deactivate(QString::fromLatin1(kSidebarName));
 }
 
 void registerCommands() {
@@ -325,6 +381,21 @@ BINARYNINJAPLUGIN bool UIPluginInit() {
         }
         std::shared_ptr<rk::DbContext> db;
         ExecuteOnMainThreadAndWait([&] { db = rk::DbContext::create(std::make_unique<rk::binja::BnHost>(bv, true)); });
+        return db;
+    });
+    // open_database with in_tab: a tab of the user's, opened on the main thread; the full-window chats stay in front
+    rk::databases::setTabOpener([](const QString& path, QString* error) -> std::shared_ptr<rk::DbContext> {
+        std::shared_ptr<rk::DbContext> db;
+        ExecuteOnMainThreadAndWait([&] {
+            UIContext* ui = UIContext::activeContext();
+            if (!ui) return;
+            QWidget* before = ui->getCurrentTab();
+            if (!ui->openFilename(path)) return;
+            ViewFrame* frame = ui->getViewFrameForTab(ui->getCurrentTab());
+            db = frame ? dbFor(frame->getCurrentBinaryView()) : nullptr;
+            if (before && before->objectName() == QLatin1String(kFullWindowTab)) ui->activateTab(before);
+        });
+        if (!db && error) *error = QStringLiteral("Binary Ninja did not open it");
         return db;
     });
     // Binary Ninja's own MCP server: its tools can stand in for Rikugan's once the user agrees (HostMcpBar)

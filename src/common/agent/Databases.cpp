@@ -15,6 +15,7 @@ std::mutex g_mu;
 std::vector<std::weak_ptr<DbContext>> g_all;
 std::vector<std::shared_ptr<DbContext>> g_loaded;  // open_database: Rikugan's own, no tab
 Loader g_loader;
+TabOpener g_tabOpener;
 
 QString canonical(const QString& path) {
     const QFileInfo fi(path);
@@ -91,6 +92,34 @@ std::shared_ptr<DbContext> load(const QString& path, const std::shared_ptr<Cance
     return db;
 }
 
+void setTabOpener(TabOpener opener) {
+    std::lock_guard<std::mutex> g(g_mu);
+    g_tabOpener = std::move(opener);
+}
+
+bool canOpenTab() {
+    std::lock_guard<std::mutex> g(g_mu);
+    return bool(g_tabOpener);
+}
+
+std::shared_ptr<DbContext> openTab(const QString& path, QString* error) {
+    if (auto open = find(path); open && !openedByRikugan(open->dbId)) return open;
+    TabOpener opener;
+    {
+        std::lock_guard<std::mutex> g(g_mu);
+        opener = g_tabOpener;
+    }
+    if (!opener) {
+        if (error) *error = QStringLiteral("this host cannot open another tab");
+        return nullptr;
+    }
+    if (!QFileInfo(path).isFile()) {
+        if (error) *error = QStringLiteral("no such file: %1").arg(path);
+        return nullptr;
+    }
+    return opener(path, error);
+}
+
 bool close(const QString& dbId) {
     std::shared_ptr<DbContext> released;  // destroyed outside the lock
     std::lock_guard<std::mutex> g(g_mu);
@@ -107,6 +136,7 @@ void releaseAll() {
         std::lock_guard<std::mutex> g(g_mu);
         released.swap(g_loaded);
         g_loader = nullptr;
+        g_tabOpener = nullptr;
     }
 }
 

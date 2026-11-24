@@ -6,6 +6,7 @@
 #include <QClipboard>
 #include <QMimeData>
 #include <QComboBox>
+#include <QFileInfo>
 #include <QLineEdit>
 #include <QLabel>
 #include <QLayout>
@@ -21,6 +22,8 @@
 #include "common/agent/Subagents.h"
 #include "common/config/RikuganConfig.h"
 #include "common/ui/PanelCore.h"
+#include "common/ui/ChatHub.h"
+#include "common/ui/console/ChatManager.h"
 #include "common/ui/WelcomeView.h"
 #include "common/ui/console/AgentsPanel.h"
 #include "common/ui/console/Palette.h"
@@ -42,7 +45,10 @@ namespace {
 // Its own database id: the chat tests' chats must not show up in this panel's list.
 class UiHost : public rktest::FakeHost {
 public:
-    QString databaseInstanceId() override { return QStringLiteral("ui-test-db"); }
+    // one id per file: two databases of the test are two entries in the hub and the manager
+    QString databaseInstanceId() override {
+        return dbPath.endsWith(QLatin1String("/ui.bndb")) ? QStringLiteral("ui-test-db") : QStringLiteral("ui-test-") + QFileInfo(dbPath).completeBaseName();
+    }
 };
 
 TranscriptView* transcript(QWidget* root) { return root->findChild<TranscriptView*>(); }
@@ -134,6 +140,41 @@ private Q_SLOTS:
         // every row has a laid-out place in the view
         TranscriptView* v = transcript(&panel);
         for (int i = 0; i < m->rowCount(); ++i) QVERIFY2(v->visualRect(m->index(i)).height() > 0, qPrintable(QString::number(i)));
+    }
+
+    void managerListsEveryDatabaseAndSwitches() {
+        // the full-window chat manager: another database's chat is one click away, and the panel turns to it
+        auto h = std::make_unique<UiHost>();
+        h->dbPath = dir.path() + "/manager.bndb";
+        auto other = rk::DbContext::create(std::move(h));
+        rk::ChatEntry e = other->chats->create();
+        e.title = QStringLiteral("trace the unpacker");
+        other->chats->update(e);
+
+        rk::PanelCore panel;
+        panel.resize(1200, 700);
+        panel.setManagerShown(true);
+        panel.show();
+        panel.setDatabase(db);
+        auto* manager = panel.findChild<rk::ui::ChatManager*>();
+        QVERIFY(manager && manager->isVisible());
+        auto* list = manager->findChild<rk::ui::PaletteList*>();
+        QVERIFY(list);
+        manager->refresh();
+        QString key;
+        QStringList sections;
+        for (const rk::ui::PaletteEntry& p : list->entries()) {
+            sections << p.section;
+            if (p.title == QLatin1String("trace the unpacker")) key = p.key;
+        }
+        QVERIFY2(sections.contains("ui.bndb") && sections.contains("manager.bndb"), qPrintable(sections.join(", ")));
+        QVERIFY(!key.isEmpty());
+        Q_EMIT list->activated(key);
+        QCOMPARE(panel.database(), other);
+        QVERIFY(shown(&panel) && shown(&panel)->chat());
+        QCOMPARE(shown(&panel)->chat()->chatId(), e.chatId);
+        panel.setDatabase(nullptr);
+        rk::ui::ChatHub::instance().closeDatabase(other->dbId);
     }
 
     void approvalCardRoundTrip() {

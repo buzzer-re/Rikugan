@@ -122,17 +122,23 @@ ToolResult openDatabase(ToolCall& call) {
     if (auto open = databases::find(path))
         return ToolResult::ok(QStringLiteral("Already open:\n%1").arg(databaseLine(*open, chat.dbId)));
     if (!QFileInfo(path).isFile()) return ToolResult::error(QStringLiteral("Error: no such file: %1").arg(path));
+    const bool inTab = call.boolean("in_tab") && databases::canOpenTab();
     // the path comes from the model: the user says yes first
     if (!chat.ui) return ToolResult::error(QStringLiteral("Error: no user is attached to this chat to approve opening a file."));
     const QString open = QStringLiteral("Open it");
+    const QString how = inTab ? QStringLiteral("in a new tab") : QStringLiteral("as another database (analysed in the background, the current view stays as it is)");
     const UserAnswer a = chat.ui->askUser(
-        QStringLiteral("Rikugan wants to open %1 as another database (analysed in the background, the current view stays as it is). Reason: %2")
-            .arg(path, call.str("reason").isEmpty() ? QStringLiteral("not given") : call.str("reason")),
+        QStringLiteral("Rikugan wants to open %1 %2. Reason: %3")
+            .arg(path, how, call.str("reason").isEmpty() ? QStringLiteral("not given") : call.str("reason")),
         {open, QStringLiteral("Don't open")}, call.token());
     if (a.cancelled || a.text != open) return ToolResult::ok(QStringLiteral("The user declined to open %1.").arg(path));
     QString error;
-    const auto db = databases::load(path, call.token(), &error);
+    const auto db = inTab ? databases::openTab(path, &error) : databases::load(path, call.token(), &error);
     if (!db) return ToolResult::error(QStringLiteral("Error: could not open %1: %2").arg(path, error));
+    if (inTab)
+        return ToolResult::ok(QStringLiteral("Opened in a new tab (its analysis runs in the background; the user can chat "
+                                             "there too):\n%1\nUse ask_database with this id to work on it.")
+                                  .arg(databaseLine(*db, chat.dbId)));
     return ToolResult::ok(QStringLiteral("Opened and analysed:\n%1\nUse ask_database with this id to work on it.")
                               .arg(databaseLine(*db, chat.dbId)));
 }
@@ -301,10 +307,13 @@ void registerChatTools(ToolRegistry& r) {
     r.add(ToolSpec{
         "open_database", "chat",
         "Open a file on disk (a binary or a .bndb) as another database, analysed in the background, to compare it with "
-        "this one or study it on its own. The current view and this chat's database are not touched. The user approves "
-        "first. Returns the database id; then use ask_database. Prefer this over loading files with execute_python.",
+        "this one or study it on its own. The current view and this chat's database are not touched. With in_tab it "
+        "opens in a tab of the host's window instead, a view the user sees and can chat in: use that when the user asks "
+        "to open or show a file. The user approves first. Returns the database id; then use ask_database. Prefer this "
+        "over loading files with execute_python.",
         {ToolParam{"path", ToolParam::String, "Absolute path of the file to open.", {}, {}, {}},
-         ToolParam{"reason", ToolParam::String, "Why you need it (shown to the user).", QString(), {}, {}}},
+         ToolParam{"reason", ToolParam::String, "Why you need it (shown to the user).", QString(), {}, {}},
+         ToolParam{"in_tab", ToolParam::Boolean, "Open it in a new tab of the host's window (a view the user sees).", false, {}, {}}},
         Blocking | Exclusive, 20000, openDatabase});
     r.add(ToolSpec{
         "ask_database", "chat",
