@@ -12,5 +12,6 @@ QString sessionsRoot();                 // config.sessionStorageDir or ~/.rikuga
 QString sessionsDir(const QString& dbId);   // <sessionsRoot>/<dbId>
 QString scratchDir(const QString& dbId);    // ~/.rikugan/scratch/<dbId>
 QString artifactsDir(const QString& dbId);  // <scratch>/artifacts
+QString logsDir();                      // ~/.rikugan/logs        (crash logs)
 
 }  // namespace rk::paths

@@ -11,6 +11,7 @@
 #include <QCoreApplication>
 #include <QThread>
 
+#include "common/util/CrashGuard.h"
 #include "common/util/Log.h"
 
 namespace rk {
@@ -67,6 +68,7 @@ void spawnThread(std::function<void()> fn) {
     Registry& r = reg();
     auto done = std::make_shared<std::atomic<bool>>(false);
     std::thread t([&r, fn = std::move(fn), done]() mutable {
+        crash::guardThread();
         {
             // the job and what it captured are destroyed before the thread counts as done
             std::function<void()> job = std::move(fn);

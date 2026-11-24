@@ -1,5 +1,7 @@
 #include "common/agent/BulkRenamer.h"
 
+#include "common/util/CrashGuard.h"
+
 #include <algorithm>
 #include <thread>
 
@@ -404,6 +406,7 @@ void BulkRenamerEngine::runQuick() {
     std::vector<std::thread> workers;
     for (int w = 0; w < nWorkers; ++w) {
         workers.emplace_back([&] {
+            crash::guardThread();
             QuickWorker worker;
             for (int b = next++; b < int(batches.size()); b = next++) {
                 try {
@@ -575,6 +578,7 @@ void BulkRenamerEngine::runDeep() {
     std::vector<std::thread> workers;
     for (int w = 0; w < nWorkers; ++w) {
         workers.emplace_back([&] {
+            crash::guardThread();
             for (int k = next++; k < total; k = next++) {
                 try {
                     analyzeOne(pending[size_t(k)], total, completed);

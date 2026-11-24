@@ -1,5 +1,7 @@
 #include "common/tools/ToolDispatcher.h"
 
+#include "common/util/CrashGuard.h"
+
 #include <QJsonArray>
 
 #include "common/agent/ChatContext.h"
@@ -46,7 +48,10 @@ ToolDispatcher& ToolDispatcher::instance() {
 }
 
 ToolDispatcher::ToolDispatcher() {
-    for (int i = 0; i < kWorkers; ++i) workers_.emplace_back([this] { workerLoop(); });
+    for (int i = 0; i < kWorkers; ++i) workers_.emplace_back([this] {
+        crash::guardThread();
+        workerLoop();
+    });
 }
 
 ToolDispatcher::~ToolDispatcher() { shutdown(); }

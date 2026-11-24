@@ -12,6 +12,7 @@
 #include "common/agent/Actions.h"
 #include "common/agent/DbContext.h"
 #include "common/agent/Subagents.h"
+#include "common/config/Paths.h"
 #include "common/host/Host.h"
 #include "common/omc/AgentHome.h"
 #include "common/omc/OmcLibrary.h"
@@ -19,14 +20,42 @@
 #include "common/tools/ToolDispatcher.h"
 #include "common/ui/ChatHub.h"
 #include "common/ui/PanelCore.h"
+#include "common/util/CrashGuard.h"
 #include "common/util/Log.h"
 #include "common/util/ModuleLifetime.h"
 #include "ida/host/IdaHost.h"
 #include "ida/host/IdaSdk.h"
+#include "ida/sdk/MainThreadRequest.h"
 
 namespace {
 
 constexpr char kTitle[] = "Rikugan";
+
+// A crash inside Rikugan: the crash log, and the open database saved as <idb>.rikugan-recovered.<ext> beside it.
+void installCrashGuard() {
+    char kernel[64] = {};
+    get_kernel_version(kernel, sizeof kernel);
+    rk::crash::Hooks h;
+    h.crashDir = rk::paths::logsDir().toStdString();
+    h.version = std::string("Rikugan ") + RIKUGAN_VERSION + ", libomc " + omc_version() + ", IDA " + kernel;
+    h.saveOnMain = []() -> std::string {
+        const char* idb = get_path(PATH_TYPE_IDB);
+        if (!idb || !*idb) return {};
+        const std::string path(idb);
+        const size_t dot = path.find_last_of('.');
+        const std::string ext = dot == std::string::npos ? "i64" : path.substr(dot + 1);
+        const std::string out = rk::crash::recoveryPath(path, ext);
+        return save_database(out.c_str(), 0) ? out : "could not save " + out;
+    };
+    h.postToMain = [](std::function<void()> job) {
+        rk::ida::postMainThreadCall(std::make_shared<rk::MainThreadCall>(std::move(job)), true);
+    };
+    h.isMainThread = [] { return is_main_thread(); };
+    h.reportPrevious = [](const std::string& log) {
+        msg("Rikugan crashed in an earlier session. Crash log: %s\n", log.c_str());
+    };
+    rk::crash::install(std::move(h));
+}
 
 struct RikuganPlugmod;
 RikuganPlugmod* g_mod = nullptr;
@@ -74,6 +103,7 @@ struct RikuganPlugmod : public plugmod_t, public event_listener_t {
     RikuganPlugmod() {
         rk::setLogSink([](const QString& m) { msg("%s\n", m.toUtf8().constData()); });
         rk::AgentHome::prepare();
+        installCrashGuard();
         registerActions();
         idbListener.mod = this;
         ::hook_event_listener(HT_UI, this, this);
@@ -102,6 +132,7 @@ struct RikuganPlugmod : public plugmod_t, public event_listener_t {
         rk::ServiceSession::shutdown(5000);
         rk::ToolDispatcher::instance().shutdown();
         rk::shutdownModule(5000);
+        rk::crash::uninstall();  // the handlers point into this module
         g_mod = nullptr;
     }
 

@@ -25,5 +25,6 @@ QString sessionsRoot() {
 QString sessionsDir(const QString& dbId) { return sessionsRoot() + QLatin1Char('/') + dbId; }
 QString scratchDir(const QString& dbId) { return home() + QStringLiteral("/scratch/") + dbId; }
 QString artifactsDir(const QString& dbId) { return scratchDir(dbId) + QStringLiteral("/artifacts"); }
+QString logsDir() { return home() + QStringLiteral("/logs"); }
 
 }  // namespace rk::paths

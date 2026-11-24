@@ -7,6 +7,7 @@
 #include <QVBoxLayout>
 
 #include <binaryninjaapi.h>
+#include <filecontext.h>
 #include <sidebar.h>
 #include <sidebarwidget.h>
 #include <theme.h>
@@ -21,12 +22,14 @@
 #include "common/agent/Actions.h"
 #include "common/agent/Databases.h"
 #include "common/agent/DbContext.h"
+#include "common/config/Paths.h"
 #include "common/omc/AgentHome.h"
 #include "common/omc/OmcLibrary.h"
 #include "common/omc/ServiceSession.h"
 #include "common/ui/ChatHub.h"
 #include "common/ui/PanelCore.h"
 #include "common/ui/Theme.h"
+#include "common/util/CrashGuard.h"
 #include "common/util/Log.h"
 
 using namespace BinaryNinja;
@@ -34,6 +37,36 @@ using namespace BinaryNinja;
 namespace {
 
 constexpr char kSidebarName[] = "Rikugan";
+
+// A crash inside Rikugan: the crash log, and every open file saved as <file>.rikugan-recovered.bndb beside it.
+void installCrashGuard() {
+    rk::crash::Hooks h;
+    h.crashDir = rk::paths::logsDir().toStdString();
+    h.version = std::string("Rikugan ") + RIKUGAN_VERSION + ", libomc " + omc_version() + ", Binary Ninja " + GetVersionString();
+    h.saveOnMain = []() -> std::string {
+        std::string out;
+        for (FileContext* fc : FileContext::getOpenFileContexts()) {
+            BinaryViewRef bv;
+            if (ViewFrame* vf = fc->getCurrentViewFrame()) bv = vf->getCurrentBinaryView();
+            if (!bv)
+                for (const BinaryViewRef& v : fc->getAllDataViews())
+                    if (v && v->GetTypeName() != "Raw") {
+                        bv = v;
+                        break;
+                    }
+            if (!bv) continue;
+            const std::string path = rk::crash::recoveryPath(fc->getMetadata()->GetFilename(), "bndb");
+            out += (bv->CreateDatabase(path) ? path : "could not save " + path) + "\n";
+        }
+        return out;
+    };
+    h.postToMain = [](std::function<void()> job) { ExecuteOnMainThread(std::move(job)); };
+    h.isMainThread = [] { return IsMainThread(); };
+    h.reportPrevious = [](const std::string& log) {
+        LogWarn("Rikugan crashed in an earlier session. Crash log: %s", log.c_str());
+    };
+    rk::crash::install(std::move(h));
+}
 
 // One DbContext per open file, created when the panel first shows it (UI thread only).
 std::map<BNFileMetadata*, std::shared_ptr<rk::DbContext>> g_dbs;
@@ -202,6 +235,7 @@ BINARYNINJAPLUGIN bool UIPluginInit() {
         return false;
     }
     rk::AgentHome::prepare();
+    installCrashGuard();
     // the panel speaks Binary Ninja's colours: its addresses, symbols, highlight hues and code tokens
     rk::ui::setHostColors([] {
         return QHash<QString, QColor>{

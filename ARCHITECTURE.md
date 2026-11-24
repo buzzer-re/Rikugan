@@ -121,6 +121,18 @@ IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
   `ToolDispatcher::shutdown`, then `shutdownModule(5000)`: joins the spawned threads and deletes the anchor. Closing
   a database sets `Host::closing` first so queued main-thread work cannot touch it. Binary Ninja never unloads
   plugins; the thread registry is never destroyed, so exiting with threads still running does not terminate.
+- **IDA events.** HT_UI and HT_IDB number their events independently (HT_UI 0 is `ui_range`, HT_IDB 0 is
+  `closebase`), so the plugin listens to each with its own listener; one shared switch closed the database whenever
+  the disassembly range changed.
+- **Crashes** (`util/CrashGuard.h`). Installed at plugin init: a fault whose instruction is in Rikugan or libomc
+  (Windows: a first-chance vectored handler; Linux/macOS: SIGSEGV/SIGBUS/SIGILL/SIGFPE checked with `dladdr`) or a
+  `std::terminate` on a Rikugan thread (every thread calls `crash::guardThread()`) writes
+  `~/.rikugan/logs/crash-log-<YYYYMMDD-HHMMSS>-<pid>.log` (reason, address as module + offset, thread, versions,
+  the faulting thread's stack), then saves a recovery copy of each open database next to it
+  (`<db>.rikugan-recovered.i64` / `.bndb`; the database file itself keeps its last save) on the host main thread,
+  which never waits on Rikugan's threads (30 s deadline), and passes the crash on to the previous handler. Faults in
+  host code are left alone. The next start reports logs not seen yet in the host's log. IDA removes the handlers at
+  unload.
 
 ## 4. Chat lifecycle
 
@@ -348,6 +360,7 @@ dialog has five tabs:
 | `~/.rikugan/omc/agent/` | `auth.json` (0600), `models.yml`, `mcp.json`, `skills/`, managed `config.yml` |
 | `~/.rikugan/sessions/<db id>/` | omc session files, `chats.json`, `database.json`, `subagents/` |
 | `~/.rikugan/scratch/<db id>/` | session cwd, `artifacts/`, files the agent writes |
+| `~/.rikugan/logs/` | crash logs, `crash-log-<YYYYMMDD-HHMMSS>-<pid>.log` |
 | `<database dir>/RIKUGAN.md` | persistent memory (`save_memory`, `/memory`) |
 | `<database dir>/notes/` | `/research` notes |
 

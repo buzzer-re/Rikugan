@@ -136,6 +136,9 @@ chat switcher) are child widgets built once and only filtered. Timers run only w
 - `~/.rikugan/sessions/<db id>/` — omc session files, `chats.json` and `database.json` (host and file, so the panel
   can reopen the database's chats while nothing is open); `~/.rikugan/scratch/<db id>/` — the session's working
   directory (artifacts, files the agent writes).
+- `~/.rikugan/logs/crash-log-<YYYYMMDD-HHMMSS>-<pid>.log` — crash logs (`util/CrashGuard.h`); a crash in Rikugan
+  also saves `<database>.rikugan-recovered.<ext>` beside each open database. New threads call
+  `crash::guardThread()` first.
 - `<database dir>/RIKUGAN.md` — persistent memory (`save_memory`), first 200 lines in the system prompt.
 
 ## How to Add a Tool

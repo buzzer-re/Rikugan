@@ -86,8 +86,11 @@ int freshSettingsProbe(int argc, char** argv) {
 
 }  // namespace
 
+int crashProbe(int argc, char** argv);  // test_crash.cpp
+
 int main(int argc, char** argv) {
     if (argc > 1 && qstrcmp(argv[1], "--fresh-settings-probe") == 0) return freshSettingsProbe(1, argv);
+    if (argc > 3 && qstrcmp(argv[1], "--crash-probe") == 0) return crashProbe(argc, argv);
 
     QTemporaryDir tmp;
     tmp.setAutoRemove(qEnvironmentVariableIsEmpty("RK_KEEP_TMP"));
