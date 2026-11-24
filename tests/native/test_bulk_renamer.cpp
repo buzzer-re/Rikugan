@@ -1,0 +1,300 @@
+// Bulk renamer: parsing, batching and prompt formats; quick and deep mode against the mock model; undo_all.
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QTemporaryDir>
+#include <QtTest>
+
+#include "FakeHost.h"
+#include "TestEnv.h"
+#include "common/agent/BulkRenamer.h"
+#include "common/agent/DbContext.h"
+#include "common/agent/Subagents.h"
+#include "common/ui/tools/BulkRenamerWidget.h"
+
+namespace {
+
+// FakeHost plus the two tools quick mode reads functions with.
+class RenamerHost : public rktest::FakeHost {
+public:
+    std::atomic<int> lastDisasmLimit{0};
+
+    void registerTools(rk::ToolRegistry& r) override {
+        FakeHost::registerTools(r);
+        using rk::ToolParam;
+        r.add(rk::ToolSpec{"decompile_function", "decompiler", "Decompile a function.",
+                           {ToolParam{"address", ToolParam::String, "Address", {}, {}, {}}}, rk::MainThread, 20000,
+                           [this](rk::ToolCall& c) {
+                               const uint64_t ea = c.address("address");
+                               std::lock_guard<std::mutex> g(mu);
+                               if (!names.contains(ea)) throw rk::ToolError(QStringLiteral("No function at %1").arg(rk::hex(ea)));
+                               return rk::ToolResult::ok(QStringLiteral("int %1(void)\n{\n  return 0;\n}").arg(names.value(ea)));
+                           }});
+        r.add(rk::ToolSpec{"read_disassembly", "disassembly", "Read disassembly.",
+                           {ToolParam{"address", ToolParam::String, "Address", {}, {}, {}},
+                            ToolParam{"limit", ToolParam::Integer, "Max instructions", 30, {}, {}}},
+                           0, 20000, [this](rk::ToolCall& c) {
+                               lastDisasmLimit = int(c.integer("limit"));
+                               return rk::ToolResult::ok(QStringLiteral("%1: xor eax, eax\n%1+2: ret").arg(rk::hex(c.address("address"))));
+                           }});
+    }
+};
+
+struct Collector {
+    std::mutex mu;
+    std::vector<rk::RenameEvent> events;
+
+    rk::BulkRenamerEngine::Sink sink() {
+        return [this](const rk::RenameEvent& e) {
+            std::lock_guard<std::mutex> g(mu);
+            events.push_back(e);
+        };
+    }
+    int count(rk::RenameEventType t) {
+        std::lock_guard<std::mutex> g(mu);
+        return int(std::count_if(events.begin(), events.end(), [t](const rk::RenameEvent& e) { return e.type == t; }));
+    }
+    std::optional<rk::RenameEvent> last(rk::RenameEventType t) {
+        std::lock_guard<std::mutex> g(mu);
+        for (auto it = events.rbegin(); it != events.rend(); ++it)
+            if (it->type == t) return *it;
+        return std::nullopt;
+    }
+    void clear() {
+        std::lock_guard<std::mutex> g(mu);
+        events.clear();
+    }
+};
+
+std::vector<rk::RenameJob> jobsFor(std::initializer_list<std::pair<uint64_t, const char*>> l) {
+    std::vector<rk::RenameJob> out;
+    for (const auto& [a, n] : l) {
+        rk::RenameJob j;
+        j.address = a;
+        j.currentName = QString::fromLatin1(n);
+        out.push_back(j);
+    }
+    return out;
+}
+
+// Mock replies to the quick prompt by its text: this template makes it answer with both names.
+const QString kSayTemplate = QStringLiteral("say:0x401000 parse_header\n0x402000 send_packet");
+
+}  // namespace
+
+class BulkRenamerTest : public QObject {
+    Q_OBJECT
+
+    QTemporaryDir dir;
+    RenamerHost* host = nullptr;
+    std::shared_ptr<rk::DbContext> db;
+
+    QString nameAt(uint64_t ea) {
+        std::lock_guard<std::mutex> g(host->mu);
+        return host->names.value(ea);
+    }
+
+private Q_SLOTS:
+    void initTestCase() {
+        auto h = std::make_unique<RenamerHost>();
+        h->dbPath = dir.path() + "/renamer.bndb";
+        host = h.get();
+        db = rk::DbContext::create(std::move(h));
+    }
+
+    void parsesQuickReplies() {
+        const auto names = rk::BulkRenamerEngine::parseQuickReply(
+            "  0x401000 parse_header  \nSure, here:\n0X402000 nope\n0x402000\tsend_packet\n0x403000 two words\r\n0xABC init_x\n");
+        QCOMPARE(int(names.size()), 3);
+        QCOMPARE(names.at(0x401000), QStringLiteral("parse_header"));
+        QCOMPARE(names.at(0x402000), QStringLiteral("send_packet"));
+        QCOMPARE(names.at(0xabc), QStringLiteral("init_x"));
+    }
+
+    void parsesDeepReplies() {
+        const auto r = rk::BulkRenamerEngine::parseDeepReply("Analysis...\nRENAME: 0x401000 decrypt_config\nRENAME: 0x1 other");
+        QVERIFY(r.has_value());
+        QCOMPARE(r->first, uint64_t(0x401000));
+        QCOMPARE(r->second, QStringLiteral("decrypt_config"));
+        QVERIFY(rk::BulkRenamerEngine::parseDeepReply("RENAME:0x10 x").has_value());
+        QVERIFY(!rk::BulkRenamerEngine::parseDeepReply("I would call it decrypt_config").has_value());
+    }
+
+    void autoNames() {
+        QVERIFY(rk::BulkRenamerEngine::isAutoGeneratedName("sub_401000"));
+        QVERIFY(rk::BulkRenamerEngine::isAutoGeneratedName("FUN_00401000"));
+        QVERIFY(rk::BulkRenamerEngine::isAutoGeneratedName("loc_1F"));
+        QVERIFY(!rk::BulkRenamerEngine::isAutoGeneratedName("sub_40100g"));
+        QVERIFY(!rk::BulkRenamerEngine::isAutoGeneratedName("main"));
+        QVERIFY(rk::BulkRenamerWidget::isAutoNamed("nullsub_1"));
+        QVERIFY(!rk::BulkRenamerWidget::isAutoNamed("main"));
+    }
+
+    void promptFormats() {
+        // the exact prompt text, byte for byte
+        const QString withDisasm = rk::BulkRenamerEngine::quickFunctionPart(0x401000, "sub_401000", "int f();", "push rbp");
+        QCOMPARE(withDisasm, QStringLiteral("// Function at 0x401000 (current name: sub_401000)\n// Decompiled:\nint f();\n"
+                                            "// Disassembly:\npush rbp\n"));
+        const QString bare = rk::BulkRenamerEngine::quickFunctionPart(0x401000, "sub_401000", "int f();", QString());
+        QCOMPARE(bare, QStringLiteral("// Function at 0x401000 (current name: sub_401000)\n// Decompiled:\nint f();\n"));
+        // substituted text is not scanned for placeholders again
+        QVERIFY(rk::BulkRenamerEngine::quickFunctionPart(0x1, "a", "{{disassembly_block}}", QString()).contains("{{disassembly_block}}"));
+
+        const QString huge = rk::BulkRenamerEngine::quickFunctionPart(0x1, "a", QString(10000, QLatin1Char('x')), QString());
+        QCOMPARE(huge.size(), rk::BulkRenamerEngine::kMaxFunctionChars + QStringLiteral("\n// ... (truncated)\n").size());
+        QVERIFY(huge.endsWith("\n// ... (truncated)\n"));
+
+        const QString prompt = rk::BulkRenamerEngine::quickPrompt({"A", "B"});
+        QVERIFY(prompt.startsWith("You are a reverse engineering assistant specializing in function naming."));
+        QVERIFY(prompt.endsWith("Functions to analyze:\nA\nB"));
+
+        const QString deep = rk::BulkRenamerEngine::deepTask(0x401000, "sub_401000", "int f();");
+        QVERIFY(deep.endsWith("Function to analyze:\n\n// Function at 0x401000 (current name: sub_401000)\nint f();"));
+        QVERIFY(deep.contains("RENAME: 0x<address> <new_name>"));
+    }
+
+    void batching() {
+        using E = rk::BulkRenamerEngine;
+        auto b = E::splitBatches({10, 10, 10, 10, 10}, 100, 2);
+        QCOMPARE(int(b.size()), 3);
+        QCOMPARE(b[0], (std::vector<int>{0, 1}));
+        QCOMPARE(b[2], (std::vector<int>{4}));
+        // the char budget splits before the count does; an oversized part still gets its own batch
+        b = E::splitBatches({100000, 70000, 20000, 200000}, 1000, 10);
+        QCOMPARE(int(b.size()), 3);
+        QCOMPARE(b[0], (std::vector<int>{0, 1}));
+        QCOMPARE(b[1], (std::vector<int>{2}));
+        QCOMPARE(b[2], (std::vector<int>{3}));
+        QVERIFY(E::splitBatches({}, 10, 3).empty());
+    }
+
+    void quickModeRenamesAndUndoes() {
+        Collector c;
+        auto engine = rk::BulkRenamerEngine::create(db, {1, 1, kSayTemplate}, c.sink());
+        engine->enqueue(jobsFor({{0x401000, "sub_401000"}, {0x402000, "sub_402000"}}));
+        engine->start(false);
+        QVERIFY(rktest::waitFor([&] { return c.count(rk::RenameEventType::AllDone) == 1; }, 60000));
+        const auto done = c.last(rk::RenameEventType::AllDone);
+        QCOMPARE(done->completed, 2);
+        QCOMPARE(done->total, 2);
+        QCOMPARE(c.count(rk::RenameEventType::JobCompleted), 2);
+        QCOMPARE(c.count(rk::RenameEventType::JobError), 0);
+        QCOMPARE(c.count(rk::RenameEventType::BatchProgress), 2);
+        QCOMPARE(nameAt(0x401000), QStringLiteral("parse_header"));
+        QCOMPARE(nameAt(0x402000), QStringLiteral("send_packet"));
+        QCOMPARE(host->lastDisasmLimit.load(), 100);
+        for (const rk::RenameJob& j : engine->jobs()) QCOMPARE(j.status, rk::RenameStatus::Completed);
+
+        int batches = 0;
+        for (const rk::SubagentInfo& i : rk::SubagentRegistry::instance().all()) {
+            if (!i.name.startsWith("quick_batch_") || i.category != "bulk_rename") continue;
+            ++batches;
+            QCOMPARE(i.status, rk::SubagentStatus::Completed);
+            QCOMPARE(i.summary, QStringLiteral("Renamed 1/1 functions"));
+            QCOMPARE(i.agentType, QStringLiteral("bulk_rename(quick)"));
+        }
+        QCOMPARE(batches, 2);
+
+        // one worker ran both batches: new_session kept each request to a single user message
+        QFile log(rktest::env().home + "/mock.jsonl");
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        int seen = 0;
+        for (const QByteArray& line : log.readAll().split('\n')) {
+            if (!line.contains("parse_header")) continue;
+            const QJsonArray msgs = QJsonDocument::fromJson(line).object().value("messages").toArray();
+            int users = 0;
+            for (const QJsonValue& m : msgs) users += m.toObject().value("role").toString() == "user";
+            QCOMPARE(users, 1);
+            ++seen;
+        }
+        QCOMPARE(seen, 2);
+
+        c.clear();
+        engine->undoAll();
+        QVERIFY(rktest::waitFor([&] { return c.count(rk::RenameEventType::AllDone) == 1; }, 20000));
+        QCOMPARE(c.last(rk::RenameEventType::AllDone)->total, 2);
+        QCOMPARE(c.count(rk::RenameEventType::JobCompleted), 2);
+        {
+            std::lock_guard<std::mutex> g(c.mu);
+            for (const rk::RenameEvent& e : c.events)
+                if (e.type == rk::RenameEventType::JobCompleted) QVERIFY(e.newName.isEmpty());
+        }
+        QCOMPARE(nameAt(0x401000), QStringLiteral("sub_401000"));
+        QCOMPARE(nameAt(0x402000), QStringLiteral("sub_402000"));
+        for (const rk::RenameJob& j : engine->jobs()) QCOMPARE(j.status, rk::RenameStatus::Pending);
+    }
+
+    void quickModeUnparsableReplyAndDecompileError() {
+        Collector c;
+        // the real quick prompt: the mock answers "plain answer", which names nothing
+        auto engine = rk::BulkRenamerEngine::create(db, {10, 3, {}}, c.sink());
+        engine->enqueue(jobsFor({{0x401000, "sub_401000"}, {0x405000, "sub_405000"}}));
+        engine->start(false);
+        QVERIFY(rktest::waitFor([&] { return c.count(rk::RenameEventType::AllDone) == 1; }, 60000));
+        QCOMPARE(c.last(rk::RenameEventType::AllDone)->completed, 2);
+        std::map<uint64_t, QString> errors;
+        {
+            std::lock_guard<std::mutex> g(c.mu);
+            for (const rk::RenameEvent& e : c.events)
+                if (e.type == rk::RenameEventType::JobError) errors[e.address] = e.error;
+        }
+        QCOMPARE(errors[0x401000], QStringLiteral("No name suggested by LLM"));
+        QVERIFY2(errors[0x405000].contains("No function at 0x405000"), qPrintable(errors[0x405000]));
+        QCOMPARE(nameAt(0x401000), QStringLiteral("sub_401000"));
+    }
+
+    void deepModeNeedsRenameLine() {
+        Collector c;
+        auto engine = rk::BulkRenamerEngine::create(db, {10, 2, {}}, c.sink());
+        engine->enqueue(jobsFor({{0x402000, "sub_402000"}}));
+        engine->start(true);
+        QVERIFY(rktest::waitFor([&] { return c.count(rk::RenameEventType::AllDone) == 1; }, 60000));
+        QCOMPARE(c.last(rk::RenameEventType::JobError)->error, QStringLiteral("No RENAME line found in subagent output"));
+        bool found = false;
+        for (const rk::SubagentInfo& i : rk::SubagentRegistry::instance().all())
+            if (i.name == "agent_sub_402000") {
+                found = true;
+                QCOMPARE(i.category, QStringLiteral("bulk_rename"));
+                QCOMPARE(i.status, rk::SubagentStatus::Failed);
+            }
+        QVERIFY(found);
+        QCOMPARE(nameAt(0x402000), QStringLiteral("sub_402000"));
+    }
+
+    void cancelBeforeStartDoesNothing() {
+        Collector c;
+        auto engine = rk::BulkRenamerEngine::create(db, {10, 1, kSayTemplate}, c.sink());
+        engine->enqueue(jobsFor({{0x401000, "sub_401000"}}));
+        engine->pause();
+        engine->start(false);  // start resumes
+        engine->pause();
+        engine->cancel();
+        QVERIFY(rktest::waitFor([&] { return c.count(rk::RenameEventType::AllDone) == 1; }, 20000));
+        QCOMPARE(nameAt(0x401000), QStringLiteral("sub_401000"));
+    }
+
+    void functionPagesAndTranscript() {
+        QString total;
+        const auto rows = rk::BulkRenamerWidget::parseFunctionPage(
+            QStringLiteral("Functions 0\u20132 of 7:\n  0x401000  sub_401000\n  0x402000  main entry"), &total);
+        QCOMPARE(total, QStringLiteral("7"));
+        QCOMPARE(rows.size(), 2);
+        QCOMPARE(rows[1].address, quint64(0x402000));
+        QCOMPARE(rows[1].name, QStringLiteral("main entry"));
+        rk::BulkRenamerWidget::FunctionRow info;
+        QVERIFY(rk::BulkRenamerWidget::parseFunctionInfo("Name: foo\nAddress: 0x10\nInstructions: 7", &info));
+        QCOMPARE(info.instructionCount, qint64(7));
+
+        QJsonArray msgs{QJsonObject{{"role", "user"}, {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "hi"}}}}},
+                        QJsonObject{{"role", "assistant"},
+                                    {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", QString(70000, QLatin1Char('a'))}}}}}};
+        const QString t = rk::subagentTranscript(msgs);
+        QVERIFY(t.startsWith("User: hi\n\nRikugan: a"));
+        QVERIFY(t.contains("[... transcript truncated ...]"));
+        QVERIFY(t.size() < 60100);
+    }
+};
+RK_TEST(BulkRenamerTest)
+
+#include "test_bulk_renamer.moc"

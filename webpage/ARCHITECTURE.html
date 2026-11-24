@@ -458,13 +458,13 @@ td code{font-size:.82rem}
   <div class="hero-grid"></div>
   <div class="hero-jp">六眼</div>
   <h1>Rikugan Architecture</h1>
-  <p class="hero-sub">Complete technical reference for the agent internals, tooling framework, exploration mode, and everything under the hood — for developers and agents.</p>
+  <p class="hero-sub">How the native plugin embeds libomc, keeps the host UI responsive, runs host tools safely, and drives modes, subagents and undo.</p>
   <div class="hero-badges">
-    <span class="badge"><span class="dot purple"></span>Generator-based Loop</span>
-    <span class="badge"><span class="dot pink"></span>4-Phase Exploration</span>
-    <span class="badge"><span class="dot green"></span>63+ Tools</span>
+    <span class="badge"><span class="dot purple"></span>Native C++ on libomc</span>
+    <span class="badge"><span class="dot pink"></span>Host tools over RPC</span>
+    <span class="badge"><span class="dot green"></span>60+ Tools</span>
     <span class="badge"><span class="dot orange"></span>12 Skills</span>
-    <span class="badge"><span class="dot blue"></span>5 Providers</span>
+    <span class="badge"><span class="dot blue"></span>Dozens of providers</span>
   </div>
 </header>
 
@@ -475,28 +475,18 @@ td code{font-size:.82rem}
 <nav class="sidebar">
   <div class="sidebar-title">Architecture</div>
   <ol class="toc">
-    <li><a href="#overview">High-Level Overview</a></li>
-    <li><a href="#agentic-loop">The Agentic Loop</a></li>
-    <li><a href="#turn-events">TurnEvent System</a></li>
-    <li><a href="#tools">Tool Framework</a></li>
-    <li><a href="#pseudo-tools">Pseudo-Tools</a></li>
-    <li><a href="#skills">Skill System</a></li>
-    <li><a href="#exploration">Exploration Mode</a></li>
-    <li><a href="#plan-mode">Plan Mode</a></li>
-    <li><a href="#subagents">Subagents</a></li>
-    <li><a href="#mutation">Mutation &amp; Undo</a></li>
-    <li><a href="#context">Context Window</a></li>
-    <li><a href="#memory">Persistent Memory</a></li>
-    <li><a href="#sessions">Session Management</a></li>
-    <li><a href="#mcp">MCP Integration</a></li>
-    <li><a href="#providers">Provider Layer</a></li>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#omc">Embedding libomc</a></li>
+    <li><a href="#threading">Threads</a></li>
+    <li><a href="#chat">Chat Lifecycle</a></li>
     <li><a href="#system-prompt">System Prompt</a></li>
-    <li><a href="#ui">UI Layer</a></li>
-    <li><a href="#threading">Thread Safety</a></li>
-    <li><a href="#errors">Error Handling</a></li>
-    <li><a href="#logging">Logging</a></li>
-    <li><a href="#commands">Commands Reference</a></li>
-    <li><a href="#data-flow">Data Flow Diagrams</a></li>
+    <li><a href="#tools">Tools &amp; Pipeline</a></li>
+    <li><a href="#undo">Undo</a></li>
+    <li><a href="#modes">Modes</a></li>
+    <li><a href="#subagents">Subagents &amp; Renamer</a></li>
+    <li><a href="#settings">Settings &amp; Files</a></li>
+    <li><a href="#security">Security Model</a></li>
+    <li><a href="#tests">Tests</a></li>
   </ol>
 </nav>
 
@@ -506,920 +496,276 @@ td code{font-size:.82rem}
 <!-- ═══════════════ 01 OVERVIEW ═══════════════ -->
 <section class="section" id="overview">
   <div class="section-num">01</div>
-  <h2>High-Level Overview</h2>
-  <p>Rikugan is a <strong>generator-based agentic loop</strong> embedded inside IDA Pro and Binary Ninja. The agent runs in a background thread and communicates with the Qt UI via a stream of <code>TurnEvent</code> objects. All host API calls (IDA/BN) are marshalled to the main thread via <code>@idasync</code>.</p>
+  <h2>Overview</h2>
+  <p>Rikugan 2.x is a native C++20 / Qt Widgets plugin for IDA Pro 9.3 and Binary Ninja (Linux, macOS). The agent &mdash; turn loop, providers and logins, session files, compaction, retries, skills, MCP and the file/shell/search tools &mdash; is <strong>libomc</strong> (<a href="https://github.com/buzzer-re/Oh-My-C" target="_blank" rel="noopener">oh-my-c</a>), linked into the plugin. Rikugan supplies the reverse-engineering half: host analysis tools, the chat panel, per-database chats, undo, modes, subagents with host tools, the bulk renamer, analysis profiles, prompts and skills. Rikugan 1.x was a Python plugin; it remains in the git history.</p>
 
   <div class="arch-box">
-    <div class="arch-item"><div class="ai">&#x1F9E0;</div><div class="at">Agent Loop</div><div class="ad">Generator yields TurnEvents, handles tool calls, manages state</div></div>
-    <div class="arch-item"><div class="ai">&#x1F527;</div><div class="at">63+ Tools</div><div class="ad">Navigation, decompiler, xrefs, annotations, scripting</div></div>
-    <div class="arch-item"><div class="ai">&#x1F3AF;</div><div class="at">12 Skills</div><div class="ad">Malware, CTF, vuln audit, scripting, patching</div></div>
-    <div class="arch-item"><div class="ai">&#x1F504;</div><div class="at">5 Providers</div><div class="ad">Anthropic, OpenAI, Gemini, Ollama, Custom</div></div>
-    <div class="arch-item"><div class="ai">&#x1F50D;</div><div class="at">Exploration Mode</div><div class="ad">4-phase autonomous binary modification</div></div>
-    <div class="arch-item"><div class="ai">&#x21A9;&#xFE0F;</div><div class="at">Mutation Undo</div><div class="ad">Full reverse operation tracking for every mutation</div></div>
+    <div class="arch-item"><div class="ai">&#x1F9E0;</div><div class="at">libomc in-process</div><div class="ad">Agent loop, providers, sessions, compaction, skills, MCP over omc's RPC frames</div></div>
+    <div class="arch-item"><div class="ai">&#x1F527;</div><div class="at">Host tools</div><div class="ad">Native IDA / Binary Ninja tools registered with omc as host tools</div></div>
+    <div class="arch-item"><div class="ai">&#x1F9F5;</div><div class="at">Non-blocking UI</div><div class="ad">Session workers, an 8-thread tool pool, main-thread marshalling</div></div>
+    <div class="arch-item"><div class="ai">&#x1F50D;</div><div class="at">Modes</div><div class="ad">/plan, /explore, /modify, /research driven on the chat's worker</div></div>
+    <div class="arch-item"><div class="ai">&#x21A9;&#xFE0F;</div><div class="at">Undo</div><div class="ad">Reverse operations for renames, comments and prototypes</div></div>
+    <div class="arch-item"><div class="ai">&#x1F6E1;&#xFE0F;</div><div class="at">Sanitized results</div><div class="ad">Injection-marker stripping, IOC redaction, script approval</div></div>
   </div>
 
-  <!-- Animated Architecture Diagram -->
-  <div class="svg-diagram">
-    <svg viewBox="0 0 820 430" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:820px">
-      <!-- Background boxes -->
-      <rect x="310" y="10" width="200" height="50" rx="10" fill="#111118" stroke="#2a2a3e"/>
-      <text x="410" y="42" text-anchor="middle" fill="#e0e0e8" font-family="Inter,sans-serif" font-size="14" font-weight="700">User Input</text>
-
-      <rect x="260" y="90" width="300" height="50" rx="10" fill="#111118" stroke="#7c6aef" stroke-opacity=".4"/>
-      <text x="410" y="122" text-anchor="middle" fill="#7c6aef" font-family="Inter,sans-serif" font-size="13" font-weight="600">SessionControllerBase</text>
-
-      <rect x="220" y="175" width="380" height="140" rx="12" fill="#0d0d14" stroke="#2a2a3e"/>
-      <text x="410" y="200" text-anchor="middle" fill="#e06090" font-family="Inter,sans-serif" font-size="13" font-weight="600">BackgroundAgentRunner (Thread)</text>
-
-      <rect x="260" y="215" width="300" height="80" rx="8" fill="#111118" stroke="#50c878" stroke-opacity=".3"/>
-      <text x="410" y="243" text-anchor="middle" fill="#50c878" font-family="JetBrains Mono,monospace" font-size="12" font-weight="600">AgentLoop.run()</text>
-      <text x="410" y="263" text-anchor="middle" fill="#8888a0" font-family="JetBrains Mono,monospace" font-size="10">stream → parse → execute → yield</text>
-      <text x="410" y="281" text-anchor="middle" fill="#8888a0" font-family="JetBrains Mono,monospace" font-size="10">TurnEvents ──→ Queue ──→ UI</text>
-
-      <!-- Side boxes -->
-      <rect x="10" y="200" width="160" height="48" rx="8" fill="#111118" stroke="#f0a040" stroke-opacity=".3"/>
-      <text x="90" y="229" text-anchor="middle" fill="#f0a040" font-family="Inter,sans-serif" font-size="12" font-weight="600">ToolRegistry</text>
-
-      <rect x="650" y="200" width="160" height="48" rx="8" fill="#111118" stroke="#40b0f0" stroke-opacity=".3"/>
-      <text x="730" y="229" text-anchor="middle" fill="#40b0f0" font-family="Inter,sans-serif" font-size="12" font-weight="600">LLM Provider</text>
-
-      <rect x="310" y="355" width="200" height="50" rx="10" fill="#111118" stroke="#7c6aef" stroke-opacity=".4"/>
-      <text x="410" y="385" text-anchor="middle" fill="#7c6aef" font-family="Inter,sans-serif" font-size="13" font-weight="600">Qt UI (PanelCore)</text>
-
-      <!-- Arrows -->
-      <line x1="410" y1="60" x2="410" y2="90" stroke="#2a2a3e" stroke-width="2" marker-end="url(#arrowGray)"/>
-      <line x1="410" y1="140" x2="410" y2="175" stroke="#2a2a3e" stroke-width="2" marker-end="url(#arrowGray)"/>
-      <line x1="220" y1="245" x2="170" y2="229" stroke="#f0a040" stroke-width="1.5" stroke-opacity=".4" stroke-dasharray="6 3" class="flow-line"/>
-      <line x1="600" y1="245" x2="650" y2="229" stroke="#40b0f0" stroke-width="1.5" stroke-opacity=".4" stroke-dasharray="6 3" class="flow-line"/>
-      <line x1="410" y1="315" x2="410" y2="355" stroke="#7c6aef" stroke-width="2" stroke-opacity=".4" stroke-dasharray="6 3" class="flow-line"/>
-
-      <!-- Animated dots -->
-      <circle cx="410" cy="75" fill="#7c6aef" class="pulse-dot"><animate attributeName="cy" values="64;86;64" dur="2s" repeatCount="indefinite"/></circle>
-      <circle cx="410" cy="158" fill="#e06090" class="pulse-dot"><animate attributeName="cy" values="145;170;145" dur="2s" repeatCount="indefinite" begin="0.3s"/></circle>
-      <circle cx="410" cy="335" fill="#7c6aef" class="pulse-dot"><animate attributeName="cy" values="320;350;320" dur="2s" repeatCount="indefinite" begin="0.6s"/></circle>
-
-      <defs>
-        <marker id="arrowGray" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#2a2a3e"/></marker>
-      </defs>
-    </svg>
+  <div class="diagram">
+    <div class="diagram-title">Layers</div>
+    <pre style="background:transparent!important;border:none!important;padding:0!important;margin:0!important;color:var(--text);font-family:var(--mono);font-size:.82rem;line-height:1.7">IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
+  dock widget, HT_UI/HT_IDB hooks     sidebar widget, UIContextNotification, PluginCommands
+            \                          /
+             PanelCore (src/common/ui)  — one per process, shows the current DbContext
+                        |
+   DbContext (one per open database): Host, ToolRegistry, ResultCache, ChatIndex
+                        |
+   ChatSession (UI thread) ── ChatContext (shared with tool workers) ── MutationLog
+                        |
+   OmcSession: one omc_session_t + its worker thread  ── omc RPC frames ──  libomc
+                        |
+   SessionListener ── ToolDispatcher (8 workers) ── Host (main-thread calls)</pre>
   </div>
+
+  <ul>
+    <li><strong>Host</strong> (<code>src/common/host/Host.h</code>) is everything shared code needs from one open database: paths, a stable database id (IDA netnode <code>$ rikugan</code>, BN metadata <code>rikugan_db_id</code>), cursor, navigation, <code>runOnMainThread</code>, decompiler presence, binary summary, <code>registerTools</code>, the host's own Python, byte read/write. <code>IdaHost</code> and <code>BnHost</code> implement it.</li>
+    <li><strong>DbContext</strong> is created on the UI thread when the panel first shows a database; it registers the host's analysis tools and Rikugan's chat tools and owns the database's chat index.</li>
+    <li><strong>PanelCore</strong> is the panel: header (chat switcher, Ctrl+K command palette, new chat, menu), activity strip (what the chat does now, agents, todo, goal, mode), transcript, agents panel, composer (slash commands, Ctrl+M model picker, queued prompts) and status line, plus the bulk renamer page, the login sheet, Get Started (shown while no model can answer) and Settings. Hosts feed it the current database, cursor moves and context-menu actions (<code>agent/Actions.h</code>).</li>
+    <li><strong>Theme</strong> takes every colour from the host's palette, so the panel matches IDA's and Binary Ninja's light and dark themes and follows a theme switch. In Binary Ninja the address, symbol, status and code colours are its own theme colours too. Elsewhere those come from Rikugan's defaults, corrected for contrast.</li>
+    <li><strong>Transcript.</strong> <code>TranscriptModel</code> turns a chat's frames, its replayed history and its cards into flat rows: timeline nodes and the rows of each step (thinking, text, tool calls with address chips, Undo and status, a card per batch of subagents). Streamed text is revealed a few characters per display frame, so a burst flows in over about 100 ms instead of jumping. Consecutive calls of one tool fold into a single row with their count. <code>TranscriptView</code> is a virtualized list whose delegate paints from cached documents, and pending cards are live widgets in their rows.</li>
+  </ul>
 
   <h3>Key Files</h3>
   <div class="table-wrap">
     <table>
       <tr><th>File</th><th>Purpose</th></tr>
-      <tr><td><code>rikugan/agent/loop.py</code></td><td>AgentLoop + BackgroundAgentRunner</td></tr>
-      <tr><td><code>rikugan/agent/turn.py</code></td><td>TurnEvent / TurnEventType definitions</td></tr>
-      <tr><td><code>rikugan/tools/base.py</code></td><td><code>@tool</code> decorator, ToolDefinition</td></tr>
-      <tr><td><code>rikugan/tools/registry.py</code></td><td>ToolRegistry</td></tr>
-      <tr><td><code>rikugan/ui/panel_core.py</code></td><td>RikuganPanelCore (Qt UI)</td></tr>
-      <tr><td><code>rikugan/ui/session_controller_base.py</code></td><td>SessionControllerBase</td></tr>
+      <tr><td><code>src/common/omc/OmcSession.h</code></td><td>One omc session + its worker; RPC requests, prompts, control frames</td></tr>
+      <tr><td><code>src/common/omc/EventQueue.h</code></td><td>Frames from omc threads to the UI, one coalesced event per burst</td></tr>
+      <tr><td><code>src/common/agent/ChatSession.h</code></td><td>A chat on the UI thread: lazy open, queue, cards, live-session limit</td></tr>
+      <tr><td><code>src/common/tools/ToolDispatcher.h</code></td><td>Host tool pool and the tool pipeline</td></tr>
+      <tr><td><code>src/common/tools/MutationLog.h</code></td><td>Undo records and reverse operations</td></tr>
+      <tr><td><code>src/common/agent/SystemPrompt.h</code></td><td>System prompt and per-prompt context block</td></tr>
+      <tr><td><code>src/common/agent/ModeDriver.h</code></td><td>/plan, /explore, /modify, /research</td></tr>
+      <tr><td><code>src/common/agent/Subagents.h</code></td><td>Subagents with host tools</td></tr>
+      <tr><td><code>src/common/agent/BulkRenamer.h</code></td><td>Bulk renamer engine</td></tr>
+      <tr><td><code>src/common/omc/AgentHome.h</code></td><td><code>~/.rikugan/omc</code> preparation</td></tr>
+      <tr><td><code>src/common/omc/AuthSync.h</code></td><td>&ldquo;Use my omc logins&rdquo;</td></tr>
+      <tr><td><code>src/common/security/Sanitize.h</code></td><td>Injection markers, memory/context sanitizing, IOC redaction</td></tr>
     </table>
   </div>
 </section>
 
-<!-- ═══════════════ 02 AGENTIC LOOP ═══════════════ -->
-<section class="section" id="agentic-loop">
+<!-- ═══════════════ 02 EMBEDDING LIBOMC ═══════════════ -->
+<section class="section" id="omc">
   <div class="section-num">02</div>
-  <h2>The Agentic Loop</h2>
-  <p><strong>File:</strong> <code>rikugan/agent/loop.py</code></p>
-
-  <h3>AgentLoop.run() Pipeline</h3>
-  <p>The entry point is <code>AgentLoop.run()</code>, a Python generator. It yields <code>TurnEvent</code> objects that the UI consumes.</p>
-
-  <div class="pipeline">
-    <div class="pipe-stage"><div class="ps-icon">&#x1F4E5;</div><div class="ps-title">Command Detection</div><div class="ps-desc">/plan, /modify, /explore, /undo, /memory, /mcp, /doctor</div></div>
-    <div class="pipe-stage"><div class="ps-icon">&#x1F3AF;</div><div class="ps-title">Skill Resolution</div><div class="ps-desc">Match slug, inject prompt, filter tools</div></div>
-    <div class="pipe-stage"><div class="ps-icon">&#x1F4DD;</div><div class="ps-title">System Prompt</div><div class="ps-desc">Host base + binary info + memory + skill</div></div>
-    <div class="pipe-stage"><div class="ps-icon">&#x1F504;</div><div class="ps-title">Turn Loop</div><div class="ps-desc">Stream → Parse → Execute → Yield events</div></div>
-    <div class="pipe-stage"><div class="ps-icon">&#x1F4E6;</div><div class="ps-title">Compaction</div><div class="ps-desc">Context window check at 80% threshold</div></div>
-  </div>
-
-  <h3>Turn Loop Detail</h3>
-  <pre><code class="language-python">while True:
-    yield TURN_START
-    stream = provider.chat_stream(messages, tools, system)
-    text, tool_calls = _stream_llm_turn(stream)   # yields TEXT_DELTA events
-    yield TEXT_DONE
-
-    if not tool_calls:
-        break   # LLM is done, no more tool calls
-
-    results = _execute_tool_calls(tool_calls)      # yields TOOL_RESULT events
-    append results to messages
-    yield TURN_END</code></pre>
-
-  <h3>_stream_llm_turn()</h3>
-  <p>Consumes the provider's <code>chat_stream()</code> generator. Each <code>StreamChunk</code> is processed:</p>
-  <div class="table-wrap">
-    <table>
-      <tr><th>Chunk Field</th><th>Action</th><th>Event Yielded</th></tr>
-      <tr><td><code>chunk.text</code></td><td>Accumulate text</td><td><code>TEXT_DELTA</code></td></tr>
-      <tr><td><code>chunk.is_tool_call_start</code></td><td>Start tool accumulation</td><td><code>TOOL_CALL_START</code></td></tr>
-      <tr><td><code>chunk.tool_args_delta</code></td><td>Accumulate JSON args</td><td><code>TOOL_CALL_ARGS_DELTA</code></td></tr>
-      <tr><td><code>chunk.is_tool_call_end</code></td><td>Finalize ToolCall</td><td><code>TOOL_CALL_DONE</code></td></tr>
-      <tr><td><code>chunk.usage</code></td><td>Update context manager</td><td><code>USAGE_UPDATE</code></td></tr>
-    </table>
-  </div>
-
-  <h3>_execute_tool_calls()</h3>
-  <p>For each <code>ToolCall</code> in the batch:</p>
-  <ol>
-    <li><strong>Pseudo-tool check</strong> &mdash; Handled inline with <code>continue</code></li>
-    <li><strong>Approval gate</strong> &mdash; <code>execute_python</code> requires user approval</li>
-    <li><strong>Pre-state capture</strong> &mdash; For mutating tools, <code>capture_pre_state()</code> records current state</li>
-    <li><strong>Execution</strong> &mdash; <code>ToolRegistry.execute(name, args)</code> dispatches to the handler</li>
-    <li><strong>Mutation recording</strong> &mdash; If <code>defn.mutating</code>, creates <code>MutationRecord</code>, yields <code>MUTATION_RECORDED</code></li>
-    <li><strong>Error handling</strong> &mdash; <code>ToolError</code> and <code>Exception</code> caught, returned as error results</li>
-    <li><strong>Result</strong> &mdash; Each result becomes a <code>ToolResult</code> and yields <code>TOOL_RESULT</code></li>
-  </ol>
-
-  <h3>BackgroundAgentRunner</h3>
-  <pre><code class="language-python">class BackgroundAgentRunner:
-    def start(self, user_message):
-        self._thread = Thread(target=self._run, args=(user_message,))
-        self._thread.start()
-
-    def _run(self, message):
-        for event in self.agent_loop.run(message):
-            self._event_queue.put(event)
-
-    def get_event(self, timeout=0):
-        return self._event_queue.get(timeout=timeout)</code></pre>
-</section>
-
-<!-- ═══════════════ 03 TURN EVENTS ═══════════════ -->
-<section class="section" id="turn-events">
-  <div class="section-num">03</div>
-  <h2>TurnEvent System</h2>
-  <p><strong>File:</strong> <code>rikugan/agent/turn.py</code> &mdash; All communication from the agent loop to the UI goes through <code>TurnEvent</code> objects. Each event type has a static factory method for clean construction.</p>
-
-  <div class="event-grid">
-    <div class="event-card"><div class="etype" style="color:var(--accent)">TEXT_DELTA</div><div class="edesc">Streaming text token from LLM</div><div class="efields">text</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent)">TEXT_DONE</div><div class="edesc">Full assistant text complete</div><div class="efields">text</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-4)">TOOL_CALL_START</div><div class="edesc">LLM requested a tool call</div><div class="efields">tool_call_id, tool_name</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-4)">TOOL_CALL_ARGS_DELTA</div><div class="edesc">Streaming tool arguments</div><div class="efields">tool_call_id, tool_args</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-4)">TOOL_CALL_DONE</div><div class="edesc">Tool call arguments finalized</div><div class="efields">tool_call_id, tool_name, tool_args</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-3)">TOOL_RESULT</div><div class="edesc">Tool execution result returned</div><div class="efields">tool_call_id, tool_name, tool_result</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-5)">TURN_START</div><div class="edesc">New turn begins</div><div class="efields">turn_number</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-5)">TURN_END</div><div class="edesc">Turn complete</div><div class="efields">turn_number</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-2)">ERROR</div><div class="edesc">Error occurred in the loop</div><div class="efields">error</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-2)">CANCELLED</div><div class="edesc">User cancelled the operation</div><div class="efields">&mdash;</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--text-dim)">USAGE_UPDATE</div><div class="edesc">Token usage update</div><div class="efields">usage (TokenUsage)</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent)">USER_QUESTION</div><div class="edesc">Agent asks user a question</div><div class="efields">text, metadata.options</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-2)">PLAN_GENERATED</div><div class="edesc">Plan mode: plan ready</div><div class="efields">plan_steps</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-2)">PLAN_STEP_START</div><div class="edesc">Executing plan step</div><div class="efields">plan_step_index, text</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-2)">PLAN_STEP_DONE</div><div class="edesc">Plan step complete</div><div class="efields">plan_step_index, text</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-4)">TOOL_APPROVAL_REQUEST</div><div class="edesc">Script approval needed</div><div class="efields">tool_call_id, tool_name, text</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-3)">EXPLORATION_PHASE_CHANGE</div><div class="edesc">Phase transition in explore mode</div><div class="efields">metadata.from_phase, to_phase</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-3)">EXPLORATION_FINDING</div><div class="edesc">Discovery logged</div><div class="efields">text, metadata.category, address</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-4)">PATCH_APPLIED</div><div class="edesc">Binary patch applied</div><div class="efields">metadata.address, original, new</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-3)">PATCH_VERIFIED</div><div class="edesc">Patch verified by decompiler</div><div class="efields">metadata.address, success</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-2)">SAVE_APPROVAL_REQUEST</div><div class="edesc">Save gate reached</div><div class="efields">metadata.patch_count, total_bytes</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-3)">SAVE_COMPLETED</div><div class="edesc">Patches saved to file</div><div class="efields">metadata.patch_count</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-2)">SAVE_DISCARDED</div><div class="edesc">Patches discarded</div><div class="efields">metadata.rolled_back</div></div>
-    <div class="event-card"><div class="etype" style="color:var(--accent-5)">MUTATION_RECORDED</div><div class="edesc">Mutation logged for undo</div><div class="efields">tool_name, metadata.reversible</div></div>
-  </div>
-</section>
-
-<!-- ═══════════════ 04 TOOL FRAMEWORK ═══════════════ -->
-<section class="section" id="tools">
-  <div class="section-num">04</div>
-  <h2>Tool Framework</h2>
-  <p><strong>Files:</strong> <code>rikugan/tools/base.py</code>, <code>rikugan/tools/registry.py</code></p>
-
-  <h3>@tool Decorator</h3>
-  <pre><code class="language-python">@tool(category="annotations", mutating=True)
-def rename_function(
-    old_name: Annotated[str, "Current function name"],
-    new_name: Annotated[str, "New name to assign"],
-) -> str:
-    """Rename a function in the database."""
-    # ... implementation</code></pre>
-  <p>The decorator inspects the function signature, extracts parameter descriptions from <code>Annotated</code> metadata, generates a <code>ToolDefinition</code> with JSON schema, and wraps the handler with <code>@idasync</code> for IDA thread-safety.</p>
-
-  <h3>ToolDefinition</h3>
-  <pre><code class="language-python">@dataclass
-class ToolDefinition:
-    name: str
-    description: str
-    parameters: List[ParameterSchema]
-    category: str = "general"
-    requires_decompiler: bool = False
-    mutating: bool = False              # marks tool as modifying the database
-    timeout: Optional[float] = None     # per-tool timeout in seconds
-    handler: Optional[Callable] = None</code></pre>
-
-  <h3>Argument Coercion</h3>
-  <p>The registry automatically coerces arguments during execution:</p>
-  <div class="table-wrap">
-    <table>
-      <tr><th>Input</th><th>Target</th><th>Result</th></tr>
-      <tr><td><code>"0x401000"</code></td><td><code>int</code></td><td><code>4198400</code></td></tr>
-      <tr><td><code>"true"</code> / <code>"false"</code></td><td><code>bool</code></td><td><code>True</code> / <code>False</code></td></tr>
-      <tr><td><code>0</code> / <code>1</code></td><td><code>bool</code></td><td><code>False</code> / <code>True</code></td></tr>
-    </table>
-  </div>
-
-  <h3>Tool Categories</h3>
-  <div class="table-wrap">
-    <table>
-      <tr><th>Category</th><th>Examples</th></tr>
-      <tr><td>Navigation</td><td><code>get_cursor_position</code>, <code>jump_to</code>, <code>get_name_at</code></td></tr>
-      <tr><td>Functions</td><td><code>list_functions</code>, <code>search_functions</code>, <code>get_function_info</code></td></tr>
-      <tr><td>Strings</td><td><code>list_strings</code>, <code>search_strings</code></td></tr>
-      <tr><td>Database</td><td><code>list_segments</code>, <code>list_imports</code>, <code>list_exports</code>, <code>read_bytes</code></td></tr>
-      <tr><td>Disassembly</td><td><code>read_disassembly</code>, <code>read_function_disassembly</code></td></tr>
-      <tr><td>Decompiler</td><td><code>decompile_function</code>, <code>get_pseudocode</code></td></tr>
-      <tr><td>Xrefs</td><td><code>xrefs_to</code>, <code>xrefs_from</code>, <code>function_xrefs</code></td></tr>
-      <tr><td>Annotations</td><td><code>rename_function</code>, <code>set_comment</code>, <code>set_type</code></td></tr>
-      <tr><td>Types</td><td><code>create_struct</code>, <code>modify_struct</code>, <code>set_function_prototype</code></td></tr>
-      <tr><td>Scripting</td><td><code>execute_python</code> (requires approval)</td></tr>
-      <tr><td>Microcode <span style="color:var(--text-dim)">(IDA)</span></td><td><code>get_microcode</code>, <code>nop_microcode</code></td></tr>
-      <tr><td>IL <span style="color:var(--text-dim)">(BN)</span></td><td><code>get_il</code>, <code>get_cfg</code>, <code>il_replace_expr</code>, <code>il_set_condition</code>, <code>nop_instructions</code>, <code>patch_branch</code></td></tr>
-    </table>
-  </div>
-
-  <h3>Timeout Wrapping</h3>
-  <pre><code class="language-python">future = _executor.submit(defn.handler, **arguments)
-result = future.result(timeout=timeout)  # default 30s</code></pre>
-</section>
-
-<!-- ═══════════════ 05 PSEUDO-TOOLS ═══════════════ -->
-<section class="section" id="pseudo-tools">
-  <div class="section-num">05</div>
-  <h2>Pseudo-Tools</h2>
-  <p>Pseudo-tools are tool schemas injected into the LLM's tool list but handled directly in <code>_execute_tool_calls()</code> rather than dispatched through the registry. They use a <code>continue</code> statement to skip normal execution.</p>
-
-  <div class="arch-box">
-    <div class="arch-item" style="text-align:left">
-      <div class="at" style="color:var(--accent)">exploration_report</div>
-      <div class="ad" style="margin-top:8px">Logs structured findings during exploration. Categories: <code>function_purpose</code>, <code>hypothesis</code>, <code>data_structure</code>, <code>constant</code>, <code>string_ref</code>, <code>import_usage</code>, <code>patch_result</code>. When <code>category="patch_result"</code>, also creates a <code>PatchRecord</code>.</div>
-    </div>
-    <div class="arch-item" style="text-align:left">
-      <div class="at" style="color:var(--accent-2)">phase_transition</div>
-      <div class="ad" style="margin-top:8px">Requests a phase change in exploration mode. Validates via <code>ExplorationState.can_transition_to()</code>. Denied if KnowledgeBase lacks minimum findings.</div>
-    </div>
-    <div class="arch-item" style="text-align:left">
-      <div class="at" style="color:var(--accent-3)">save_memory</div>
-      <div class="ad" style="margin-top:8px">Persists a fact to <code>RIKUGAN.md</code> in the IDB/BNDB directory. Categories: <code>function_purpose</code>, <code>architecture</code>, <code>naming_convention</code>, <code>prior_analysis</code>, <code>general</code>.</div>
-    </div>
-    <div class="arch-item" style="text-align:left">
-      <div class="at" style="color:var(--accent-5)">spawn_subagent</div>
-      <div class="ad" style="margin-top:8px">Creates an isolated <code>SubagentRunner</code> with its own <code>SessionState</code>. Accepts <code>task</code> and <code>max_turns</code> parameters.</div>
-    </div>
-  </div>
-
-  <h4>exploration_report Schema</h4>
-  <pre><code class="language-json">{
-  "category": "function_purpose|hypothesis|patch_result|...",
-  "summary": "Description of the finding",
-  "address": 4198400,
-  "function_name": "main",
-  "relevance": "high|medium|low",
-  "original_hex": "74 05",
-  "new_hex": "75 05"
-}</code></pre>
-</section>
-
-<!-- ═══════════════ 06 SKILL SYSTEM ═══════════════ -->
-<section class="section" id="skills">
-  <div class="section-num">06</div>
-  <h2>Skill System</h2>
-  <p><strong>Files:</strong> <code>rikugan/skills/loader.py</code>, <code>rikugan/skills/registry.py</code></p>
-
-  <h3>Skill Format</h3>
-  <p>Skills are Markdown files with YAML frontmatter:</p>
-  <pre><code class="language-markdown">---
-name: Malware Analysis
-description: Windows PE malware analysis workflow
-tags: [malware, windows]
-allowed_tools: [decompile_function, list_imports, search_strings]
-mode: exploration
----
-Task: Analyze this binary as potential malware.
-
-## Approach
-1. Check imports for suspicious APIs...</code></pre>
-
-  <h3>Discovery</h3>
-  <p><code>SkillRegistry.discover()</code> scans:</p>
-  <ol>
-    <li><strong>Built-in skills:</strong> <code>rikugan/skills/builtins/*/SKILL.md</code></li>
-    <li><strong>User skills (IDA Pro):</strong> <code>~/.idapro/rikugan/skills/*/SKILL.md</code> (Linux / macOS) · <code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\skills\*\SKILL.md</code> (Windows)</li>
-    <li><strong>User skills (Binary Ninja):</strong> <code>~/.binaryninja/rikugan/skills/*/SKILL.md</code> (Linux) · <code>~/Library/Application Support/Binary Ninja/rikugan/skills/*/SKILL.md</code> (macOS) · <code>%APPDATA%\Binary Ninja\rikugan\skills\*\SKILL.md</code> (Windows)</li>
-  </ol>
-  <p>Reference files in <code>references/*.md</code> subdirectories are automatically appended to the skill body.</p>
-
-  <h3>Built-in Skills</h3>
-  <div class="skill-grid">
-    <div class="skill-item"><span class="skill-slug">/malware-analysis</span><span class="skill-desc">Windows PE triage</span></div>
-    <div class="skill-item"><span class="skill-slug">/linux-malware</span><span class="skill-desc">ELF malware analysis</span></div>
-    <div class="skill-item"><span class="skill-slug">/deobfuscation</span><span class="skill-desc">CFF, opaque predicates</span></div>
-    <div class="skill-item"><span class="skill-slug">/vuln-audit</span><span class="skill-desc">Buffer overflows, fmt string</span></div>
-    <div class="skill-item"><span class="skill-slug">/driver-analysis</span><span class="skill-desc">Windows kernel drivers</span></div>
-    <div class="skill-item"><span class="skill-slug">/ctf</span><span class="skill-desc">CTF challenge solving</span></div>
-    <div class="skill-item"><span class="skill-slug">/generic-re</span><span class="skill-desc">General reverse engineering</span></div>
-    <div class="skill-item"><span class="skill-slug">/ida-scripting</span><span class="skill-desc">IDAPython API reference</span></div>
-    <div class="skill-item"><span class="skill-slug">/binja-scripting</span><span class="skill-desc">BN Python API reference</span></div>
-    <div class="skill-item"><span class="skill-slug">/modify</span><span class="skill-desc">Autonomous binary modification</span></div>
-    <div class="skill-item"><span class="skill-slug">/smart-patch-ida</span><span class="skill-desc">IDA-specific patching</span></div>
-    <div class="skill-item"><span class="skill-slug">/smart-patch-binja</span><span class="skill-desc">BN-specific patching</span></div>
-  </div>
-</section>
-
-<!-- ═══════════════ 07 EXPLORATION MODE ═══════════════ -->
-<section class="section" id="exploration">
-  <div class="section-num">07</div>
-  <h2>Exploration Mode</h2>
-  <p><strong>Files:</strong> <code>rikugan/agent/exploration_mode.py</code>, <code>rikugan/agent/loop.py</code></p>
-  <p>Exploration mode is a <strong>4-phase autonomous agent flow</strong> for binary modification.</p>
-
-  <div class="phase-stepper">
-    <div class="phase-step"><div class="num">1</div><div class="label">EXPLORE</div><div class="desc">Investigate binary, accumulate findings in KnowledgeBase</div></div>
-    <div class="phase-step"><div class="num">2</div><div class="label">PLAN</div><div class="desc">Synthesize findings into concrete modification plan</div></div>
-    <div class="phase-step"><div class="num">3</div><div class="label">EXECUTE</div><div class="desc">Apply patches in-memory for each planned change</div></div>
-    <div class="phase-step"><div class="num">4</div><div class="label">SAVE</div><div class="desc">User approval gate before persisting changes</div></div>
-  </div>
-
-  <h3>Phase 1: EXPLORE</h3>
-  <p>The agent autonomously investigates the binary to understand the user's goal.</p>
+  <h2>Embedding libomc</h2>
   <ul>
-    <li>Triggered by <code>/modify &lt;goal&gt;</code>, <code>/explore &lt;goal&gt;</code>, or skills with <code>mode: exploration</code></li>
-    <li>Uses all analysis tools + <code>exploration_report</code> + <code>phase_transition</code> pseudo-tools</li>
-    <li>Findings accumulated in <code>KnowledgeBase</code>: relevant functions, structured findings, hypotheses</li>
-    <li>Turn limit: 30 turns (<code>max_explore_turns</code>)</li>
-    <li>For <code>/modify</code>: runs as a <strong>subagent</strong> (isolated context window)</li>
+    <li><strong>Prelink.</strong> <code>cmake/build_omc.sh</code> builds omc's objects with omc's own Makefile and prelinks them into one relocatable object whose only globals are the <code>omc_*</code> API (<code>ld -r</code> + <code>objcopy --keep-global-symbols</code>; <code>-exported_symbols_list</code> on macOS). omc's internals cannot collide with the host process; the plugin modules export only their entry points.</li>
+    <li><strong>RPC frames.</strong> Everything goes through omc's RPC protocol: JSON frames sent with <code>omc_send</code>, received through one event callback per session. Rikugan uses <code>prompt</code>, <code>get_state</code>, <code>get_messages</code>, <code>get_last_assistant_text</code>, <code>set_model</code>, <code>fork</code>, <code>set_event_filter</code>, <code>set_host_tools</code>, the account commands, and the control frames <code>host_tool_result</code>, <code>host_tool_update</code>, <code>extension_ui_response</code>.</li>
+    <li><strong>Host tools.</strong> <code>set_host_tools</code> gives omc the JSON schemas of the visible tools. When the model calls one, omc emits <code>host_tool_call</code> and waits for a <code>host_tool_result</code> with the same id; <code>host_tool_cancel</code> aborts it. Mutating, script and <code>Exclusive</code> tools are marked exclusive: omc runs them alone and in message order; the rest may run in parallel.</li>
+    <li><strong>Event filter.</strong> Sessions subscribe to turn, message, tool-execution, compaction, retry, queue, model/thinking and notice frames, with <code>messageUpdates:"delta"</code>.</li>
+    <li><strong>AgentHome</strong> runs once at plugin init: <code>OMC_CONFIG_DIR</code> = <code>~/.rikugan/omc</code>, local model discovery off unless enabled, a CA bundle for hosts that bundle their own libcrypto, and a managed <code>config.yml</code> (approval mode <code>yolo</code> because Rikugan gates tools itself; sleep prevention, cache warming, skill-description compression, omc memory and project MCP off), plus <code>models.yml</code> from custom endpoints, omc's project prompt and the built-in skills.</li>
+    <li><strong>ServiceSession</strong>: one tool-less, in-memory omc session per process for Settings (model lists, login, logout, accounts). Login dialogs arrive as <code>extension_ui_request</code> frames. It opens on <code>rikugan-service/settings</code>, a keyless placeholder in <code>models.yml</code>, because omc refuses a session without a model and Settings must work before any login exists.</li>
   </ul>
+</section>
 
-  <h3>Phase Transition Gate</h3>
-  <div class="card">
-    <div class="card-title">KnowledgeBase.has_minimum_for_planning</div>
-    <p>To move EXPLORE &rarr; PLAN, all of these must be true:</p>
-    <ul>
-      <li>At least 1 relevant function discovered</li>
-      <li>At least 1 hypothesis formed</li>
-      <li>At least 1 hypothesis with <code>relevance="high"</code></li>
-    </ul>
-    <p style="margin-top:8px;color:var(--text-dim)">If the gate fails, the agent receives a gap description and continues exploring.</p>
-  </div>
-
-  <h3>Phase 2: PLAN</h3>
-  <p>Receives <code>PLAN_SYNTHESIS_PROMPT</code> with <code>KnowledgeBase.to_summary()</code>. Outputs a numbered list of changes, each with target address, current/proposed behavior, and patch strategy. User must approve before execution.</p>
-
-  <h3>Phase 3: EXECUTE</h3>
-  <p>Iterates over <code>ModificationPlan.changes</code>. Each step activates the platform-specific patching skill. After each patch, <code>exploration_report(category="patch_result")</code> creates a <code>PatchRecord</code>.</p>
-
-  <h3>Phase 4: SAVE</h3>
-  <p>Emits <code>SAVE_APPROVAL_REQUEST</code> with patch details. User responds "Save All" or "Discard All". Discard rolls back by writing <code>PatchRecord.original_bytes</code> back.</p>
-
-  <h3>/explore vs /modify</h3>
+<!-- ═══════════════ 03 THREADS ═══════════════ -->
+<section class="section" id="threading">
+  <div class="section-num">03</div>
+  <h2>Threads</h2>
   <div class="table-wrap">
     <table>
-      <tr><th>Aspect</th><th style="color:var(--accent)">/explore</th><th style="color:var(--accent-2)">/modify</th></tr>
-      <tr><td>Phases</td><td>EXPLORE only</td><td>EXPLORE &rarr; PLAN &rarr; EXECUTE &rarr; SAVE</td></tr>
-      <tr><td>Subagent</td><td>No (inline)</td><td>Yes (Phase 1 in subagent)</td></tr>
-      <tr><td>Patching</td><td>No</td><td>Yes</td></tr>
-      <tr><td>Knowledge base</td><td>Accumulated, returned</td><td>Accumulated, passed to Phase 2</td></tr>
+      <tr><th>Thread</th><th>Runs</th><th>Never</th></tr>
+      <tr><td>Host UI / main thread</td><td>Qt widgets, <code>ChatSession</code>, <code>PanelCore</code>, IDA SDK calls, BN UI calls (<code>jump_to</code>)</td><td>waits on omc, a session worker or a tool worker (except plugin shutdown, after <code>Host::closing</code> is set)</td></tr>
+      <tr><td>Session worker (one per <code>OmcSession</code>)</td><td><code>omc_session_new/free</code>, every non-control <code>omc_send</code> (prompts, compaction and fork block up to a minute), mode jobs</td><td>runs on the UI thread</td></tr>
+      <tr><td>omc event threads</td><td>the callback: peek <code>"type"</code>, answer request waiters, queue the raw frame</td><td>blocks</td></tr>
+      <tr><td><code>ToolDispatcher</code> pool (8, process-wide)</td><td>host tool calls through the pipeline. <code>Blocking</code> tools (<code>ask_user</code>, <code>spawn_subagent</code>) get their own thread</td><td>&mdash;</td></tr>
+      <tr><td>Host main thread (marshalled)</td><td><code>MainThread</code> tools, undo pre-state readers, binary summary</td><td>&mdash;</td></tr>
     </table>
   </div>
-
-  <h3>ExplorationState</h3>
-  <pre><code class="language-python">@dataclass
-class ExplorationState:
-    phase: ExplorationPhase
-    knowledge_base: KnowledgeBase
-    modification_plan: Optional[ModificationPlan]
-    patches_applied: List[PatchRecord]
-    explore_turns: int
-    execute_turns: int
-    total_turns: int        # monotonic counter for UI
-    max_explore_turns: int  # default 30
-    max_execute_turns: int  # default 20
-    explore_only: bool      # True for /explore (no patching)</code></pre>
+  <ul>
+    <li><strong>Control frames</strong> and <code>omc_abort</code> may be sent from any thread; omc handles them inline, not behind a running turn.</li>
+    <li><strong>Main-thread marshalling.</strong> <code>onMain(host, access, f)</code> runs inline on the main thread, otherwise posts a <code>MainThreadCall</code> (IDA: <code>execute_sync</code> with <code>MFF_NOWAIT</code> and <code>MFF_READ</code>/<code>MFF_WRITE</code>; BN: <code>ExecuteOnMainThread</code>) and waits. With <code>Host::closing</code> set, queued calls are abandoned and the caller gets &ldquo;Rikugan is shutting down&rdquo;; a call never runs against an abandoned caller's stack. Exceptions are rethrown on the worker.</li>
+    <li><strong>EventQueue.</strong> omc threads <code>push()</code> raw frames; the first push into an empty queue posts one <code>DrainEvent</code> to the chat's QObject, which drains everything queued so far. No timers, nothing while idle. Other cross-thread UI updates use queued <code>invokeMethod</code> on <code>uiAnchor()</code>, guarded by <code>QPointer</code>.</li>
+    <li><strong>Cards.</strong> Approvals, <code>ask_user</code> and mode decisions block the asking worker until the user answers or the call's <code>CancelToken</code> fires. The UI thread only shows the card.</li>
+    <li><strong>Unload.</strong> IDA unloads <code>rikugan.so</code> at exit with its Qt event loop still running, so no plugin thread, posted event or timer may outlive it. Background threads start through <code>spawnThread</code>, and worker results are posted to <code>uiAnchor()</code>, a plugin-owned QObject that also parents module-wide timers.</li>
+    <li><strong>Shutdown (IDA).</strong> The plugin sets <code>Host::closing</code>, deletes the panel synchronously, drops the database and widget, shuts down the service session and the tool pool, then joins the spawned threads and deletes the anchor. Closing a database sets <code>Host::closing</code> first so queued main-thread work cannot touch it.</li>
+  </ul>
 </section>
 
-<!-- ═══════════════ 08 PLAN MODE ═══════════════ -->
-<section class="section" id="plan-mode">
-  <div class="section-num">08</div>
-  <h2>Plan Mode</h2>
-  <p><strong>Files:</strong> <code>rikugan/agent/plan_mode.py</code>, <code>rikugan/agent/loop.py</code></p>
-  <p>Plan mode is a simpler two-step workflow: <strong>plan first, then execute</strong>. Triggered by <code>/plan &lt;message&gt;</code>.</p>
-
-  <div class="flow">
-    <div class="flow-node purple">Plan Generation</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node pink">Plan Parsing</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node orange">User Approval</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node green">Step-by-Step Execution</div>
+<!-- ═══════════════ 04 CHAT LIFECYCLE ═══════════════ -->
+<section class="section" id="chat">
+  <div class="section-num">04</div>
+  <h2>Chat Lifecycle</h2>
+  <div class="diagram">
+    <div class="diagram-title">A prompt</div>
+    <pre style="background:transparent!important;border:none!important;padding:0!important;margin:0!important;color:var(--text);font-family:var(--mono);font-size:.82rem;line-height:1.7">composer -&gt; CommandRouter::submit -&gt; ChatSession::sendPrompt -&gt; worker: OmcSession::prompt
+  prompt -&gt; (omc agent loop: model, host_tool_call ...) -&gt; prompt_result -&gt; get_last_assistant_text
+omc frames -&gt; SessionListener -&gt; EventQueue -&gt; ChatSession::frame -&gt; chat widgets</pre>
   </div>
-
-  <ol>
-    <li><strong>Plan Generation</strong> &mdash; LLM receives <code>_PLAN_GENERATION_PROMPT</code>, outputs a numbered list</li>
-    <li><strong>Plan Parsing</strong> &mdash; <code>parse_plan()</code> extracts numbered steps from text</li>
-    <li><strong>User Approval</strong> &mdash; <code>PLAN_GENERATED</code> event; user approves or rejects</li>
-    <li><strong>Step Execution</strong> &mdash; For each step: emit <code>PLAN_STEP_START</code>, run a full turn cycle, emit <code>PLAN_STEP_DONE</code></li>
-  </ol>
+  <ul>
+    <li>A chat is an entry in <code>&lt;sessions&gt;/&lt;db id&gt;/chats.json</code> (id, omc session file, title, timestamps, fork parent). omc writes the session file lazily after the first answer.</li>
+    <li><code>&lt;sessions&gt;/&lt;db id&gt;/database.json</code> records the host and the file the database came from. With no database open, Binary Ninja's panel lists “Open a binary…” and the newest chats. Picking a chat opens its file (or focuses the tab that already shows it) and selects that chat. A binary that was never saved as a database takes the chat's id when it opens from that list.</li>
+    <li>The omc session opens lazily with cwd <code>~/.rikugan/scratch/&lt;db id&gt;/</code>, the chat's session file to resume, the configured model and thinking level, the system prompt, the omc built-in allow-list and the host tools. On resume the transcript is replayed from <code>get_messages</code>.</li>
+    <li><strong>Live-session limit:</strong> at most 4 chat sessions are open per process; idle chats beyond that close (LRU) and resume from their session file on demand.</li>
+    <li>A message typed while the chat works is steered into the running agent (omc <code>steer</code>) and shows as queued until omc's <code>queue_update</code> says it was taken. Commands, and anything a run did not take, go out as the next prompts. Stop aborts the turn and drops both. When a run ends, cards still open are answered &ldquo;cancelled&rdquo;. A session omc refused to start (no model yet) opens again on the next prompt. A queued message's Send now stops the run and sends it first.</li>
+    <li><strong>Other databases</strong> (Binary Ninja): <code>list_databases</code>, <code>open_database</code> (loaded in the background with <code>BinaryNinja::Load</code>, no tab, after the user approves the path), <code>ask_database</code> (a read-only subagent on another database with that database's tools) and <code>close_database</code>. Each typed prompt gets a <code>&lt;rikugan_context&gt;</code> block (cursor, function) unless auto context is off or the profile hides metadata; <code>/</code>-commands are sent bare so omc recognises them.</li>
+    <li>After each prompt the worker runs AuthSync and posts the cached state (model, context usage). Fork sends <code>fork</code>; changing the model sends <code>set_model</code>. Compaction and retries are omc's.</li>
+  </ul>
+  <h3>Commands</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Input</th><th>Handled by</th></tr>
+      <tr><td><code>/plan</code>, <code>/explore</code>, <code>/modify</code>, <code>/research</code></td><td><code>ModeDriver</code></td></tr>
+      <tr><td><code>/undo [N]</code></td><td><code>MutationLog::undo</code> off the UI thread</td></tr>
+      <tr><td><code>/memory</code>, <code>/mcp</code>, <code>/doctor</code></td><td><code>CommandRouter</code> (local output)</td></tr>
+      <tr><td><code>/&lt;skill&gt; args</code></td><td>omc's <code>/skill:&lt;skill&gt;</code>; <code>mode: plan</code> / <code>mode: exploration</code> skills start <code>/plan</code> / <code>/modify</code></td></tr>
+      <tr><td><code>/compact</code>, <code>/retry</code>, <code>/model</code>, <code>/effort</code></td><td>omc</td></tr>
+      <tr><td>any other <code>/command</code></td><td>refused (omc's <code>/move</code> and <code>/wt</code> would <code>chdir</code> the host process)</td></tr>
+    </table>
+  </div>
 </section>
 
-<!-- ═══════════════ 09 SUBAGENTS ═══════════════ -->
+<!-- ═══════════════ 05 SYSTEM PROMPT ═══════════════ -->
+<section class="section" id="system-prompt">
+  <div class="section-num">05</div>
+  <h2>System Prompt</h2>
+  <p><code>buildSystemPrompt</code> assembles the prompt once per omc session from embedded <code>prompts/system/**</code> files (order and placeholders in <code>prompts/MANIFEST.md</code>):</p>
+  <ol>
+    <li><code>base.md</code> with the host's intro, tool usage and capabilities.</li>
+    <li><code>memory.md</code>: the first 200 lines of <code>RIKUGAN.md</code>, sanitized and capped.</li>
+    <li><code>current_binary.md</code>: the host's binary summary through <code>sanitizeBinaryContext</code> (skipped when the profile hides metadata).</li>
+    <li><code>available_tools.md</code>: visible host tools plus omc built-ins.</li>
+    <li><code>filesystem.md</code> / <code>shell.md</code> for omc's disk tools and <code>bash</code>.</li>
+    <li>Profile sections: singular analysis, custom instructions, restricted functions, active profile and IOC filters.</li>
+  </ol>
+  <p>omc lists skills itself. Mode instructions travel in the mode's prompts (or a subagent's task addendum); the context block is prepended to each user prompt.</p>
+</section>
+
+<!-- ═══════════════ 06 TOOLS &AMP; PIPELINE ═══════════════ -->
+<section class="section" id="tools">
+  <div class="section-num">06</div>
+  <h2>Tools &amp; Pipeline</h2>
+  <h3>Kinds</h3>
+  <ul>
+    <li><strong>Host analysis tools</strong>: <code>rk::ToolSpec</code>s added in <code>Host::registerTools</code> (<code>src/binja/tools/</code>, <code>src/ida/host/tools/</code>, SDK subclasses in <code>src/ida/sdk/</code>). Names, descriptions and parameters are kept 1:1 with the 1.x tools.</li>
+    <li><strong>Chat tools</strong>: <code>ask_user</code>, <code>save_memory</code>, <code>spawn_subagent</code> (depth 0 only), <code>exploration_report</code> and <code>research_note</code> (while a mode shows them).</li>
+    <li><strong>omc built-ins</strong>: <code>read</code>, <code>write</code>, <code>edit</code>, <code>ast_edit</code>, <code>grep</code>, <code>glob</code>, <code>bash</code>, <code>web_search</code> and <code>todo</code>. MCP tools come from omc. omc asks before each disk or shell call and <code>Permissions</code> answers at once when the chat (or a setting) already allows that kind. Otherwise the transcript shows a card: Allow once, Allow for this chat or Deny. A chat's subagents share its answers.</li>
+    <li><strong>Binary Ninja's MCP tools</strong> (<code>HostMcp</code>, <code>BnHostMcp</code>): the <code>bn_*</code> tools of Binary Ninja's own MCP server (<code>ui.mcp.enabled</code>), offered per database once the user agrees, through the offer line or the header's MCP button (remembered as <code>hostMcp</code> in <code>database.json</code>). They go through the same dispatcher. A tool whose name has no reading verb is <code>Mutating</code> and is recorded as not undoable. While they are on, Rikugan's host tools are hidden for that database. Calls take turns and first select the chat's view, because the server's active view is global. Toggling closes idle sessions so they resume with the matching system prompt.</li>
+  </ul>
+  <p>Flags: <code>Mutating</code>, <code>MainThread</code> (IDA: every tool; BN: UI and mutating tools), <code>RequiresDecompiler</code>, <code>Cacheable</code>, <code>Script</code>, <code>Internal</code> (undo readers, never shown), <code>Exclusive</code>, <code>Blocking</code>, <code>External</code> (served by another program: Binary Ninja's MCP tools).</p>
+
+  <h3>ToolDispatcher::execute</h3>
+  <div class="pipeline">
+    <div class="pipe-stage"><div class="ps-icon">&#x1F6AB;</div><div class="ps-title">Gates</div><div class="ps-desc">unknown/internal, profile denial, read-only phase, decompiler requirement</div></div>
+    <div class="pipe-stage"><div class="ps-icon">&#x270B;</div><div class="ps-title">Approval</div><div class="ps-desc">scripts always; mutations with approve_mutations</div></div>
+    <div class="pipe-stage"><div class="ps-icon">&#x1F4F8;</div><div class="ps-title">Pre-state</div><div class="ps-desc">old name / comment / prototype for undo</div></div>
+    <div class="pipe-stage"><div class="ps-icon">&#x2699;&#xFE0F;</div><div class="ps-title">Run</div><div class="ps-desc">cache lookup, then the handler (main thread if required)</div></div>
+    <div class="pipe-stage"><div class="ps-icon">&#x1F9FC;</div><div class="ps-title">After</div><div class="ps-desc">mutation record, cache, marker strip, IOC filter, artifact cap</div></div>
+  </div>
+  <ul>
+    <li><code>ToolError</code> becomes <code>Error: &lt;message&gt;</code>; other exceptions become <code>Unexpected error: ...</code> and are logged.</li>
+    <li>Result cache: <code>list_functions</code>, <code>list_strings</code>, <code>get_binary_info</code>, <code>decompile_function</code>, <code>function_xrefs</code>; 64-entry LRU per database, flushed by any successful mutation.</li>
+    <li>Artifact cap: over the tool's limit the model gets the head (60%) and tail (40%) and the path of a file in <code>&lt;scratch&gt;/artifacts/</code> that omc's <code>read</code> can page.</li>
+    <li>Partial output goes out as <code>host_tool_update</code>. The queue is bounded; overflow and shutdown answer with an error.</li>
+  </ul>
+</section>
+
+<!-- ═══════════════ 07 UNDO ═══════════════ -->
+<section class="section" id="undo">
+  <div class="section-num">07</div>
+  <h2>Undo</h2>
+  <ul>
+    <li>One <code>MutationLog</code> per chat, in memory, shared with the chat's subagents.</li>
+    <li>Reversible: <code>rename_function</code>, <code>rename_variable</code>, <code>set_comment</code>, <code>set_function_comment</code>, <code>set_pseudocode_comment</code>, <code>rename_address</code>, <code>set_function_prototype</code>. A reversible tool's success text starts with &ldquo;Renamed&rdquo;, &ldquo;Named&rdquo; or &ldquo;Set &rdquo;.</li>
+    <li>Known irreversible: <code>execute_python</code>, type creation/application, byte patches, IL/microcode transforms, optimizer/workflow installs, <code>redecompile_function</code>.</li>
+    <li><code>/undo N</code> pops newest first off the UI thread; a reverse that can never succeed is dropped, any other failure stops and keeps the record. File changes made with omc's disk tools are not undone.</li>
+  </ul>
+</section>
+
+<!-- ═══════════════ 08 MODES ═══════════════ -->
+<section class="section" id="modes">
+  <div class="section-num">08</div>
+  <h2>Modes</h2>
+  <p><code>ModeDriver::start</code> runs one busy job on the chat's session worker: prompts in sequence, the phase set in <code>ChatContext</code> (read-only phases refuse mutations), mode-only tools shown with <code>set_host_tools</code> between prompts, <code>turn_start</code> frames counted to cap each phase, decisions asked through cards.</p>
+  <div class="phase-stepper">
+    <div class="phase-step"><div class="num">1</div><div class="label">EXPLORE</div><div class="desc">Read-only; findings via exploration_report (a subagent in /modify)</div></div>
+    <div class="phase-step"><div class="num">2</div><div class="label">PLAN</div><div class="desc">Knowledge summary &rarr; numbered plan &rarr; approve / regenerate / cancel</div></div>
+    <div class="phase-step"><div class="num">3</div><div class="label">EXECUTE</div><div class="desc">Up to 20 changes, 10 turns each</div></div>
+    <div class="phase-step"><div class="num">4</div><div class="label">SAVE</div><div class="desc">Save keeps patches; Discard writes original bytes back</div></div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Mode</th><th>Phases</th></tr>
+      <tr><td><code>/plan</code></td><td>plan (text-only, read-only) &rarr; approval &rarr; each step (10 turns)</td></tr>
+      <tr><td><code>/explore</code></td><td>explore (read-only, capped by the exploration turn limit) &rarr; summary</td></tr>
+      <tr><td><code>/modify</code></td><td>explore as a subagent &rarr; plan &rarr; execute &rarr; save</td></tr>
+      <tr><td><code>/research</code></td><td>explore &rarr; document (<code>research_note</code>, 15 turns) &rarr; index: notes under <code>&lt;database dir&gt;/notes/</code></td></tr>
+    </table>
+  </div>
+  <p>Leaving explore in <code>/modify</code> needs a function-purpose finding with an address and a high-relevance hypothesis. <code>ModeState</code> holds findings, functions, patches and notes, shared with the mode's subagents.</p>
+</section>
+
+<!-- ═══════════════ 09 SUBAGENTS &AMP; BULK RENAMER ═══════════════ -->
 <section class="section" id="subagents">
   <div class="section-num">09</div>
-  <h2>Subagents</h2>
-  <p><strong>File:</strong> <code>rikugan/agent/subagent.py</code></p>
-  <p>Subagents are isolated <code>AgentLoop</code> instances with their own <code>SessionState</code>. They keep the parent's context window clean from verbose tool output.</p>
-
-  <pre><code class="language-python">class SubagentRunner:
-    def run_task(self, task, max_turns=20) -> Generator[TurnEvent, None, str]:
-        # General-purpose: returns final text
-        loop = AgentLoop(provider, tools, config, fresh_session)
-        for event in loop.run(augmented_task):
-            yield event
-        return final_text
-
-    def run_exploration(self, user_goal, max_turns=30) -> Generator[..., None, KnowledgeBase]:
-        # Phase 1 specific: returns KnowledgeBase
-        loop = AgentLoop(provider, tools, config, fresh_session)
-        for event in loop.run(f"/explore {user_goal}"):
-            yield event
-        return loop.last_knowledge_base</code></pre>
-
-  <h3>Knowledge Base Transfer</h3>
-  <ol>
-    <li><code>_clear_exploration_state()</code> saves the <code>KnowledgeBase</code> to <code>_last_knowledge_base</code></li>
-    <li>The parent accesses it via the <code>last_knowledge_base</code> property</li>
-    <li>The parent populates its own <code>ExplorationState.knowledge_base</code> from the subagent's results</li>
-    <li>Phases 2-4 proceed in the parent with a clean context window</li>
-  </ol>
+  <h2>Subagents &amp; Bulk Renamer</h2>
+  <p>omc's own <code>task</code> subagents cannot see host tools, so Rikugan runs its own: <code>runSubagent</code> opens a separate omc session (session dir <code>subagents/</code>) with the parent's database, tools, approvals, permissions, profile and mutation log, at depth + 1. The task is framed by <code>prompts/agents/subagent.md</code> plus an optional preset (<code>network_recon</code>, <code>report_writer</code>) and perks, and a turn cap aborts runaway runs. <code>SubagentRegistry</code> keeps each agent's live progress (current tool, tools, tokens, a log) for the transcript and the agents panel (tree, log, Stop, Steer, send the summary to the chat, new agent).</p>
+  <h3>Bulk renamer</h3>
+  <ul>
+    <li><strong>Quick:</strong> functions are decompiled one by one (with disassembly), cut to 6,000 chars, packed into batches (batch size and &le; 180,000 chars) and sent to tool-less, session-less omc worker sessions, up to the concurrency limit at once. Replies are <code>0x&lt;addr&gt; &lt;name&gt;</code> lines.</li>
+    <li><strong>Deep:</strong> one subagent per function (10 turns), answered with <code>RENAME: 0x&lt;addr&gt; &lt;name&gt;</code>.</li>
+    <li>Pause, resume, cancel (aborts in-flight sessions), Undo All. Each batch is a subagent of category <code>bulk_rename</code>.</li>
+  </ul>
 </section>
 
-<!-- ═══════════════ 10 MUTATION TRACKING ═══════════════ -->
-<section class="section" id="mutation">
+<!-- ═══════════════ 10 SETTINGS &AMP; FILES ═══════════════ -->
+<section class="section" id="settings">
   <div class="section-num">10</div>
-  <h2>Mutation Tracking &amp; Undo</h2>
-  <p><strong>File:</strong> <code>rikugan/agent/mutation.py</code></p>
-  <p>Every mutating tool call (<code>defn.mutating=True</code>) is recorded in <code>AgentLoop._mutation_log</code> for undo support.</p>
-
-  <h3>MutationRecord</h3>
-  <pre><code class="language-python">@dataclass
-class MutationRecord:
-    tool_name: str              # e.g., "rename_function"
-    arguments: Dict[str, Any]   # original arguments
-    reverse_tool: str           # tool to call for undo
-    reverse_arguments: Dict     # arguments for undo
-    timestamp: float
-    description: str            # human-readable
-    reversible: bool            # False for execute_python, etc.</code></pre>
-
-  <h3>Reverse Strategies</h3>
+  <h2>Settings &amp; Files</h2>
+  <p><code>RikuganConfig</code> (<code>~/.rikugan/config.json</code>, <code>RIKUGAN_HOME</code> overrides the root) is shared by both hosts. Settings tabs: <strong>Provider</strong> (one provider at a time: login or API key, then its model and thinking level; custom connections; shared omc logins; local discovery), <strong>Behavior</strong>, <strong>Skills</strong>, <strong>MCP</strong>, <strong>Profiles</strong>.</p>
   <div class="table-wrap">
     <table>
-      <tr><th>Tool</th><th>Reverse Strategy</th></tr>
-      <tr><td><code>rename_function</code></td><td>Swap <code>old_name</code> &harr; <code>new_name</code></td></tr>
-      <tr><td><code>rename_variable</code></td><td>Swap <code>variable_name</code> &harr; <code>new_name</code></td></tr>
-      <tr><td><code>set_comment</code></td><td>Restore <code>old_comment</code> (from pre-state) or <code>delete_comment</code></td></tr>
-      <tr><td><code>set_function_comment</code></td><td>Restore <code>old_comment</code> or <code>delete_function_comment</code></td></tr>
-      <tr><td><code>rename_data</code></td><td>Restore <code>old_name</code> (from pre-state)</td></tr>
-      <tr><td><code>set_function_prototype</code></td><td>Restore <code>old_prototype</code> (from pre-state)</td></tr>
-      <tr><td><code>retype_variable</code></td><td>Restore <code>old_type</code> (from pre-state)</td></tr>
-      <tr><td><code>execute_python</code></td><td style="color:var(--accent-2)">Not reversible</td></tr>
+      <tr><th>Path</th><th>Content</th></tr>
+      <tr><td><code>~/.rikugan/config.json</code></td><td>Rikugan settings</td></tr>
+      <tr><td><code>~/.rikugan/omc/agent/</code></td><td><code>auth.json</code> (0600), <code>models.yml</code>, <code>mcp.json</code>, <code>skills/</code>, managed <code>config.yml</code></td></tr>
+      <tr><td><code>~/.rikugan/sessions/&lt;db id&gt;/</code></td><td>omc session files, <code>chats.json</code>, <code>database.json</code>, <code>subagents/</code></td></tr>
+      <tr><td><code>~/.rikugan/scratch/&lt;db id&gt;/</code></td><td>session cwd, <code>artifacts/</code>, files the agent writes</td></tr>
+      <tr><td><code>&lt;database dir&gt;/RIKUGAN.md</code></td><td>persistent memory</td></tr>
+      <tr><td><code>&lt;database dir&gt;/notes/</code></td><td><code>/research</code> notes</td></tr>
     </table>
   </div>
-
-  <h3>/undo Flow</h3>
-  <!-- Animated SVG diagram for mutation tracking -->
-  <div class="svg-diagram">
-    <svg viewBox="0 0 760 240" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:760px">
-      <rect x="10" y="20" width="180" height="50" rx="8" fill="#111118" stroke="#f0a040" stroke-opacity=".4"/>
-      <text x="100" y="50" text-anchor="middle" fill="#f0a040" font-family="JetBrains Mono,monospace" font-size="11" font-weight="600">rename_function()</text>
-
-      <rect x="10" y="90" width="180" height="50" rx="8" fill="#111118" stroke="#50c878" stroke-opacity=".4"/>
-      <text x="100" y="112" text-anchor="middle" fill="#50c878" font-family="Inter,sans-serif" font-size="11" font-weight="600">capture_pre_state()</text>
-      <text x="100" y="128" text-anchor="middle" fill="#8888a0" font-family="Inter,sans-serif" font-size="9">Record current state</text>
-
-      <rect x="240" y="90" width="200" height="50" rx="8" fill="#111118" stroke="#7c6aef" stroke-opacity=".4"/>
-      <text x="340" y="112" text-anchor="middle" fill="#7c6aef" font-family="Inter,sans-serif" font-size="11" font-weight="600">build_reverse_record()</text>
-      <text x="340" y="128" text-anchor="middle" fill="#8888a0" font-family="Inter,sans-serif" font-size="9">Generate undo operation</text>
-
-      <rect x="490" y="90" width="180" height="50" rx="8" fill="#111118" stroke="#e06090" stroke-opacity=".4"/>
-      <text x="580" y="112" text-anchor="middle" fill="#e06090" font-family="Inter,sans-serif" font-size="11" font-weight="600">_mutation_log.append()</text>
-      <text x="580" y="128" text-anchor="middle" fill="#8888a0" font-family="Inter,sans-serif" font-size="9">Store for undo</text>
-
-      <rect x="240" y="170" width="200" height="50" rx="8" fill="#111118" stroke="#40b0f0" stroke-opacity=".4"/>
-      <text x="340" y="192" text-anchor="middle" fill="#40b0f0" font-family="Inter,sans-serif" font-size="11" font-weight="600">MUTATION_RECORDED</text>
-      <text x="340" y="208" text-anchor="middle" fill="#8888a0" font-family="Inter,sans-serif" font-size="9">Event &rarr; UI panel</text>
-
-      <!-- Arrows -->
-      <line x1="100" y1="70" x2="100" y2="90" stroke="#2a2a3e" stroke-width="1.5" marker-end="url(#arrowGray)"/>
-      <line x1="190" y1="115" x2="240" y2="115" stroke="#2a2a3e" stroke-width="1.5" marker-end="url(#arrowGray)"/>
-      <line x1="440" y1="115" x2="490" y2="115" stroke="#2a2a3e" stroke-width="1.5" marker-end="url(#arrowGray)"/>
-      <line x1="340" y1="140" x2="340" y2="170" stroke="#2a2a3e" stroke-width="1.5" marker-end="url(#arrowGray)"/>
-    </svg>
-  </div>
+  <p>Built-in skills are embedded in the plugin and synced into <code>omc/agent/skills/&lt;slug&gt;/</code> with a <code>.rikugan-builtin</code> version marker; a user folder of the same name is never overwritten.</p>
+  <h3>AuthSync</h3>
+  <p>&ldquo;Use my omc logins&rdquo; merges Rikugan's <code>auth.json</code> (R) with standalone omc's (O): providers only in O are copied to R; for an OAuth login in both, the one that expires later wins on both sides; API keys in both keep R's; R-only entries never go to O; nothing is deleted. Writes are atomic and 0600; omc reloads credentials when R changed. It runs after each prompt, after a login and when Settings closes.</p>
 </section>
 
-<!-- ═══════════════ 11 CONTEXT WINDOW ═══════════════ -->
-<section class="section" id="context">
+<!-- ═══════════════ 11 SECURITY MODEL ═══════════════ -->
+<section class="section" id="security">
   <div class="section-num">11</div>
-  <h2>Context Window Management</h2>
-  <p><strong>File:</strong> <code>rikugan/agent/context_window.py</code></p>
-
-  <pre><code class="language-python">class ContextWindowManager:
-    max_tokens: int           # from config (default 128000)
-    compaction_threshold: 0.8 # compact when usage > 80%
-
-    def should_compact() -> bool
-    def compact_messages(messages) -> List[Message]
-    def estimate_tokens(text) -> int  # ~3.5 chars/token heuristic</code></pre>
-
-  <h3>Compaction Strategy</h3>
-  <div class="flow">
-    <div class="flow-node blue">Keep First Message</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node orange">Summarize Middle</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node green">Keep Last 4 Messages</div>
-  </div>
-  <p>When <code>should_compact()</code> returns True: keep the first message (system/initial), summarize all middle messages into one <code>[Context summary]</code> message, and keep the last 4 messages (recent context).</p>
-  <p><code>SessionState._truncate_results()</code> also caps tool results with <code>[...N chars omitted]</code> markers to prevent individual messages from consuming too much context.</p>
+  <h2>Security Model</h2>
+  <p>Rikugan processes adversarial binaries; strings, names and code from the sample reach the model and the UI.</p>
+  <ul>
+    <li><strong>Injection.</strong> Every host tool result passes <code>stripInjectionMarkers</code> (zero-width characters, role markers, chat template delimiters, the Anthropic magic string, override phrases, homoglyph-normalised), then the profile's IOC filter. Memory and binary context in the system prompt are sanitised and capped. The data-integrity section of the system prompt tells the model tool output is data, not instructions.</li>
+    <li><strong>Scripts.</strong> <code>execute_python</code> and the other <code>Script</code> tools always ask, showing the code. They run in the host's own Python after <code>prompts/python/guard_prelude.py</code> (AST blocklist, restricted builtins). The agent never runs the target binary.</li>
+    <li><strong>Disk and shell.</strong> omc's file and shell tools ask before their first use in a chat, per kind (read, write, edit, shell). "Allow for this chat" covers the chat and its subagents, and Settings can allow files or shell commands without asking. They are not sandboxed.</li>
+    <li><strong>omc settings isolation.</strong> The session cwd is Rikugan's scratch dir, never the sample's directory; project context files, rules and project MCP are off; omc commands that would <code>chdir</code> the host are refused.</li>
+    <li><strong>Credentials</strong> live in <code>auth.json</code> (0600); <code>models.yml</code> with endpoint keys is 0600.</li>
+  </ul>
+  <h3>Residual risks</h3>
+  <ul>
+    <li>Sanitisation is pattern-based and cannot catch every phrasing of an injection.</li>
+    <li>With shell access allowed, an injected instruction can reach <code>bash</code> with the user's privileges, and file changes are not undoable.</li>
+    <li>The guard prelude is a blocklist inside the host's Python, not a sandbox; an approved script can do anything the host can. &ldquo;Always allow&rdquo; removes the per-script prompt for that chat.</li>
+    <li>MCP servers the user configures run as the user.</li>
+  </ul>
 </section>
 
-<!-- ═══════════════ 12 PERSISTENT MEMORY ═══════════════ -->
-<section class="section" id="memory">
+<!-- ═══════════════ 12 TESTS ═══════════════ -->
+<section class="section" id="tests">
   <div class="section-num">12</div>
-  <h2>Persistent Memory</h2>
-  <p><strong>Files:</strong> <code>rikugan/agent/system_prompt.py</code>, <code>rikugan/agent/loop.py</code></p>
-
-  <h3>RIKUGAN.md</h3>
-  <p>A per-binary Markdown file stored alongside the IDB/BNDB. It acts as cross-session memory.</p>
+  <h2>Tests</h2>
   <ul>
-    <li><strong>Location:</strong> <code>&lt;idb_directory&gt;/RIKUGAN.md</code></li>
-    <li><strong>Loading:</strong> First 200 lines loaded into the system prompt</li>
-    <li><strong>Writing:</strong> Via the <code>save_memory</code> pseudo-tool or plan persistence</li>
+    <li><code>tests/native/</code> (QtTest, <code>build/none</code>): omc's mock model server in a temporary home; omc bridge and managed config, AuthSync merge, the chat core with a fake host (tool round trip, exclusivity and order, cancellation, undo, artifacts, transcript replay), sanitisation and IOC filters, modes, bulk renamer, settings and widgets offscreen.</li>
+    <li><code>tests/ida/</code> (<code>rikugan_ida_tooltest</code>): every model-visible IDA tool against a fresh idalib database of <code>/bin/ls</code>, then <code>/undo</code> of a rename.</li>
   </ul>
-
-  <h3>save_memory Pseudo-Tool</h3>
-  <pre><code class="language-json">{"fact": "sub_401230 is the snake initializer, length at +0x1A", "category": "function_purpose"}</code></pre>
-  <p>Categories: <code>function_purpose</code>, <code>architecture</code>, <code>naming_convention</code>, <code>prior_analysis</code>, <code>general</code>.</p>
-</section>
-
-<!-- ═══════════════ 13 SESSIONS ═══════════════ -->
-<section class="section" id="sessions">
-  <div class="section-num">13</div>
-  <h2>Session Management</h2>
-  <p><strong>Files:</strong> <code>rikugan/state/session.py</code>, <code>rikugan/state/history.py</code>, <code>rikugan/ui/session_controller_base.py</code></p>
-
-  <h3>SessionState</h3>
-  <pre><code class="language-python">@dataclass
-class SessionState:
-    id: str                        # unique hex ID
-    created_at: float
-    messages: List[Message]        # full conversation history
-    total_usage: TokenUsage        # cumulative token usage
-    last_prompt_tokens: int        # most recent prompt size
-    current_turn: int
-    is_running: bool
-    provider_name: str
-    model_name: str
-    idb_path: str
-    metadata: Dict[str, str]</code></pre>
-
-  <h3>Multi-Tab &amp; Fork</h3>
-  <pre><code class="language-python">class SessionControllerBase:
-    _sessions: Dict[str, SessionState]  # tab_id -> session
-    _active_tab_id: str
-
-    def create_tab() -> str
-    def close_tab(tab_id)
-    def switch_tab(tab_id)
-    def fork_session(source_tab_id) -> Optional[str]  # deep copy</code></pre>
-  <p><code>fork_session()</code> creates a deep copy of a session's messages and state into a new tab. The forked session gets <code>metadata["forked_from"]</code> set to the source session ID.</p>
-
-  <h3>Persistence</h3>
-  <p>Sessions are JSON-serialized to <code>&lt;config_dir&gt;/rikugan/sessions/</code>. Auto-saved after each agent turn if <code>checkpoint_auto_save</code> is enabled. Full round-trip: messages, token usage, tool calls, and tool results are all preserved.</p>
-</section>
-
-<!-- ═══════════════ 14 MCP ═══════════════ -->
-<section class="section" id="mcp">
-  <div class="section-num">14</div>
-  <h2>MCP Integration</h2>
-  <p><strong>Files:</strong> <code>rikugan/mcp/client.py</code>, <code>rikugan/mcp/bridge.py</code>, <code>rikugan/mcp/manager.py</code></p>
-
-  <div class="flow">
-    <div class="flow-node blue">mcp.json config</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node purple">MCPManager</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node pink">MCPClient (per server)</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node orange">subprocess (stdio)</div>
-  </div>
-
-  <h3>MCPClient</h3>
-  <p>Communicates with an MCP server subprocess via JSON-RPC 2.0 + Content-Length framing.</p>
-  <ul>
-    <li><strong>Heartbeat:</strong> Background thread pings every 30s. Marks <code>_healthy=False</code> on failure</li>
-    <li><strong>Per-request timeout:</strong> Configurable default</li>
-    <li><strong>Tool discovery:</strong> <code>tools/list</code> RPC call at startup</li>
-  </ul>
-
-  <h3>MCPBridge</h3>
-  <p>Converts MCP tool schemas to <code>ToolDefinition</code> objects and registers them in the <code>ToolRegistry</code> with the prefix <code>mcp_&lt;server&gt;_&lt;tool&gt;</code>.</p>
-</section>
-
-<!-- ═══════════════ 15 PROVIDERS ═══════════════ -->
-<section class="section" id="providers">
-  <div class="section-num">15</div>
-  <h2>Provider Layer</h2>
-  <p><strong>Files:</strong> <code>rikugan/providers/base.py</code>, <code>rikugan/providers/*.py</code></p>
-
-  <div class="provider-list">
-    <div class="provider-pill"><div class="pp-name">Anthropic (Claude)</div><div class="pp-note">OAuth auto-detection, prompt caching</div></div>
-    <div class="provider-pill"><div class="pp-name">OpenAI</div><div class="pp-note">Standard OpenAI SDK</div></div>
-    <div class="provider-pill"><div class="pp-name">Gemini</div><div class="pp-note">google-genai SDK</div></div>
-    <div class="provider-pill"><div class="pp-name">Ollama</div><div class="pp-note">Local inference</div></div>
-    <div class="provider-pill"><div class="pp-name">OpenAI-Compatible</div><div class="pp-note">Custom API base URL</div></div>
-  </div>
-
-  <h3>Prompt Caching (Anthropic)</h3>
-  <p><code>cache_control: {"type": "ephemeral"}</code> is set on the system prompt, last tool result message, and last user message. This enables 2-10x cost reduction on long conversations.</p>
-
-  <h3>Retry Logic</h3>
-  <pre><code class="language-python">for attempt in range(max_retries):
-    try:
-        yield from stream
-        break
-    except RateLimitError as e:
-        wait = e.retry_after or (2 ** attempt)
-        yield TEXT_DELTA(f"Rate limited, retrying in {wait}s...")
-        time.sleep(wait)</code></pre>
-</section>
-
-<!-- ═══════════════ 16 SYSTEM PROMPT ═══════════════ -->
-<section class="section" id="system-prompt">
-  <div class="section-num">16</div>
-  <h2>System Prompt Architecture</h2>
-  <p><strong>Files:</strong> <code>rikugan/agent/system_prompt.py</code>, <code>rikugan/agent/prompts/</code></p>
-
-  <!-- System Prompt Stack Diagram -->
-  <div class="svg-diagram">
-    <svg viewBox="0 0 500 400" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:500px">
-      <defs>
-        <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#7c6aef" stop-opacity=".15"/><stop offset="100%" stop-color="#7c6aef" stop-opacity=".05"/></linearGradient>
-        <linearGradient id="g2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#e06090" stop-opacity=".15"/><stop offset="100%" stop-color="#e06090" stop-opacity=".05"/></linearGradient>
-        <linearGradient id="g3" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#40b0f0" stop-opacity=".15"/><stop offset="100%" stop-color="#40b0f0" stop-opacity=".05"/></linearGradient>
-        <linearGradient id="g4" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#f0a040" stop-opacity=".15"/><stop offset="100%" stop-color="#f0a040" stop-opacity=".05"/></linearGradient>
-        <linearGradient id="g5" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#50c878" stop-opacity=".15"/><stop offset="100%" stop-color="#50c878" stop-opacity=".05"/></linearGradient>
-      </defs>
-      <rect x="40" y="10" width="420" height="48" rx="8" fill="url(#g1)" stroke="#7c6aef" stroke-opacity=".3"/>
-      <text x="250" y="38" text-anchor="middle" fill="#7c6aef" font-family="Inter,sans-serif" font-size="12" font-weight="600">Host-specific base prompt (ida.py / binja.py)</text>
-
-      <rect x="40" y="68" width="420" height="48" rx="8" fill="url(#g2)" stroke="#e06090" stroke-opacity=".3"/>
-      <text x="250" y="96" text-anchor="middle" fill="#e06090" font-family="Inter,sans-serif" font-size="12" font-weight="600">Persistent Memory (RIKUGAN.md, first 200 lines)</text>
-
-      <rect x="40" y="126" width="420" height="48" rx="8" fill="url(#g3)" stroke="#40b0f0" stroke-opacity=".3"/>
-      <text x="250" y="154" text-anchor="middle" fill="#40b0f0" font-family="Inter,sans-serif" font-size="12" font-weight="600">Current Binary info (name, arch, entry point)</text>
-
-      <rect x="40" y="184" width="420" height="48" rx="8" fill="url(#g3)" stroke="#40b0f0" stroke-opacity=".3"/>
-      <text x="250" y="212" text-anchor="middle" fill="#40b0f0" font-family="Inter,sans-serif" font-size="12" font-weight="600">Current Position (address + function name)</text>
-
-      <rect x="40" y="242" width="420" height="48" rx="8" fill="url(#g4)" stroke="#f0a040" stroke-opacity=".3"/>
-      <text x="250" y="270" text-anchor="middle" fill="#f0a040" font-family="Inter,sans-serif" font-size="12" font-weight="600">Available Tools (comma-separated list)</text>
-
-      <rect x="40" y="300" width="420" height="48" rx="8" fill="url(#g5)" stroke="#50c878" stroke-opacity=".3"/>
-      <text x="250" y="328" text-anchor="middle" fill="#50c878" font-family="Inter,sans-serif" font-size="12" font-weight="600">Active Skill (skill body, if any)</text>
-
-      <rect x="40" y="358" width="420" height="36" rx="8" fill="url(#g2)" stroke="#e06090" stroke-opacity=".2" stroke-dasharray="4 2"/>
-      <text x="250" y="381" text-anchor="middle" fill="#e06090" font-family="Inter,sans-serif" font-size="11" font-weight="500" opacity=".7">Exploration Addendum (only during exploration mode)</text>
-    </svg>
-  </div>
-
-  <h3>Shared Prompt Sections</h3>
-  <p>Defined in <code>prompts/base.py</code>:</p>
-  <ul>
-    <li><code>DISCIPLINE_SECTION</code> &mdash; "Do exactly what was asked"</li>
-    <li><code>RENAMING_SECTION</code> &mdash; Renaming/retyping guidelines</li>
-    <li><code>ANALYSIS_SECTION</code> &mdash; Analysis approach</li>
-    <li><code>SAFETY_SECTION</code> &mdash; Safety guidelines</li>
-    <li><code>TOKEN_EFFICIENCY_SECTION</code> &mdash; Prefer search over listing</li>
-    <li><code>CLOSING_SECTION</code> &mdash; Final reminders</li>
-  </ul>
-</section>
-
-<!-- ═══════════════ 17 UI LAYER ═══════════════ -->
-<section class="section" id="ui">
-  <div class="section-num">17</div>
-  <h2>UI Layer</h2>
-  <p><strong>Files:</strong> <code>rikugan/ui/panel_core.py</code>, <code>rikugan/ui/chat_view.py</code>, <code>rikugan/ui/message_widgets.py</code></p>
-
-  <div class="showcase-gallery">
-    <div>
-      <div class="showcase-label">Binary Ninja</div>
-      <img src="assets/binja_showcase.png" alt="Rikugan in Binary Ninja" loading="lazy">
-    </div>
-    <div>
-      <div class="showcase-label">IDA Pro</div>
-      <img src="assets/ida_showcase.png" alt="Rikugan in IDA Pro" loading="lazy">
-    </div>
-  </div>
-
-  <h3>Event Polling</h3>
-  <p>A <code>QTimer</code> fires every 50ms, calling <code>_poll_events()</code>. Dequeues up to 20 events per tick and routes each to the appropriate handler.</p>
-
-  <h3>ChatView Widget Mapping</h3>
-  <div class="table-wrap">
-    <table>
-      <tr><th>Event</th><th>Widget</th></tr>
-      <tr><td><code>TEXT_DELTA</code> / <code>TEXT_DONE</code></td><td>AssistantMessageWidget (Markdown rendered)</td></tr>
-      <tr><td><code>TOOL_CALL_*</code></td><td>ToolCallWidget (collapsible, syntax-highlighted)</td></tr>
-      <tr><td><code>TURN_START</code></td><td>ThinkingWidget (animated dots)</td></tr>
-      <tr><td><code>ERROR</code></td><td>ErrorMessageWidget</td></tr>
-      <tr><td><code>PLAN_GENERATED</code></td><td>PlanView (step list with status indicators)</td></tr>
-      <tr><td><code>TOOL_APPROVAL_REQUEST</code></td><td>ToolApprovalWidget (Allow/Deny)</td></tr>
-      <tr><td><code>EXPLORATION_PHASE_CHANGE</code></td><td>ExplorationPhaseWidget</td></tr>
-      <tr><td><code>EXPLORATION_FINDING</code></td><td>ExplorationFindingWidget</td></tr>
-    </table>
-  </div>
-</section>
-
-<!-- ═══════════════ 18 THREAD SAFETY ═══════════════ -->
-<section class="section" id="threading">
-  <div class="section-num">18</div>
-  <h2>Thread Safety Model</h2>
-
-  <h3>Architecture</h3>
-  <div class="flow">
-    <div class="flow-node purple">Main Thread (Qt + IDA)</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node pink">queue.Queue</div>
-    <div class="flow-arrow"></div>
-    <div class="flow-node green">Background Thread (Agent)</div>
-  </div>
-
-  <h3>IDA API Marshalling</h3>
-  <p>IDA Pro requires all API calls on the main thread. The <code>@idasync</code> decorator marshalls calls via <code>ida_kernwin.execute_sync()</code>. Binary Ninja tools run directly &mdash; BN's API is thread-safe.</p>
-
-  <h3>User Answer/Approval Queues</h3>
-  <p>Two <code>queue.Queue(maxsize=1)</code> instances:</p>
-  <ul>
-    <li><code>_user_answer_queue</code> &mdash; For <code>USER_QUESTION</code> responses</li>
-    <li><code>_tool_approval_queue</code> &mdash; For <code>execute_python</code> approval</li>
-  </ul>
-  <p>The agent waits with <code>queue.get(timeout=0.5)</code> in a loop, checking for cancellation between attempts. The UI thread calls <code>put()</code>. No race condition possible.</p>
-</section>
-
-<!-- ═══════════════ 19 ERROR HANDLING ═══════════════ -->
-<section class="section" id="errors">
-  <div class="section-num">19</div>
-  <h2>Error Handling &amp; Retry</h2>
-
-  <h3>Exception Hierarchy</h3>
-  <div class="error-tree">
-    <span class="root">RikuganError</span><br>
-    <span class="branch">├── AgentError</span> <span style="color:var(--text-dim)">&mdash; loop-level errors</span><br>
-    <span class="branch">├── CancellationError</span> <span style="color:var(--text-dim)">&mdash; user cancelled</span><br>
-    <span class="branch">├── ProviderError</span> <span style="color:var(--text-dim)">&mdash; LLM API errors</span><br>
-    <span class="leaf">&nbsp;&nbsp;&nbsp;&nbsp;└── RateLimitError</span> <span style="color:var(--text-dim)">&mdash; HTTP 429</span><br>
-    <span class="branch">├── ToolError</span> <span style="color:var(--text-dim)">&mdash; tool execution errors</span><br>
-    <span class="branch">├── ToolValidationError</span> <span style="color:var(--text-dim)">&mdash; argument validation</span><br>
-    <span class="branch">├── MCPError</span> <span style="color:var(--text-dim)">&mdash; MCP protocol errors</span><br>
-    <span class="leaf">&nbsp;&nbsp;&nbsp;&nbsp;├── MCPConnectionError</span><br>
-    <span class="leaf">&nbsp;&nbsp;&nbsp;&nbsp;└── MCPTimeoutError</span><br>
-    <span class="branch">└── SkillError</span> <span style="color:var(--text-dim)">&mdash; skill loading errors</span>
-  </div>
-
-  <h3>Consecutive Error Tracking</h3>
-  <p><code>_consecutive_errors</code> counts sequential tool failures. After 3 consecutive errors, tools are disabled for the current turn, forcing the LLM to respond with text instead of looping on broken calls.</p>
-</section>
-
-<!-- ═══════════════ 20 LOGGING ═══════════════ -->
-<section class="section" id="logging">
-  <div class="section-num">20</div>
-  <h2>Logging</h2>
-  <p><strong>File:</strong> <code>rikugan/core/logging.py</code></p>
-
-  <div class="arch-box">
-    <div class="arch-item">
-      <div class="ai">&#x1F4BB;</div>
-      <div class="at">IDA Output Window</div>
-      <div class="ad">IDAHandler, INFO level<br><code>[Rikugan] LEVEL: message</code></div>
-    </div>
-    <div class="arch-item">
-      <div class="ai">&#x1F4C4;</div>
-      <div class="at">Debug File</div>
-      <div class="ad">FlushFileHandler, DEBUG level<br>flushed + fsynced after every write</div>
-    </div>
-    <div class="arch-item">
-      <div class="ai">&#x1F4CA;</div>
-      <div class="at">Structured JSON</div>
-      <div class="ad">JSONFormatter, INFO level<br>Append-mode JSONL, machine-parseable</div>
-    </div>
-  </div>
-
-  <h4>JSON Log Format</h4>
-  <pre><code class="language-json">{"ts": 1709500000.123, "level": "INFO", "thread": "Thread-1", "msg": "Subagent started"}</code></pre>
-</section>
-
-<!-- ═══════════════ 21 COMMANDS ═══════════════ -->
-<section class="section" id="commands">
-  <div class="section-num">21</div>
-  <h2>Commands Reference</h2>
-
-  <div class="table-wrap">
-    <table>
-      <tr><th>Command</th><th>Description</th></tr>
-      <tr><td><code>/plan &lt;msg&gt;</code></td><td>Enter plan mode: generate plan, then execute step-by-step</td></tr>
-      <tr><td><code>/modify &lt;msg&gt;</code></td><td>Enter exploration mode: EXPLORE &rarr; PLAN &rarr; EXECUTE &rarr; SAVE</td></tr>
-      <tr><td><code>/explore &lt;msg&gt;</code></td><td>Enter explore-only mode: autonomous read-only analysis</td></tr>
-      <tr><td><code>/memory</code></td><td>Show current RIKUGAN.md contents</td></tr>
-      <tr><td><code>/undo [N]</code></td><td>Undo last N mutations (default 1)</td></tr>
-      <tr><td><code>/mcp</code></td><td>Show MCP server health status</td></tr>
-      <tr><td><code>/doctor</code></td><td>Diagnose provider, API key, tools, skills, config issues</td></tr>
-      <tr><td><code>/&lt;skill-slug&gt;</code></td><td>Activate a skill (e.g., <code>/malware-analysis</code>, <code>/ctf</code>)</td></tr>
-    </table>
-  </div>
-</section>
-
-<!-- ═══════════════ 22 DATA FLOW ═══════════════ -->
-<section class="section" id="data-flow">
-  <div class="section-num">22</div>
-  <h2>Data Flow Diagrams</h2>
-
-  <h3>Normal Turn</h3>
-  <div class="diagram">
-    <div class="diagram-title">Normal Turn Flow</div>
-    <pre style="background:transparent!important;border:none!important;padding:0!important;margin:0!important;color:var(--text);font-family:var(--mono);font-size:.82rem;line-height:1.7"><span style="color:var(--accent)">User</span> "Explain main()"
-  │
-  ├─→ SessionState.add_message(<span style="color:var(--accent-5)">USER</span>)
-  ├─→ build_system_prompt()
-  ├─→ provider.chat_stream(messages, tools, system)
-  │     ├─→ <span style="color:var(--accent-3)">TEXT_DELTA</span> "The main function..."
-  │     ├─→ <span style="color:var(--accent-4)">TOOL_CALL_START</span> "decompile_function"
-  │     ├─→ <span style="color:var(--accent-4)">TOOL_CALL_DONE</span>
-  │     └─→ <span style="color:var(--text-dim)">USAGE_UPDATE</span>
-  ├─→ ToolRegistry.execute("<span style="color:var(--accent-4)">decompile_function</span>", {name: "main"})
-  │     └─→ <span style="color:var(--accent-3)">TOOL_RESULT</span> "int main() { ... }"
-  ├─→ SessionState.add_message(<span style="color:var(--accent-5)">TOOL</span>)
-  ├─→ provider.chat_stream(messages + tool_result)
-  │     ├─→ <span style="color:var(--accent-3)">TEXT_DELTA</span> "This function initializes..."
-  │     └─→ <span style="color:var(--accent)">TEXT_DONE</span>
-  └─→ <span style="color:var(--accent-5)">TURN_END</span></pre>
-  </div>
-
-  <h3>Exploration Mode (<code>/modify</code>)</h3>
-  <div class="diagram">
-    <div class="diagram-title">Exploration Flow</div>
-    <pre style="background:transparent!important;border:none!important;padding:0!important;margin:0!important;color:var(--text);font-family:var(--mono);font-size:.82rem;line-height:1.7"><span style="color:var(--accent)">User</span> "/modify Change score from 100 to 999"
-  │
-  ├─→ <span style="color:var(--accent)">Phase 1: EXPLORE</span> (subagent)
-  │     ├─→ SubagentRunner.run_exploration()
-  │     │     ├─→ [subagent uses tools, logs findings]
-  │     │     ├─→ exploration_report → <span style="color:var(--accent-3)">KnowledgeBase</span>
-  │     │     └─→ phase_transition("plan") → KnowledgeBase returned
-  │     └─→ Parent receives KnowledgeBase summary (~1-2KB)
-  │
-  ├─→ <span style="color:var(--accent-2)">Phase 2: PLAN</span>
-  │     ├─→ PLAN_SYNTHESIS_PROMPT + KB summary → LLM
-  │     ├─→ Parse plan → <span style="color:var(--accent-2)">ModificationPlan</span>
-  │     └─→ User approves plan
-  │
-  ├─→ <span style="color:var(--accent-4)">Phase 3: EXECUTE</span>
-  │     ├─→ For each PlannedChange:
-  │     │     ├─→ EXECUTE_STEP_PROMPT → LLM
-  │     │     ├─→ Smart patch skill activated
-  │     │     ├─→ execute_python (with approval) → patch bytes
-  │     │     ├─→ redecompile_function → verify
-  │     │     └─→ exploration_report(category="<span style="color:var(--accent-4)">patch_result</span>") → PatchRecord
-  │     └─→ All patches applied
-  │
-  └─→ <span style="color:var(--accent-3)">Phase 4: SAVE</span>
-        ├─→ <span style="color:var(--accent-2)">SAVE_APPROVAL_REQUEST</span> → User
-        ├─→ "Save All" → write to file → <span style="color:var(--accent-3)">SAVE_COMPLETED</span>
-        └─→ "Discard All" → restore original bytes → <span style="color:var(--accent-2)">SAVE_DISCARDED</span></pre>
-  </div>
-
-  <h3>Mutation Tracking</h3>
-  <div class="diagram">
-    <div class="diagram-title">Mutation &amp; Undo Flow</div>
-    <pre style="background:transparent!important;border:none!important;padding:0!important;margin:0!important;color:var(--text);font-family:var(--mono);font-size:.82rem;line-height:1.7">LLM calls <span style="color:var(--accent-4)">rename_function</span>(old="sub_401000", new="main")
-  │
-  ├─→ <span style="color:var(--accent-3)">capture_pre_state()</span> → {} (no pre-state needed for renames)
-  ├─→ ToolRegistry.execute("rename_function", {...})
-  ├─→ <span style="color:var(--accent)">build_reverse_record()</span> → MutationRecord(
-  │     reverse_tool="rename_function",
-  │     reverse_args={"old_name": "main", "new_name": "sub_401000"})
-  ├─→ _mutation_log.append(record)
-  └─→ <span style="color:var(--accent-5)">MUTATION_RECORDED</span> event → UI (MutationLogPanel)
-
-<span style="color:var(--accent)">User</span> "/undo"
-  │
-  ├─→ Pop last MutationRecord from _mutation_log
-  ├─→ ToolRegistry.execute("rename_function",
-  │     {"old_name": "main", "new_name": "sub_401000"})
-  └─→ <span style="color:var(--accent)">TEXT_DONE</span> "Undone: Rename function main → sub_401000"</pre>
-  </div>
 </section>
 
 </main><!-- .main -->
@@ -1436,7 +782,6 @@ class SessionState:
 
 <!-- ═══════════════ SCRIPTS ═══════════════ -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markdown.min.js"></script>
 <script>

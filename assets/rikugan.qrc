@@ -1,0 +1,7 @@
+<RCC>
+  <qresource prefix="/rikugan">
+    <file>rikugan_icon.png</file>
+    <file>rikugan_icon_light.png</file>
+    <file>rikugan_icon.svg</file>
+  </qresource>
+</RCC>

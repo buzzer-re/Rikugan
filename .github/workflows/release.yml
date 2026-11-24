@@ -15,17 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Validate tag matches plugin.json version
+      - name: Validate tag matches the CMake project version
         run: |
           TAG=${GITHUB_REF#refs/tags/v}
-          VERSION=$(python -c "import json; print(json.load(open('plugin.json'))['version'])")
-          echo "Tag: $TAG  |  plugin.json: $VERSION"
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "ERROR: tag v$TAG does not match plugin.json version $VERSION"
+          VERSION=$(sed -n 's/^project(rikugan VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          IDA=$(sed -n 's/.*"version": "\([0-9.]*\)".*/\1/p' ida-plugin.json | head -n1)
+          echo "Tag: $TAG  |  CMakeLists.txt: $VERSION  |  ida-plugin.json: $IDA"
+          if [ "$TAG" != "$VERSION" ] || [ "$TAG" != "$IDA" ]; then
+            echo "ERROR: tag v$TAG does not match the project version"
             exit 1
           fi
 

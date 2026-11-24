@@ -8,169 +8,34 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    name: Ruff
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install ruff
-        run: pip install ruff==0.15.13
-
-      - name: Format check
-        run: python -m ruff format --check rikugan/
-
-      - name: Lint
-        run: python -m ruff check rikugan/  # config in pyproject.toml
-
-  typecheck:
-    name: Mypy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install deps
-        run: pip install mypy==2.1.0 tomli==2.4.1
-
-      - name: Type check (core + providers)
-        run: python -m mypy rikugan/core rikugan/providers  # config in pyproject.toml
-
   test:
-    name: Pytest
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      # Qt needs these to start even with the offscreen platform plugin.
-      - name: Install Qt runtime libraries
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1
-
-      - name: Install deps
-        run: pip install pytest==9.0.3 tomli==2.4.1 PySide6-Essentials==6.11.2
-
-      - name: Run tests
-        run: python -m pytest tests/ --tb=short -q
-
-  quality:
-    name: Desloppify
-    runs-on: ubuntu-latest
+    name: Native tests
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          submodules: recursive
 
-      - uses: actions/setup-python@v5
+      - name: omc (libomc source)
+        uses: actions/checkout@v4
         with:
-          python-version: "3.11"
-          cache: pip
+          repository: buzzer-re/Oh-My-C
+          path: ohmyc
 
-      - name: Install desloppify
-        run: pip install desloppify==0.9.3
-
-      - name: Run objective scan
-        run: desloppify scan --profile objective --no-badge
-
-      - name: Score regression gate
+      - name: Build dependencies
         run: |
-          python -c "
-          import json, sys
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libssl-dev zlib1g-dev libarchive-tools \
+            libgl-dev libegl-dev libxkbcommon-dev libfontconfig1-dev python3
 
-          try:
-              data = json.load(open('.desloppify/query.json'))
-              score = float(data.get('objective_score', 0))
-          except Exception:
-              print('Could not read desloppify score — failing safe')
-              sys.exit(1)
+      - name: Qt 6.11.1 headers and tools (Binary Ninja's Qt)
+        run: tools/fetch_qt.sh 6.11.1 "$HOME/Qt"
 
-          BASELINE = 89.0
-          TOLERANCE = 0.5
+      - name: Configure
+        run: cmake -S . -B build/none -G Ninja -DRIKUGAN_HOST=none -DOMC_DIR="$PWD/ohmyc" -DCMAKE_PREFIX_PATH="$HOME/Qt/6.11.1/gcc_64"
 
-          if score < BASELINE - TOLERANCE:
-              sys.exit(f'Score {score}/100 is below baseline {BASELINE} (tolerance {TOLERANCE}) — fix before merging')
-          print(f'OK — objective score {score}/100 (baseline {BASELINE})')
-          "
+      - name: Build
+        run: cmake --build build/none
 
-      - name: Get changed Python files
-        id: changed
-        run: |
-          git diff --name-only origin/${{ github.base_ref }}...HEAD -- '*.py' > /tmp/changed_files.txt
-          echo "Changed files:"
-          cat /tmp/changed_files.txt
-
-      - name: Gate on security findings in changed files
-        run: |
-          python -c "
-          import json, subprocess, sys
-
-          changed = [l.strip() for l in open('/tmp/changed_files.txt') if l.strip()]
-          if not changed:
-              print('No Python files changed — skipping security gate')
-              sys.exit(0)
-
-          findings = []
-          for f in changed:
-              result = subprocess.run(
-                  ['desloppify', 'show', f, '--output', '/tmp/file_findings.json', '--status', 'open'],
-                  capture_output=True
-              )
-              try:
-                  data = json.load(open('/tmp/file_findings.json'))
-                  file_findings = data if isinstance(data, list) else data.get('findings', [])
-                  findings.extend(file_findings)
-              except (json.JSONDecodeError, FileNotFoundError):
-                  pass
-
-          if not findings:
-              print(f'OK — no open findings in {len(changed)} changed file(s)')
-              sys.exit(0)
-
-          security = [f for f in findings if f.get('detector') == 'security']
-          other    = [f for f in findings if f.get('detector') != 'security']
-
-          for f in security:
-              print(f\"SECURITY: {f.get('file')} — {f.get('message', f.get('id', '?'))}\")
-          for f in other[:5]:
-              print(f\"  {f.get('detector')}: {f.get('file')} — {f.get('message', f.get('id', '?'))}\")
-
-          if security:
-              sys.exit(f'{len(security)} security finding(s) in your changed files — fix before merging')
-
-          print(f'Advisory: {len(other)} non-security finding(s) in changed files (not blocking)')
-          "
-
-  # Single gate job — mark this as a required status check in branch protection
-  gate:
-    name: CI Gate
-    if: always()
-    needs: [lint, typecheck, test, quality]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check job results
-        run: |
-          echo "lint:      ${{ needs.lint.result }}"
-          echo "typecheck: ${{ needs.typecheck.result }}"
-          echo "test:      ${{ needs.test.result }}"
-          echo "quality:   ${{ needs.quality.result }}"
-
-          if [[ "${{ needs.lint.result }}" != "success" ]] ||
-             [[ "${{ needs.typecheck.result }}" != "success" ]] ||
-             [[ "${{ needs.test.result }}" != "success" ]] ||
-             [[ "${{ needs.quality.result }}" != "success" ]]; then
-            echo "::error::One or more CI jobs failed"
-            exit 1
-          fi
+      - name: Test
+        run: ctest --test-dir build/none --output-on-failure

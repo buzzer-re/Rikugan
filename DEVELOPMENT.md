@@ -1,69 +1,163 @@
 # Development Guide
 
-> If you are a coding agent, please read [AGENTS.md](AGENTS.md) instead.
+> Coding agents: read [AGENTS.md](AGENTS.md). Internals: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-This document is for human contributors. It covers how to set up a development environment, the branch workflow, and what to do before opening a PR.
-
----
+Rikugan is a native C++20 / Qt Widgets plugin for IDA Pro and Binary Ninja; its agent is libomc, linked in-process.
+This guide covers the development setup, builds, tests and the contribution workflow. (Rikugan 1.x was a Python
+plugin; it lives only in the git history.)
 
 ## Prerequisites
 
-- **Binary Ninja** (build 3164 or newer) and/or **IDA Pro 9.x**
-- **Python 3.10–3.11** recommended (see note below on IDA Pro + Python versions)
-- **Git**
-- An API key for at least one supported LLM provider (Anthropic, OpenAI, Google, or a local Ollama instance)
+- Linux or macOS.
+- CMake ≥ 3.25, Ninja (or make), a C++20 compiler, OpenSSL 3 and zlib headers, `curl` and `7z` (p7zip) for
+  `tools/fetch_qt.sh`. Debian/Ubuntu: `build-essential cmake ninja-build libssl-dev zlib1g-dev p7zip-full curl`.
+- `python3` for the test suite (omc's mock model server).
+- The hosts you build for: IDA Pro 9.3 (default `~/ida-pro-9.3`, override `IDA_DIR`) and/or Binary Ninja (default
+  `~/binaryninja`, override `BN_INSTALL_DIR`).
 
-> **IDA Pro note:** Python 3.10 is the safest choice. Higher versions may trigger a Shiboken UAF crash during Qt signal dispatch. See the IDA API Notes section of AGENTS.md for details.
+## Checkout
 
+```bash
+git clone --recursive https://github.com/buzzer-re/Rikugan
+git clone https://github.com/buzzer-re/Oh-My-C ohmyc      # libomc, next to Rikugan (or -DOMC_DIR=...)
+cd Rikugan
+git submodule update --init --recursive third_party       # if you cloned without --recursive
+```
+
+Submodules (`third_party/`):
+
+| Submodule | Pin |
+|---|---|
+| `binaryninja-api` | the commit in `<BN install>/api_REVISION.txt` |
+| `ida-sdk` | `v9.3.0-sdk.3` |
+
+**Binary Ninja ABI pinning.** BN refuses plugins built against a different core/UI ABI. After a BN update, move the
+submodule to the new revision and rebuild:
+
+```bash
+rev=$(sed 's#.*/##' ~/binaryninja/api_REVISION.txt)
+git -C third_party/binaryninja-api fetch origin && git -C third_party/binaryninja-api checkout "$rev"
+git add third_party/binaryninja-api
+```
+
+## Qt headers
+
+The plugin never ships Qt: it binds to the host's Qt at runtime. At build time it needs headers, `moc`/`rcc` and
+CMake files of the matching version, fetched from download.qt.io (SHA-1 checked) into `~/Qt/<version>/<kit>`:
+
+```bash
+tools/fetch_qt.sh 6.11.1     # Binary Ninja (also used by the test tree)
+tools/fetch_qt.sh 6.8.2      # IDA 9.3 — IDA's Qt is built with -qtnamespace QT; the ida tree compiles with QT_NAMESPACE=QT
+```
+
+`<kit>` is `gcc_arm64`, `gcc_64` or `macos`.
+
+## Build trees
+
+One host per tree; `src/common` is compiled into each tree with that tree's Qt.
+
+```bash
+cmake -S . -B build/none  -G Ninja -DRIKUGAN_HOST=none  -DCMAKE_PREFIX_PATH=~/Qt/6.11.1/<kit> && cmake --build build/none
+cmake -S . -B build/binja -G Ninja -DRIKUGAN_HOST=binja -DCMAKE_PREFIX_PATH=~/Qt/6.11.1/<kit> && cmake --build build/binja
+cmake -S . -B build/ida   -G Ninja -DRIKUGAN_HOST=ida   -DCMAKE_PREFIX_PATH=~/Qt/6.8.2/<kit>  && cmake --build build/ida
+```
+
+| Tree | Output |
+|---|---|
+| `build/none` | `rikugan_tests` (no host) |
+| `build/binja` | `librikugan.so` / `.dylib` → `~/.binaryninja/plugins/` (macOS: `~/Library/Application Support/Binary Ninja/plugins/`) |
+| `build/ida` | `rikugan.so` / `.dylib` → `~/.idapro/plugins/`, plus `rikugan_ida_tooltest` |
+
+Cache variables: `OMC_DIR` (default `../ohmyc`), `BN_INSTALL_DIR`, `IDA_DIR`, `RIKUGAN_BUILD_TESTS` (on for `none`).
+
+- Each build runs `cmake/build_omc.sh`: omc's own `make` builds its objects incrementally, then they are prelinked into
+  `build/<tree>/omc/omc-lib.o` with only `omc_*` symbols global. Changes in `../ohmyc` are picked up on the next build.
+- `cmake/embed.cmake` compiles every file under `skills/` and `prompts/` into the plugin; editing them needs a rebuild,
+  not a reinstall of loose files.
+- Files under `src/ida/sdk/` subclass SDK types and are compiled with `-fno-rtti`.
+
+`./install.sh` (`--binja-only`, `--ida-only`) fetches Qt when missing, builds the hosts it finds and copies the plugins.
+For a dev loop, rebuild the tree and copy the module over the installed one (or symlink it once), then restart the host.
+
+## Tests
+
+```bash
+ctest --test-dir build/none --output-on-failure     # QtTest suite
+build/ida/rikugan_ida_tooltest [--dump DIR]          # IDA tools against a real database (needs idalib)
+./ci-local.sh                                        # test tree + every host plugin available on this machine
+```
+
+- **Native suite** (`tests/native/`): `main.cpp` sets `HOME`, `RIKUGAN_HOME` and `TMPDIR` to a temporary directory,
+  starts omc's mock OpenAI server (`$OMC_DIR/tests/e2e/mock_openai.py`) on a free port, registers it as the custom
+  endpoint `mock/mock-1` and runs every `RK_TEST` class offscreen. Nothing touches the real `~/.rikugan`, `~/.omc` or
+  credentials. `RK_KEEP_TMP=1` keeps the temporary home; the mock logs requests to `mock.jsonl` there.
+  `FakeHost.h` is a `Host` with a few tools and main-thread marshalling through the Qt event loop; use it for chat,
+  dispatcher, undo and mode tests. The mock decides each reply from the last message: prompt text such as
+  `seq:[[tool, args], ...]` or `batch:[...]` scripts tool calls, `fail:<status>:<msg>` an HTTP error, `md:`/`chunks:`
+  streamed answers (full list in the mock's docstring).
+- **idalib tool test** (`tests/ida/`): opens a fresh database of `/bin/ls`, resolves `${...}` placeholders
+  (a decompilable function, a named local, a caller …) and runs each case of `tool_cases.json` (`expect_contains`,
+  `expect_error`), then checks that `/undo` restores a `rename_function`. Add a case for every new IDA tool.
+- Binary Ninja tools have no headless harness; exercise them in the UI.
+
+## Adding things
+
+### A host tool
+
+Add a `rk::ToolSpec` in the host's tool registration (`src/binja/tools/*.cpp`, `src/ida/host/tools/*.cpp`, or
+`src/ida/sdk/*.cpp` when it subclasses SDK types). Template and flag rules: AGENTS.md → "How to Add a Tool". In short:
+
+- pick the flags honestly (`Mutating`, `MainThread`, `RequiresDecompiler`, `Script`, `Exclusive`, `Blocking`);
+- every `Mutating` tool is either in `MutationLog::reverseBuilders()` (with a pre-state reader in `capturePreState`,
+  usually an `Internal` tool) or in `MutationLog::knownIrreversible()`;
+- read arguments through `ToolCall` accessors, report bad input with `throw rk::ToolError(...)`, print addresses with
+  `rk::hex`;
+- on IDA, every SDK call on the main thread; never let an exception unwind through an IDA callback;
+- if the tool lists or reads something expensive and stable, consider `ResultCache::cacheable`.
+
+Then mention it in the host's `prompts/system/<host>/tool_usage.md` or `capabilities.md` if the model needs guidance,
+add an IDA tooltest case, and update the tool reference in `webpage/docs.html`.
+
+### A chat tool
+
+Rikugan-side tools that are not host analysis (`ask_user`, `save_memory` …) live in `src/common/agent/ChatTools.cpp`.
+Per-chat visibility goes in `chatToolVisible`; a tool shown only during a mode is toggled by `ModeDriver::setTools`.
+
+### A skill
+
+Create `skills/<slug>/SKILL.md` (and optional `references/*.md`):
+
+```markdown
 ---
-
-## Installation (Development)
-
-Clone the repo and symlink it into the host's plugin directory so changes take effect on the next launch without reinstalling.
-
-**Binary Ninja**
-```bash
-# macOS
-git clone https://github.com/buzzer-re/rikugan
-ln -s "$(pwd)/rikugan" ~/Library/Application\ Support/Binary\ Ninja/plugins/rikugan
-
-# Linux
-git clone https://github.com/buzzer-re/rikugan
-ln -s "$(pwd)/rikugan" ~/.binaryninja/plugins/rikugan
-
-# Windows (run as Administrator)
-git clone https://github.com/buzzer-re/rikugan
-mklink /D "%APPDATA%\Binary Ninja\plugins\rikugan" "<full path to cloned repo>"
-```
-
-**IDA Pro**
-```bash
-# macOS / Linux
-ln -s "$(pwd)/rikugan" ~/.idapro/plugins/rikugan
-
-# Windows
-mklink /D "%APPDATA%\Hex-Rays\IDA Pro\plugins\rikugan" "<full path to cloned repo>"
-```
-
+name: <slug>
+description: One line the model and the composer show
+mode: plan            # optional: plan | exploration
 ---
-
-## Python Dependencies
-
-Install the runtime dependencies into the Python environment used by your host:
-
-```bash
-pip install -r requirements.txt
+Task: <instruction for the agent>
 ```
 
-For development tooling (CI checks, running tests locally):
+`name` must equal the folder name (omc uses it as the skill id for `/<slug>` and `skill://<slug>`). Built-in skills
+are embedded and synced into `~/.rikugan/omc/agent/skills/` when the version changes; user skills go there directly.
+Add the slug to the table in `prompts/MANIFEST.md`.
 
-```bash
-uv sync --group dev
-```
+### A prompt
 
----
+Model-facing text lives in `prompts/` and is loaded with `embeddedText("prompts/...")`. Follow the conventions in
+`prompts/MANIFEST.md` (one trailing newline, `{{name}}` placeholders only) and document the new file and its
+placeholders there.
 
-## Branch Workflow
+## Conventions
+
+- C++20, Qt Widgets, `QT_NO_KEYWORDS` (`Q_SIGNALS`, `Q_SLOTS`, `Q_EMIT`). Shared code in `src/common`, host code only
+  in `src/ida` / `src/binja`.
+- The host UI thread never waits on omc, a session worker or a tool worker. UI updates go through `EventQueue` or a
+  queued `invokeMethod` guarded by `QPointer`. No polling timers while idle; omc callbacks never block.
+- IDA: Qt and STL headers before `ida/host/IdaSdk.h`. Binary Ninja: core API from any thread, UI and mutating calls on
+  the main thread.
+- Errors are reported, never swallowed. No stubs or placeholders.
+- Headers document behaviour and threading; keep them in step with the code.
+
+## Branches and commits
 
 ```
 feat/my-thing  ─┐
@@ -71,116 +165,17 @@ fix/some-bug   ─┤──► dev ──► main
 chore/deps     ─┘
 ```
 
-1. Branch off `dev` using a descriptive prefix:
-   - `feat/` — new feature
-   - `fix/` — bug fix
-   - `refactor/` — code restructure, no behavior change
-   - `chore/` — deps, tooling, docs
-2. Make your changes in small, focused commits
-3. Run the local CI script (see below) before pushing
-4. Open a PR targeting `dev`
-5. Once reviewed and CI passes, it gets merged to `dev`
-6. Releases go from `dev` → `main` with a version tag
+- Branch off `dev`, open PRs against `dev`; `main` only takes PRs. Run `./ci-local.sh` before opening one.
+- Commit prefix `fix(scope)`, `feat(scope)`, `refactor(scope)`, `security`, `docs`; scopes `ida`, `binja`, `agent`,
+  `ui`, `omc`, `tools`, `build`. One logical change per commit.
 
-**Direct pushes to `main` are not allowed** — must go through a PR. `dev` accepts direct pushes.
+## Releases
 
----
+1. Merge `dev` → `main`.
+2. Bump `project(rikugan VERSION x.y.z)` in `CMakeLists.txt` and `version` in `ida-plugin.json`.
+3. `git tag vx.y.z && git push origin vx.y.z` — the release workflow checks that the tag matches both and publishes the
+   GitHub release.
 
-## Before Pushing — Local CI Check
+## Help
 
-Run this script after every feature or fix, before opening a PR:
-
-```bash
-./ci-local.sh
-```
-
-This mirrors exactly what GitHub Actions runs. It will catch formatting errors, lint issues, type errors, test failures, and code quality regressions before they reach CI.
-
-If ruff reports formatting issues, auto-fix them:
-
-```bash
-./ci-local.sh --fix
-```
-
-The script installs `ruff` and `mypy` if they are not already available. It skips steps whose tools are missing rather than failing hard, so it is safe to run in a partial environment.
-
----
-
-## Running Tests
-
-```bash
-python3 -m pytest tests/ -v
-```
-
-Tests are organized under `tests/` by subsystem:
-
-```
-tests/
-├── agent/       # Agent loop, plan mode, exploration, session
-├── core/        # Config, sanitize, errors, profile, logging
-├── providers/   # All LLM providers
-├── tools/       # Tool implementations (binja, IDA, shared)
-└── mocks/       # ida_mock — stubs the IDA Pro API for testing outside IDA
-```
-
-Binary Ninja and IDA Pro APIs are stubbed at test time — you do not need either host installed to run the test suite.
-
----
-
-## Code Quality
-
-This project uses [desloppify](https://github.com/peteromallet/desloppify) to track codebase health. The current objective score is **89.0/100** (target: 95).
-
-Run a scan locally at any time:
-
-```bash
-desloppify scan
-desloppify status   # score dashboard
-desloppify issues   # work queue of findings
-```
-
-The `desloppify review` command (subjective scoring) uses an LLM and is run manually before releases, not on every change.
-
-**Python version note:** desloppify's AST-based detectors are sensitive to the Python version running the scan. GitHub Actions uses Python 3.11 (~89.4 score). Different local versions will yield slightly different scores — the 0.5-point baseline gap is intentional to absorb this variance. For consistent local results, install `uv`; the `.python-version` file in the repo root pins to 3.11 and `ci-local.sh` will use it automatically.
-
-```bash
-pip install uv                   # install uv once
-uv add desloppify --dev          # add desloppify (ci-local.sh does this automatically)
-```
-
----
-
-## Commit Style
-
-```
-feat(agent): add streaming cancellation for plan mode
-fix(binja): handle missing function at cursor gracefully
-refactor(providers): extract retry logic into base class
-security: strip homoglyph sequences in sanitize.py
-docs: update tool registration guide in AGENTS.md
-```
-
-Format: `type(scope): short description`
-- One logical change per commit
-- Scope is the subsystem: `agent`, `binja`, `ida`, `ui`, `providers`, `mcp`, `skills`, `core`
-
----
-
-## Release Process
-
-1. Merge `dev` → `main` via PR
-2. Bump `version` in `plugin.json`
-3. Tag and push:
-   ```bash
-   git tag v0.x.x
-   git push origin v0.x.x
-   ```
-4. GitHub Actions validates the tag matches `plugin.json` and publishes the GitHub Release
-5. Binary Ninja plugin manager picks up the new version from `main` automatically
-
----
-
-## Getting Help
-
-- Read [AGENTS.md](AGENTS.md) for deep technical documentation on internals, architecture decisions, and coding rules
-- Open an issue at https://github.com/buzzer-re/rikugan/issues
+Issues: https://github.com/buzzer-re/Rikugan/issues

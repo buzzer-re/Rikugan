@@ -1,1 +1,0 @@
-"""Rikugan test suite."""

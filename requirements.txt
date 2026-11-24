@@ -1,7 +1,0 @@
-anthropic==0.103.1
-openai==2.37.0
-google-genai==2.4.0
-mcp==1.27.1
-tomli==2.4.1
-cryptography==48.0.0
-ida-domain==0.5.0

@@ -1,10 +1,4 @@
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
 build/
-.eggs/
 *.so
 *.dylib
 .DS_Store

@@ -1,0 +1,181 @@
+# Rikugan: native IDA Pro / Binary Ninja plugin; the agent is libomc (../ohmyc), linked in-process.
+# One host per build tree:
+#   cmake -S . -B build/none  -G Ninja -DRIKUGAN_HOST=none  -DCMAKE_PREFIX_PATH=~/Qt/6.11.1/gcc_arm64   (tests)
+#   cmake -S . -B build/binja -G Ninja -DRIKUGAN_HOST=binja -DCMAKE_PREFIX_PATH=~/Qt/6.11.1/gcc_arm64
+#   cmake -S . -B build/ida   -G Ninja -DRIKUGAN_HOST=ida   -DCMAKE_PREFIX_PATH=~/Qt/6.8.2/gcc_arm64
+cmake_minimum_required(VERSION 3.25)
+project(rikugan VERSION 2.0.0 LANGUAGES C CXX)
+
+set(RIKUGAN_HOST "none" CACHE STRING "Host to build for: binja | ida | none")
+set_property(CACHE RIKUGAN_HOST PROPERTY STRINGS binja ida none)
+set(OMC_DIR "${CMAKE_SOURCE_DIR}/../ohmyc" CACHE PATH "omc (oh-my-c) source tree")
+set(BN_INSTALL_DIR "$ENV{HOME}/binaryninja" CACHE PATH "Binary Ninja install")
+set(IDA_DIR "$ENV{HOME}/ida-pro-9.3" CACHE PATH "IDA Pro install")
+if(RIKUGAN_HOST STREQUAL "none")
+    set(_rk_tests_default ON)
+else()
+    set(_rk_tests_default OFF)
+endif()
+option(RIKUGAN_BUILD_TESTS "Build the native test suite" ${_rk_tests_default})
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
+endif()
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+
+get_filename_component(OMC_DIR "${OMC_DIR}" ABSOLUTE)
+if(NOT EXISTS "${OMC_DIR}/include/omc.h")
+    message(FATAL_ERROR "omc not found at ${OMC_DIR} (set -DOMC_DIR=...)")
+endif()
+
+# Build-time Qt: the official headers and tools matching the host (tools/fetch_qt.sh), given as CMAKE_PREFIX_PATH
+find_package(Qt6 QUIET COMPONENTS Core Gui Widgets)
+if(NOT Qt6_FOUND)
+    if(RIKUGAN_HOST STREQUAL "ida")
+        set(_rk_qt 6.8.2)
+    else()
+        set(_rk_qt 6.11.1)
+    endif()
+    message(FATAL_ERROR "Qt ${_rk_qt} not found (CMAKE_PREFIX_PATH: '${CMAKE_PREFIX_PATH}'). Fetch it with "
+                        "`tools/fetch_qt.sh ${_rk_qt}` and pass -DCMAKE_PREFIX_PATH=$HOME/Qt/${_rk_qt}/<kit> "
+                        "(macos, gcc_64 or gcc_arm64), or run ./install.sh, which does both.")
+endif()
+# Qt before 6.9 calls __yield() in qyieldcpu.h without including <arm_acle.h>; recent Apple clang refuses that
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64" AND Qt6_VERSION VERSION_LESS 6.9)
+    add_compile_options("SHELL:-include arm_acle.h")
+endif()
+if(RIKUGAN_BUILD_TESTS)
+    find_package(Qt6 REQUIRED COMPONENTS Test Network)
+endif()
+
+include(cmake/omc.cmake)
+include(cmake/embed.cmake)
+
+set(RK_WARNINGS -Wall -Wextra -Wno-unused-parameter)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # GNU_UNIQUE objects (e.g. libstdc++'s make_shared tag in no-RTTI files) ignore the version script and would
+    # stay exported from the plugin
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-gnu-unique>)
+endif()
+
+# Shared sources (compiled inside each host tree with that tree's Qt)
+file(GLOB_RECURSE RK_COMMON_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_SOURCE_DIR}/src/common/*.cpp" "${CMAKE_SOURCE_DIR}/src/common/*.h")
+add_library(rikugan_common OBJECT ${RK_COMMON_SOURCES} ${RK_EMBEDDED_CPP} assets/rikugan.qrc)
+target_include_directories(rikugan_common PUBLIC "${CMAKE_SOURCE_DIR}/src" "${OMC_DIR}/include")
+target_compile_options(rikugan_common PRIVATE ${RK_WARNINGS})
+target_compile_definitions(rikugan_common PUBLIC RIKUGAN_VERSION="${PROJECT_VERSION}" QT_NO_KEYWORDS)
+
+function(rk_link_qt target)
+    # binds the target to Qt for compiling (headers, moc); the host tree decides which .so files it links
+    if(RIKUGAN_HOST STREQUAL "ida")
+        foreach(_c Core Gui Widgets)
+            target_include_directories(${target} PRIVATE $<TARGET_PROPERTY:Qt6::${_c},INTERFACE_INCLUDE_DIRECTORIES>)
+            target_compile_definitions(${target} PRIVATE $<TARGET_PROPERTY:Qt6::${_c},INTERFACE_COMPILE_DEFINITIONS>)
+        endforeach()
+        # IDA's Qt is built with -qtnamespace QT (nm -D libQt6Core.so.6 shows N2QT7QString)
+        target_compile_definitions(${target} PRIVATE QT_NAMESPACE=QT)
+        set_target_properties(${target} PROPERTIES AUTOMOC_EXECUTABLE "$<TARGET_FILE:Qt6::moc>"
+                                                   AUTORCC_EXECUTABLE "$<TARGET_FILE:Qt6::rcc>")
+    else()
+        target_link_libraries(${target} PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+    endif()
+endfunction()
+rk_link_qt(rikugan_common)
+
+if(RIKUGAN_HOST STREQUAL "binja")
+    set(HEADLESS OFF)
+    set(BN_API_PATH "${CMAKE_SOURCE_DIR}/third_party/binaryninja-api")
+    add_subdirectory("${BN_API_PATH}" binaryninjaapi EXCLUDE_FROM_ALL SYSTEM)
+    file(GLOB_RECURSE RK_BN_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/binja/*.cpp" "${CMAKE_SOURCE_DIR}/src/binja/*.h")
+    add_library(rikugan_binja MODULE ${RK_BN_SOURCES} $<TARGET_OBJECTS:rikugan_common>)
+    target_include_directories(rikugan_binja PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_DIR}/include")
+    # the shared objects are linked as objects, so their PUBLIC usage requirements must be applied by hand
+    target_compile_definitions(rikugan_binja PRIVATE $<TARGET_PROPERTY:rikugan_common,INTERFACE_COMPILE_DEFINITIONS>)
+    target_compile_options(rikugan_binja PRIVATE ${RK_WARNINGS})
+    target_link_libraries(rikugan_binja PRIVATE binaryninjaui Qt6::Core Qt6::Gui Qt6::Widgets)
+    rk_link_omc(rikugan_binja)
+    # a MODULE is ".so" even on macOS; Binary Ninja and IDA load ".dylib" there
+    set_target_properties(rikugan_binja PROPERTIES OUTPUT_NAME rikugan PREFIX "lib" SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
+                                                   SKIP_BUILD_RPATH ON)
+    rk_export_only(rikugan_binja CorePluginABIVersion CorePluginInit UIPluginABIVersion UIPluginInit)
+elseif(RIKUGAN_HOST STREQUAL "ida")
+    set(IDA_SDK "${CMAKE_SOURCE_DIR}/third_party/ida-sdk/src")
+    file(GLOB_RECURSE RK_IDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/ida/*.cpp" "${CMAKE_SOURCE_DIR}/src/ida/*.h")
+    add_library(rikugan_ida MODULE ${RK_IDA_SOURCES} $<TARGET_OBJECTS:rikugan_common>)
+    target_include_directories(rikugan_ida PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_DIR}/include" "${IDA_SDK}/include")
+    target_compile_definitions(rikugan_ida PRIVATE $<TARGET_PROPERTY:rikugan_common,INTERFACE_COMPILE_DEFINITIONS>)
+    target_compile_options(rikugan_ida PRIVATE ${RK_WARNINGS} -fno-strict-aliasing)
+    if(APPLE)
+        set(_ida_os __MAC__)
+        set(_ida_ext dylib)
+    else()
+        set(_ida_os __LINUX__)
+        set(_ida_ext so)
+    endif()
+    set(_ida_defs __EA64__=1 ${_ida_os} __UNIX__ __IDP__ NO_OBSOLETE_FUNCS)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        list(APPEND _ida_defs __ARM__)
+        if(APPLE)
+            list(APPEND _ida_defs __APPLE_SILICON__)
+        endif()
+    endif()
+    target_compile_definitions(rikugan_ida PRIVATE ${_ida_defs})
+    # files that subclass SDK types: the SDK libraries are built without RTTI
+    file(GLOB_RECURSE RK_IDA_NORTTI CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/ida/sdk/*.cpp")
+    set_source_files_properties(${RK_IDA_NORTTI} PROPERTIES COMPILE_OPTIONS "-fno-rtti")
+    rk_link_qt(rikugan_ida)
+    if(APPLE)
+        # IDA.app keeps its (namespaced) Qt as frameworks in Contents/Frameworks, next to Contents/MacOS
+        set(_ida_qt)
+        foreach(_m QtCore QtGui QtWidgets)
+            find_library(IDA_${_m} NAMES ${_m} PATHS "${IDA_DIR}/../Frameworks" "${IDA_DIR}" NO_DEFAULT_PATH)
+            if(NOT IDA_${_m})
+                message(FATAL_ERROR "${_m}.framework not found in ${IDA_DIR}/../Frameworks (set -DIDA_DIR=<IDA.app>/Contents/MacOS)")
+            endif()
+            list(APPEND _ida_qt "${IDA_${_m}}")
+        endforeach()
+    else()
+        set(_ida_qt "${IDA_DIR}/libQt6Core.so.6" "${IDA_DIR}/libQt6Gui.so.6" "${IDA_DIR}/libQt6Widgets.so.6")
+    endif()
+    target_link_libraries(rikugan_ida PRIVATE "${IDA_DIR}/libida.${_ida_ext}" ${_ida_qt})
+    rk_link_omc(rikugan_ida)
+    set_target_properties(rikugan_ida PROPERTIES OUTPUT_NAME rikugan PREFIX "" SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
+                                                 SKIP_BUILD_RPATH ON)
+    if(APPLE)
+        # IDA's @rpath libraries resolve against the app bundle, never against this build machine's paths
+        set_target_properties(rikugan_ida PROPERTIES SKIP_BUILD_RPATH OFF BUILD_WITH_INSTALL_RPATH ON
+                                                     INSTALL_RPATH "@executable_path;@executable_path/../Frameworks")
+    endif()
+    rk_export_only(rikugan_ida PLUGIN)
+    # idalib executable that runs every IDA tool against a copy of /bin/ls (tests/ida/tool_cases.json)
+    file(GLOB RK_IDA_TOOLTEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/ida/*.cpp")
+    set(RK_IDA_TOOL_SOURCES ${RK_IDA_SOURCES})
+    list(REMOVE_ITEM RK_IDA_TOOL_SOURCES "${CMAKE_SOURCE_DIR}/src/ida/sdk/Plugin.cpp")
+    add_executable(rikugan_ida_tooltest ${RK_IDA_TOOLTEST_SOURCES} ${RK_IDA_TOOL_SOURCES} $<TARGET_OBJECTS:rikugan_common>)
+    target_include_directories(rikugan_ida_tooltest PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_DIR}/include" "${IDA_SDK}/include")
+    target_compile_options(rikugan_ida_tooltest PRIVATE ${RK_WARNINGS} -fno-strict-aliasing)
+    target_compile_definitions(rikugan_ida_tooltest PRIVATE ${_ida_defs}
+        $<TARGET_PROPERTY:rikugan_common,INTERFACE_COMPILE_DEFINITIONS>
+        RK_TOOL_CASES="${CMAKE_SOURCE_DIR}/tests/ida/tool_cases.json")
+    rk_link_qt(rikugan_ida_tooltest)
+    target_link_libraries(rikugan_ida_tooltest PRIVATE
+        "${IDA_DIR}/libida.${_ida_ext}" "${IDA_DIR}/libidalib.${_ida_ext}"
+        "${IDA_DIR}/libQt6Core.${_ida_ext}.6" "${IDA_DIR}/libQt6Gui.${_ida_ext}.6" "${IDA_DIR}/libQt6Widgets.${_ida_ext}.6")
+    rk_link_omc(rikugan_ida_tooltest)
+    set_target_properties(rikugan_ida_tooltest PROPERTIES BUILD_RPATH "${IDA_DIR}")
+elseif(NOT RIKUGAN_HOST STREQUAL "none")
+    message(FATAL_ERROR "RIKUGAN_HOST must be binja, ida or none")
+endif()
+
+if(RIKUGAN_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests/native)
+endif()

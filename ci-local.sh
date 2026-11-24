@@ -1,182 +1,56 @@
 #!/usr/bin/env bash
-# Local CI simulation — mirrors the GitHub Actions pipeline
-# Usage: ./ci-local.sh [--fix]
+# Local CI: builds the test tree and runs the native test suite, then builds each host plugin whose SDK/install is
+# present. Mirrors .github/workflows/ci.yml.
+#
+#   ./ci-local.sh                 # everything available on this machine
+#   OMC_DIR=../ohmyc QT_BN=~/Qt/6.11.1/gcc_arm64 QT_IDA=~/Qt/6.8.2/gcc_arm64 ./ci-local.sh
 set -euo pipefail
-
-FIX=false
-[[ "${1:-}" == "--fix" ]] && FIX=true
-
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT=$(cd "$(dirname "$0")" && pwd)
 cd "$ROOT"
 
-PASS=0
-FAIL=0
-RESULTS=()
+case "$(uname -s)-$(uname -m)" in
+    Linux-aarch64) KIT=gcc_arm64 ;;
+    Linux-x86_64)  KIT=gcc_64 ;;
+    Darwin-*)      KIT=macos ;;
+esac
+OMC_DIR=${OMC_DIR:-$ROOT/../ohmyc}
+QT_BN=${QT_BN:-$HOME/Qt/6.11.1/$KIT}
+QT_IDA=${QT_IDA:-$HOME/Qt/6.8.2/$KIT}
+BN_INSTALL_DIR=${BN_INSTALL_DIR:-$HOME/binaryninja}
+IDA_DIR=${IDA_DIR:-$HOME/ida-pro-9.3}
+GEN=$(command -v ninja >/dev/null && echo Ninja || echo "Unix Makefiles")
 
-# ── Colours ────────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; RESET='\033[0m'
-BOLD='\033[1m'
+step() { printf '\n== %s\n' "$*"; }
 
-ok()   { PASS=$((PASS+1)); RESULTS+=("${GREEN}✔${RESET} $1"); }
-fail() { FAIL=$((FAIL+1)); RESULTS+=("${RED}✘${RESET} $1: $2"); }
-info() { echo -e "${YELLOW}▶ $1${RESET}"; }
+[ -f "$OMC_DIR/include/omc.h" ] || { echo "omc not found at $OMC_DIR (set OMC_DIR)"; exit 1; }
+[ -x "$QT_BN/libexec/moc" ] || { echo "Qt not found at $QT_BN (tools/fetch_qt.sh 6.11.1)"; exit 1; }
+git submodule update --init --recursive third_party >/dev/null
 
-# ── Tool bootstrap ─────────────────────────────────────────────────────────────
-info "Checking tools..."
-PYTHON_RUN=(python3)
-DESLOPPY_CMD=()
-HAVE_PYTEST=false
-HAVE_DESLOPPIFY=false
+step "tests (Qt $(basename "$(dirname "$QT_BN")"))"
+cmake -S . -B build/none -G "$GEN" -DRIKUGAN_HOST=none -DOMC_DIR="$OMC_DIR" -DCMAKE_PREFIX_PATH="$QT_BN" >/dev/null
+cmake --build build/none
+ctest --test-dir build/none --output-on-failure
 
-if command -v uv &>/dev/null; then
-    PYTHON_RUN=(uv run --locked --group dev python)
-    DESLOPPY_CMD=(uv run --locked --group dev desloppify)
+if [ -e "$BN_INSTALL_DIR/libbinaryninjacore.so.1" ] || [ -e "$BN_INSTALL_DIR/libbinaryninjacore.dylib" ]; then
+    step "Binary Ninja plugin"
+    cmake -S . -B build/binja -G "$GEN" -DRIKUGAN_HOST=binja -DOMC_DIR="$OMC_DIR" -DBN_INSTALL_DIR="$BN_INSTALL_DIR" \
+        -DCMAKE_PREFIX_PATH="$QT_BN" >/dev/null
+    cmake --build build/binja --target rikugan_binja
 else
-    NEED=()
-    python3 -m ruff --version &>/dev/null || NEED+=(ruff==0.15.13)
-    python3 -m mypy --version &>/dev/null || NEED+=(mypy==2.1.0)
-    python3 -m pytest --version &>/dev/null || NEED+=(pytest==9.0.3)
-    command -v desloppify &>/dev/null || NEED+=(desloppify==0.9.3)
-    if [[ ${#NEED[@]} -gt 0 ]]; then
-        echo "  Installing missing tools: ${NEED[*]}"
-        pip3 install --quiet --break-system-packages "${NEED[@]}"
-    fi
-    if command -v desloppify &>/dev/null; then
-        DESLOPPY_CMD=(desloppify)
-    fi
+    step "Binary Ninja plugin: skipped (no install at $BN_INSTALL_DIR)"
 fi
 
-run_py() {
-    "${PYTHON_RUN[@]}" "$@"
-}
-
-run_desloppify() {
-    "${DESLOPPY_CMD[@]}" "$@"
-}
-
-if ! run_py -m ruff --version &>/dev/null; then
-    fail "tool bootstrap" "ruff unavailable"
-    echo -e "${RED}${BOLD}FAILED${RESET} — $FAIL check(s) failed, $PASS passed"
-    exit 1
-fi
-
-if ! run_py -m mypy --version &>/dev/null; then
-    fail "tool bootstrap" "mypy unavailable"
-    echo -e "${RED}${BOLD}FAILED${RESET} — $FAIL check(s) failed, $PASS passed"
-    exit 1
-fi
-
-if run_py -m pytest --version &>/dev/null; then
-    HAVE_PYTEST=true
-else
-    RESULTS+=("${YELLOW}⚠${RESET} pytest: unavailable, skipped")
-fi
-
-if [[ ${#DESLOPPY_CMD[@]} -gt 0 ]] && run_desloppify --version &>/dev/null; then
-    HAVE_DESLOPPIFY=true
-else
-    RESULTS+=("${YELLOW}⚠${RESET} desloppify: unavailable, skipped")
-fi
-
-trap 'unset -f run_py run_desloppify' EXIT
-
-# shellcheck disable=SC2317
-:
-# ── 1. Ruff — format check ─────────────────────────────────────────────────────
-info "[1/5] Ruff format..."
-if $FIX; then
-    run_py -m ruff format rikugan/ && ok "ruff format (auto-fixed)" || fail "ruff format" "failed"
-else
-    if run_py -m ruff format --check rikugan/ 2>&1; then
-        ok "ruff format"
+if [ -e "$IDA_DIR/libida.so" ] || [ -e "$IDA_DIR/libida.dylib" ]; then
+    if [ -x "$QT_IDA/libexec/moc" ]; then
+        step "IDA plugin"
+        cmake -S . -B build/ida -G "$GEN" -DRIKUGAN_HOST=ida -DOMC_DIR="$OMC_DIR" -DIDA_DIR="$IDA_DIR" \
+            -DCMAKE_PREFIX_PATH="$QT_IDA" >/dev/null
+        cmake --build build/ida
     else
-        fail "ruff format" "run with --fix to auto-fix"
-    fi
-fi
-
-# ── 2. Ruff — lint (config in pyproject.toml) ────────────────────────────────
-info "[2/5] Ruff lint..."
-if $FIX; then
-    if run_py -m ruff check rikugan/ --fix 2>&1; then
-        ok "ruff lint (auto-fixed)"
-    else
-        fail "ruff lint" "see above"
+        step "IDA plugin: skipped (Qt 6.8.2 headers not at $QT_IDA; tools/fetch_qt.sh 6.8.2)"
     fi
 else
-    if run_py -m ruff check rikugan/ 2>&1; then
-        ok "ruff lint"
-    else
-        fail "ruff lint" "see above"
-    fi
+    step "IDA plugin: skipped (no install at $IDA_DIR)"
 fi
 
-# ── 3. Mypy — core modules only (config in pyproject.toml) ───────────────────
-info "[3/5] Mypy (core + providers)..."
-MYPY_OUT=$(run_py -m mypy rikugan/core rikugan/providers --pretty \
-    2>&1) && MYPY_OK=true || MYPY_OK=false
-
-if $MYPY_OK; then
-    ok "mypy"
-else
-    # Only count as failure if there are actual errors (not just notes)
-    ERROR_COUNT=$(echo "$MYPY_OUT" | grep -c "^.*: error:" || true)
-    if [[ $ERROR_COUNT -gt 0 ]]; then
-        echo "$MYPY_OUT"
-        fail "mypy" "$ERROR_COUNT error(s)"
-    else
-        ok "mypy (warnings only)"
-    fi
-fi
-
-# ── 4. Pytest ─────────────────────────────────────────────────────────────────
-info "[4/5] Pytest..."
-if $HAVE_PYTEST; then
-    if run_py -m pytest tests/ --tb=short -q 2>&1; then
-        ok "pytest"
-    else
-        fail "pytest" "see above"
-    fi
-else
-    RESULTS+=("${YELLOW}⚠${RESET} pytest: not installed, skipped")
-fi
-
-# ── 5. Desloppify — objective score gate ──────────────────────────────────────
-info "[5/5] Desloppify (objective score)..."
-
-if $HAVE_DESLOPPIFY; then
-    run_desloppify scan --profile objective --no-badge 2>&1 | tail -5
-
-    SCORE=$(python3 -c "
-import json, sys
-try:
-    data = json.load(open('.desloppify/query.json'))
-    print(data.get('objective_score', 0))
-except Exception:
-    print(0)
-")
-    BASELINE=89.0
-
-    DROPPED=$(python3 -c "print('yes' if float('$SCORE') < $BASELINE - 0.5 else 'no')")
-    if [[ "$DROPPED" == "yes" ]]; then
-        fail "desloppify" "objective score $SCORE < baseline $BASELINE"
-    else
-        ok "desloppify (objective: $SCORE/100, baseline: $BASELINE)"
-    fi
-else
-    RESULTS+=("${YELLOW}⚠${RESET} desloppify: not found, skipped")
-fi
-
-# ── Summary ───────────────────────────────────────────────────────────────────
-echo ""
-echo -e "${BOLD}── CI Results ──────────────────────────────────────────${RESET}"
-for r in "${RESULTS[@]}"; do
-    echo -e "  $r"
-done
-echo ""
-
-if [[ $FAIL -gt 0 ]]; then
-    echo -e "${RED}${BOLD}FAILED${RESET} — $FAIL check(s) failed, $PASS passed"
-    exit 1
-else
-    echo -e "${GREEN}${BOLD}ALL PASSED${RESET} — $PASS checks"
-fi
+step "OK"

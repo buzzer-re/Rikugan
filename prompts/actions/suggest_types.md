@@ -1,0 +1,1 @@
+Analyze the function {{func_name}} at {{address}} and infer types. Examine pointer dereference patterns to suggest structs, identify enum-like constants, and propose proper parameter types. Apply the type changes.

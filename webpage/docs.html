@@ -246,14 +246,15 @@ td code{font-size:.82rem}
     <ul>
       <li><a href="#requirements">Requirements</a></li>
       <li><a href="#installation">Installation</a></li>
-      <li><a href="#configuration">Configuration</a></li>
+      <li><a href="#models">Provider &amp; Model</a></li>
+      <li><a href="#settings">Settings</a></li>
     </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-title">Usage</div>
     <ul>
       <li><a href="#opening">Opening the Panel</a></li>
-      <li><a href="#chat">Chat &amp; Multi-Tab</a></li>
+      <li><a href="#chat">Chats</a></li>
       <li><a href="#quick-actions">Quick Actions</a></li>
       <li><a href="#skills">Skills</a></li>
       <li><a href="#commands">Commands</a></li>
@@ -262,22 +263,22 @@ td code{font-size:.82rem}
   <div class="sidebar-group">
     <div class="sidebar-group-title">Advanced</div>
     <ul>
-      <li><a href="#exploration-mode">Exploration Mode</a></li>
-      <li><a href="#plan-mode">Plan Mode</a></li>
-      <li><a href="#mutation-undo">Mutation &amp; Undo</a></li>
+      <li><a href="#modes">Modes</a></li>
+      <li><a href="#mutation-undo">Undo</a></li>
       <li><a href="#script-approval">Script Approval</a></li>
+      <li><a href="#filesystem">Files &amp; Shell</a></li>
+      <li><a href="#tools-panel">Subagents &amp; Bulk Renamer</a></li>
       <li><a href="#mcp">MCP Servers</a></li>
       <li><a href="#custom-skills">Custom Skills</a></li>
       <li><a href="#memory">Persistent Memory</a></li>
-      <li><a href="#export">Chat Export</a></li>
+      <li><a href="#profiles">Profiles</a></li>
     </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-title">Reference</div>
     <ul>
-      <li><a href="#tools">Tools (63+)</a></li>
-      <li><a href="#providers">Providers</a></li>
-      <li><a href="#config-reference">Config Reference</a></li>
+      <li><a href="#tools">Tools</a></li>
+      <li><a href="#files">Files</a></li>
     </ul>
   </div>
 </aside>
@@ -287,7 +288,7 @@ td code{font-size:.82rem}
 <div class="content">
 
 <h1>Documentation <span class="jp">六眼</span></h1>
-<p class="lead">Everything you need to install, configure, and use Rikugan &mdash; the AI reverse-engineering agent for IDA Pro and Binary Ninja.</p>
+<p class="lead">Install, configure and use Rikugan &mdash; the reverse-engineering agent that lives inside IDA Pro and Binary Ninja. Rikugan is a native C++ plugin with its own reversing tools, prompts, modes, skills and chat. The general agent machinery underneath (providers and logins, sessions, compaction, MCP) is <a href="https://github.com/buzzer-re/Oh-My-C" target="_blank" rel="noopener">libomc</a>, linked in-process.</p>
 
 <!-- ═══════════════════════════════════════════════
      GETTING STARTED
@@ -295,110 +296,86 @@ td code{font-size:.82rem}
 
 <h2 id="requirements">Requirements</h2>
 <ul>
-  <li><strong>IDA Pro 9.0+</strong> with Hex-Rays decompiler (recommended), or <strong>Binary Ninja</strong> (UI mode)</li>
-  <li><strong>Python 3.9+</strong></li>
-  <li>At least one LLM provider API key (or Ollama for local inference)</li>
-  <li><strong>Windows, macOS, or Linux</strong></li>
+  <li><strong>IDA Pro 9.3</strong> (Hex-Rays for the decompiler tools) or <strong>Binary Ninja</strong> (UI mode)</li>
+  <li><strong>Linux or macOS</strong></li>
+  <li>At least one model: an account login, an API key, or a local server</li>
 </ul>
+<div class="callout info">
+  <span class="callout-icon">&#x2139;&#xFE0F;</span>
+  <div>Windows is not supported: libomc has no Windows port yet. Rikugan 1.x (Python) remains in the git history.</div>
+</div>
 
 <h2 id="installation">Installation</h2>
-<p>Clone the repository, then run the appropriate installer for your target host.</p>
-
 <div class="steps">
   <div class="step">
-    <h4>Clone the repository</h4>
-    <pre><code class="language-bash">git clone https://github.com/buzzer-re/rikugan.git
-cd rikugan</code></pre>
+    <h4>Install the build tools</h4>
+    <p>CMake, a C++20 compiler, the OpenSSL 3 and zlib headers, <code>curl</code>, and <code>bsdtar</code> or 7-Zip to unpack Qt. On Debian/Ubuntu:</p>
+    <pre><code class="language-bash">sudo apt install build-essential cmake ninja-build libssl-dev zlib1g-dev libarchive-tools curl</code></pre>
+    <p>On macOS, with the Xcode command line tools and Homebrew:</p>
+    <pre><code class="language-bash">brew install cmake openssl@3</code></pre>
+    <p>macOS's own <code>tar</code> unpacks Qt, and <code>ninja</code> is optional (faster rebuilds).</p>
   </div>
 
   <div class="step">
-    <h4>Run the installer</h4>
-    <div class="tabs" data-group="install">
-      <div class="tab active" data-tab="ida-unix">IDA Pro (Linux/macOS)</div>
-      <div class="tab" data-tab="ida-win">IDA Pro (Windows)</div>
-      <div class="tab" data-tab="bn-unix">Binary Ninja (Linux/macOS)</div>
-      <div class="tab" data-tab="bn-win">Binary Ninja (Windows)</div>
-    </div>
-    <div class="tab-panel">
-      <div class="tab-content active" id="ida-unix">
-        <pre><code class="language-bash">./install_ida.sh</code></pre>
-        <p style="margin-top:8px;font-size:.85rem;color:var(--text-dim)">Optional: pass a custom user dir path</p>
-        <pre><code class="language-bash">./install_ida.sh /path/to/ida/user/dir</code></pre>
-      </div>
-      <div class="tab-content" id="ida-win">
-        <pre><code class="language-bash">install_ida.bat</code></pre>
-        <p style="margin-top:8px;font-size:.85rem;color:var(--text-dim)">Optional: pass a custom user dir path</p>
-        <pre><code class="language-bash">install_ida.bat "C:\Users\you\AppData\Roaming\Hex-Rays\IDA Pro"</code></pre>
-      </div>
-      <div class="tab-content" id="bn-unix">
-        <pre><code class="language-bash">./install_binaryninja.sh</code></pre>
-        <p style="margin-top:8px;font-size:.85rem;color:var(--text-dim)">Optional: pass a custom user dir path</p>
-        <pre><code class="language-bash">./install_binaryninja.sh /path/to/binaryninja/user/dir</code></pre>
-      </div>
-      <div class="tab-content" id="bn-win">
-        <pre><code class="language-bash">install_binaryninja.bat</code></pre>
-        <p style="margin-top:8px;font-size:.85rem;color:var(--text-dim)">Optional: pass a custom user dir path</p>
-        <pre><code class="language-bash">install_binaryninja.bat "C:\Users\you\AppData\Roaming\Binary Ninja"</code></pre>
-      </div>
-    </div>
-    <p>Installers auto-detect the user directory for their host. They create plugin links/junctions, install Python dependencies, and initialize the Rikugan config directory.</p>
+    <h4>Clone Rikugan and libomc side by side</h4>
+    <pre><code class="language-bash">git clone --recursive https://github.com/buzzer-re/Rikugan
+git clone https://github.com/buzzer-re/Oh-My-C ohmyc     # libomc, next to Rikugan</code></pre>
   </div>
 
   <div class="step">
-    <h4>Set your API key</h4>
-    <p>Open Rikugan in your disassembler, click <strong>Settings</strong>, and paste your API key for your preferred provider.</p>
-    <img src="assets/rikugan_settings.png" alt="Rikugan Settings Dialog" class="doc-img" loading="lazy">
+    <h4>Build and install</h4>
+    <pre><code class="language-bash">cd Rikugan && ./install.sh          # every host found
+./install.sh --binja-only           # or one host
+./install.sh --ida-only</code></pre>
+    <p>The installer fetches the official Qt headers matching each host (<code>tools/fetch_qt.sh</code>: Qt 6.11.1 for Binary Ninja, 6.8.2 for IDA 9.3), builds the plugin and copies it to the host's plugin directory:</p>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Host</th><th>Plugin</th></tr>
+        <tr><td>IDA Pro</td><td><code>~/.idapro/plugins/rikugan.so</code> (<code>.dylib</code> on macOS)</td></tr>
+        <tr><td>Binary Ninja (Linux)</td><td><code>~/.binaryninja/plugins/librikugan.so</code></td></tr>
+        <tr><td>Binary Ninja (macOS)</td><td><code>~/Library/Application Support/Binary Ninja/plugins/librikugan.dylib</code></td></tr>
+      </table>
+    </div>
+    <p>Hosts are looked up in their default places. Point the installer elsewhere with <code>BN_INSTALL_DIR=</code>, <code>IDA_DIR=</code>, or <code>OMC_DIR=</code> for libomc.</p>
+  </div>
+
+  <div class="step">
+    <h4>Pick a model</h4>
+    <p>Open the panel (<code>Ctrl+Shift+I</code> in IDA, the Rikugan sidebar icon in Binary Ninja) and follow <strong>Connect a model</strong>: sign in with a subscription, paste an API key, use a local server, or reuse the logins of an omc agent already on this machine, then pick the model. No restart is needed. <code>Ctrl+M</code> switches models later, and <strong>Settings &rarr; Provider</strong> holds the same choices plus custom connections.</p>
+    <img src="assets/rikugan_settings.png" alt="Rikugan Settings" class="doc-img" loading="lazy">
   </div>
 </div>
 
-<div class="callout tip">
-  <span class="callout-icon">&#x1F4A1;</span>
-  <div><strong>Anthropic OAuth:</strong> If you have Claude Code installed and authenticated, Rikugan auto-detects the OAuth token from the macOS Keychain. On other platforms, paste your API key manually or run <code>claude setup-token</code>.</div>
+<div class="callout warn">
+  <span class="callout-icon">&#x26A0;&#xFE0F;</span>
+  <div>Binary Ninja plugins are tied to its API version: re-run <code>./install.sh</code> after a Binary Ninja update.</div>
 </div>
 
-<h2 id="configuration">Configuration</h2>
-<p>Rikugan stores its configuration per host:</p>
+<h2 id="models">Provider &amp; Model</h2>
+<p>In <strong>Settings &rarr; Provider</strong>, pick a provider, connect it, then pick its model:</p>
+<ul>
+  <li><strong>Provider</strong> &mdash; every provider and account plan Rikugan supports (Claude, ChatGPT/Codex, Gemini, Copilot, OpenRouter, DeepSeek &hellip;). A dot marks the ones that are ready to use.</li>
+  <li><strong>Account</strong> &mdash; <strong>Log in</strong> opens the browser for OAuth (the login sheet shows the link too, with a device code when the provider uses one). <strong>Log out</strong> removes the stored login or key.</li>
+  <li><strong>API Key</strong> &mdash; paste a key and press <strong>Save key</strong> instead of logging in.</li>
+  <li><strong>Model</strong> and <strong>Thinking</strong> &mdash; the selected provider's models, listed once it is connected (<strong>Refresh</strong> reloads them). Leave the model empty to use the first one you have access to. The model pill in the composer switches the model of the current chat.</li>
+  <li><strong>+ / &minus;</strong> &mdash; add or remove a custom connection: any OpenAI-compatible (completions or responses), Anthropic-messages or Ollama endpoint, with its base URL, key and model ids. New or changed connections take effect after restarting the host.</li>
+  <li><strong>Also use the logins of the omc command-line agent</strong> &mdash; if you use omc outside Rikugan (<code>~/.omc/agent</code>), the providers you logged into there are copied to Rikugan and refreshed OAuth tokens stay in step. Keys added in Rikugan are never copied back and nothing is deleted.</li>
+  <li><strong>Discover local model servers</strong> &mdash; find Ollama, LM Studio or llama.cpp on this machine (takes effect after a restart).</li>
+</ul>
+<p>Logins and keys are stored in <code>~/.rikugan/omc/agent/auth.json</code> (mode 0600).</p>
+
+<h2 id="settings">Settings</h2>
 <div class="table-wrap">
   <table>
-    <tr><th>Host</th><th>Platform</th><th>Config Path</th></tr>
-    <tr><td>IDA Pro</td><td>Linux / macOS</td><td><code>~/.idapro/rikugan/config.json</code></td></tr>
-    <tr><td>IDA Pro</td><td>Windows</td><td><code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\config.json</code></td></tr>
-    <tr><td>Binary Ninja</td><td>Linux</td><td><code>~/.binaryninja/rikugan/config.json</code></td></tr>
-    <tr><td>Binary Ninja</td><td>macOS</td><td><code>~/Library/Application Support/Binary Ninja/rikugan/config.json</code></td></tr>
-    <tr><td>Binary Ninja</td><td>Windows</td><td><code>%APPDATA%\Binary Ninja\rikugan\config.json</code></td></tr>
+    <tr><th>Tab</th><th>What it holds</th></tr>
+    <tr><td><strong>Provider</strong></td><td>Provider, login or API key, model and thinking level, custom connections, shared omc logins, local discovery</td></tr>
+    <tr><td><strong>Behavior</strong></td><td>Auto-inject binary context, restore chats on startup, don't auto-load chats, session storage directory, exploration turn limit, quiet retries, allow file access / shell commands without asking, approval for mutating tools, bulk renamer batch size and concurrency</td></tr>
+    <tr><td><strong>Skills</strong></td><td>Enable or disable built-in skills, list your own skills</td></tr>
+    <tr><td><strong>MCP</strong></td><td>Add, edit, enable/disable MCP servers (stdio command or URL)</td></tr>
+    <tr><td><strong>Profiles</strong></td><td>Active analysis profile and its rules (see <a href="#profiles">Profiles</a>)</td></tr>
   </table>
 </div>
-<p>You can edit this JSON file directly, or use the Settings dialog in the UI.</p>
-
-<h3>Config Structure</h3>
-<pre><code class="language-json">{
-  "provider": {
-    "name": "anthropic",
-    "model": "claude-sonnet-4-6",
-    "api_key": "sk-...",
-    "api_base": ""
-  },
-  "max_tokens": 16384,
-  "temperature": 0.2,
-  "context_window": 200000,
-  "checkpoint_auto_save": true,
-  "max_tool_result_chars": 8000
-}</code></pre>
-
-<div class="table-wrap">
-  <table>
-    <tr><th>Key</th><th>Type</th><th>Description</th></tr>
-    <tr><td><code>provider.name</code></td><td>string</td><td>Provider name: <code>anthropic</code>, <code>openai</code>, <code>gemini</code>, <code>ollama</code>, <code>openai_compat</code></td></tr>
-    <tr><td><code>provider.model</code></td><td>string</td><td>Model ID (e.g., <code>claude-sonnet-4-20250514</code>, <code>gpt-4o</code>)</td></tr>
-    <tr><td><code>provider.api_key</code></td><td>string</td><td>API key for the provider</td></tr>
-    <tr><td><code>provider.api_base</code></td><td>string</td><td>Custom API base URL (for openai_compat or Ollama)</td></tr>
-    <tr><td><code>max_tokens</code></td><td>int</td><td>Max output tokens per response (default 16384)</td></tr>
-    <tr><td><code>temperature</code></td><td>float</td><td>Sampling temperature (default 0.2)</td></tr>
-    <tr><td><code>context_window</code></td><td>int</td><td>Max context window size in tokens (default 200000)</td></tr>
-    <tr><td><code>checkpoint_auto_save</code></td><td>bool</td><td>Auto-save sessions after each turn (default true)</td></tr>
-    <tr><td><code>max_tool_result_chars</code></td><td>int</td><td>Truncate tool results beyond this limit (default 8000)</td></tr>
-  </table>
-</div>
+<p>Settings live in <code>~/.rikugan/config.json</code>, shared by both hosts. Changes that need a new agent session (model defaults, skills, MCP) apply to the next chat session.</p>
 
 <!-- ═══════════════════════════════════════════════
      USAGE
@@ -407,55 +384,63 @@ cd rikugan</code></pre>
 <h2 id="opening">Opening the Panel</h2>
 <div class="table-wrap">
   <table>
-    <tr><th>Host</th><th>How to Open</th></tr>
-    <tr><td>IDA Pro</td><td>Press <code>Ctrl+Shift+I</code>, or <strong>Edit &rarr; Plugins &rarr; Rikugan</strong></td></tr>
-    <tr><td>Binary Ninja</td><td><strong>Tools &rarr; Rikugan &rarr; Open Panel</strong>, or use the sidebar icon</td></tr>
+    <tr><th>Host</th><th>How to open</th></tr>
+    <tr><td>IDA Pro</td><td><code>Ctrl+Shift+I</code>, or <strong>Edit &rarr; Plugins &rarr; Rikugan</strong>. <strong>Edit &rarr; Plugins &rarr; Rikugan &rarr; Bulk Renamer</strong> opens the bulk renamer.</td></tr>
+    <tr><td>Binary Ninja</td><td>The Rikugan sidebar icon, or the <strong>Rikugan &rarr; Open Panel</strong> / <strong>Bulk Renamer</strong> plugin commands</td></tr>
   </table>
 </div>
 
-<h2 id="chat">Chat &amp; Multi-Tab</h2>
-<p>Each tab is an independent conversation with its own message history and context.</p>
+<h2 id="chat">Chats</h2>
+<p>Chats belong to the open database, and reopening a database restores them. A chat keeps working while you look at another file or close the panel, and it ends when you close its database. A chat is named after its first exchange (the way omc names its sessions) unless you rename it. In Binary Ninja, when no file is open, the panel offers <strong>Open a binary…</strong> and your recent chats. Picking a chat opens its file and continues that chat.</p>
 <ul>
-  <li><strong>New tab:</strong> Click the <code>+</code> button</li>
-  <li><strong>Close tab:</strong> Click the &times; on the tab</li>
-  <li><strong>Fork session:</strong> Right-click a tab &rarr; "Fork Session" to create a copy at the current point</li>
-  <li><strong>Persistence:</strong> Tabs are tied to the current file. Opening a different database starts fresh tabs; returning restores saved conversations.</li>
+  <li><strong>Switch chat</strong> with the title in the header (searchable) and start a <strong>New chat</strong> with <code>+</code>. <strong>Fork</strong>, <strong>Rename</strong>, <strong>Export</strong> (Markdown, or HTML with <code>/export</code>) and <strong>Delete</strong> are in the header menu.</li>
+  <li>The transcript is a timeline: your messages, each step of the agent with its thinking, every tool call (click an address or symbol to jump there, a tool row to see its arguments and result, <strong>Undo</strong> on a database change), subagents with their live progress, and the cards that wait for you (permissions, approvals, questions, plans).</li>
+  <li>The strip under the header shows what the agent is doing, its todo list, its agents, the <code>/goal</code> it works toward (Pause, Clear) and the running mode. The status line shows the model, context use, tokens, cost and the cursor.</li>
+  <li><code>/</code> opens the command list, <code>Ctrl+K</code> every command and action, <code>Ctrl+M</code> the model and thinking level (with "Connect a provider&hellip;" for logins), <code>Ctrl+J</code> the agents panel, <code>Ctrl+N</code> a new chat.</li>
+  <li>A subagent's whole conversation opens like a chat: double click it in the agents panel, press <strong>Open chat</strong>, or pick it in the chat list, where each chat lists its agents under it (those working on other databases too). Typing there steers that agent. <strong>Back to chat</strong> returns.</li>
+  <li>A message sent while the agent works reaches it at its next step, so you can steer a running task. <strong>Stop</strong> (or <code>Escape</code>) aborts the turn and drops what waits. A message you type while a subagent works ends that subagent early (the agent gets what it found so far) so your message is read at the next step. <strong>Send now</strong> on a waiting message stops the current step and sends it at once. <code>/btw</code> asks a side question without stopping it.</li>
+  <li>In Binary Ninja the agent can open another file from disk in the background (you approve it first), list the databases open in Binary Ninja, and hand a task to a subagent that reads another database with its own tools. Your current view does not change.</li>
+  <li>Each message carries the cursor address and function unless auto context is off. Context compaction and retries are automatic (<code>/compact</code> and <code>/retry</code> by hand).</li>
+  <li>Colours follow the host's theme, light or dark, also when you switch it.</li>
+  <li>Many chats can stay open. Idle ones beyond four close their agent session and resume it when you return.</li>
 </ul>
 
 <img src="assets/binja_showcase.png" alt="Rikugan Chat UI" class="doc-img" loading="lazy">
 
 <h2 id="quick-actions">Quick Actions</h2>
-<p>IDA Pro exposes these in right-click context menus. Binary Ninja has equivalent commands under <strong>Tools &rarr; Rikugan</strong>.</p>
+<p>Right-click in IDA's disassembly or pseudocode (<strong>Rikugan/</strong> submenu), or use the <strong>Rikugan</strong> plugin commands in Binary Ninja.</p>
 <div class="table-wrap">
   <table>
     <tr><th>Action</th><th>Description</th></tr>
-    <tr><td><strong>Send to Rikugan</strong></td><td>Pre-fills input with current selection (<code>Ctrl+Shift+A</code> in IDA)</td></tr>
-    <tr><td><strong>Explain this</strong></td><td>Auto-explains the current function</td></tr>
-    <tr><td><strong>Rename with Rikugan</strong></td><td>Analyzes usage patterns and renames with evidence</td></tr>
-    <tr><td><strong>Deobfuscate</strong></td><td>Systematic deobfuscation of the current function</td></tr>
-    <tr><td><strong>Find vulnerabilities</strong></td><td>Security audit of the current function</td></tr>
-    <tr><td><strong>Suggest types</strong></td><td>Infers types from usage patterns</td></tr>
-    <tr><td><strong>Annotate function</strong></td><td>Adds inline comments to decompiled code</td></tr>
-    <tr><td><strong>Clean microcode / IL</strong></td><td>Identifies and NOPs junk instructions</td></tr>
-    <tr><td><strong>Xref analysis</strong></td><td>Deep cross-reference tracing</td></tr>
+    <tr><td><strong>Send to Rikugan</strong></td><td>Puts the selection or address in the composer (<code>Ctrl+Shift+A</code> in IDA)</td></tr>
+    <tr><td><strong>Explain this</strong></td><td>Explains the current function</td></tr>
+    <tr><td><strong>Rename with Rikugan</strong></td><td>Analyzes and renames the current function</td></tr>
+    <tr><td><strong>Deobfuscate with Rikugan</strong></td><td>Deobfuscates the current function</td></tr>
+    <tr><td><strong>Find vulnerabilities</strong></td><td>Audits the current function for security bugs</td></tr>
+    <tr><td><strong>Suggest types</strong></td><td>Infers and applies types for the current function</td></tr>
+    <tr><td><strong>Annotate function</strong></td><td>Adds comments to the current function</td></tr>
+    <tr><td><strong>Clean microcode</strong> (IDA) / <strong>Clean IL</strong> (BN)</td><td>Removes junk from the function's microcode / IL</td></tr>
+    <tr><td><strong>Xref analysis</strong></td><td>Deep cross-reference analysis</td></tr>
+    <tr><td><strong>Smart Patch</strong> (BN)</td><td>Describe the desired behaviour and the agent patches the binary</td></tr>
+    <tr><td><strong>Send to Bulk Rename</strong></td><td>Queues the function in the bulk renamer</td></tr>
   </table>
 </div>
 
 <h2 id="skills">Skills</h2>
-<p>Skills are reusable analysis workflows. Type <code>/</code> in the input area to see available skills with autocomplete.</p>
+<p>Skills are reusable analysis workflows. Type <code>/</code> in the composer for autocomplete.</p>
 <div class="table-wrap">
   <table>
     <tr><th>Skill</th><th>Description</th></tr>
-    <tr><td><code>/malware-analysis</code></td><td>Windows PE malware &mdash; kill chain, IOC extraction, MITRE ATT&CK mapping</td></tr>
+    <tr><td><code>/malware-analysis</code></td><td>Windows PE malware &mdash; kill chain, IOC extraction, MITRE ATT&amp;CK mapping</td></tr>
     <tr><td><code>/linux-malware</code></td><td>ELF malware &mdash; packing, persistence, IOC extraction</td></tr>
-    <tr><td><code>/deobfuscation</code></td><td>String decryption, CFF removal, opaque predicates, MBA simplification</td></tr>
+    <tr><td><code>/deobfuscation</code></td><td>String decryption, CFF removal, opaque predicates, MBA simplification (starts plan mode)</td></tr>
     <tr><td><code>/vuln-audit</code></td><td>Buffer overflows, format strings, integer issues, memory safety</td></tr>
     <tr><td><code>/driver-analysis</code></td><td>Windows kernel drivers &mdash; DriverEntry, dispatch table, IOCTL handlers</td></tr>
     <tr><td><code>/ctf</code></td><td>Capture-the-flag challenges &mdash; find the flag efficiently</td></tr>
     <tr><td><code>/generic-re</code></td><td>General-purpose binary understanding</td></tr>
     <tr><td><code>/ida-scripting</code></td><td>IDAPython API reference for writing scripts</td></tr>
     <tr><td><code>/binja-scripting</code></td><td>Binary Ninja Python API reference</td></tr>
-    <tr><td><code>/modify</code></td><td>Autonomous 4-phase binary modification (exploration mode)</td></tr>
+    <tr><td><code>/modify</code></td><td>Binary modification (starts <code>/modify</code> exploration mode)</td></tr>
     <tr><td><code>/smart-patch-ida</code></td><td>IDA-specific binary patching</td></tr>
     <tr><td><code>/smart-patch-binja</code></td><td>Binary Ninja-specific binary patching</td></tr>
   </table>
@@ -464,14 +449,22 @@ cd rikugan</code></pre>
 <h2 id="commands">Commands</h2>
 <div class="table-wrap">
   <table>
-    <tr><th>Command</th><th>Description</th></tr>
-    <tr><td><code>/plan &lt;msg&gt;</code></td><td>Generate a multi-step plan, get approval, then execute step-by-step</td></tr>
-    <tr><td><code>/modify &lt;msg&gt;</code></td><td>Enter 4-phase exploration mode: EXPLORE &rarr; PLAN &rarr; EXECUTE &rarr; SAVE</td></tr>
-    <tr><td><code>/explore &lt;msg&gt;</code></td><td>Read-only autonomous analysis (explore phase only)</td></tr>
-    <tr><td><code>/memory</code></td><td>Show current RIKUGAN.md persistent memory contents</td></tr>
-    <tr><td><code>/undo [N]</code></td><td>Undo the last N mutations (default 1)</td></tr>
-    <tr><td><code>/mcp</code></td><td>Show MCP server health status</td></tr>
-    <tr><td><code>/doctor</code></td><td>Diagnose provider, API key, tools, skills, and config issues</td></tr>
+    <tr><th>Input</th><th>What happens</th></tr>
+    <tr><td><code>/plan &lt;msg&gt;</code></td><td>Plan mode: a numbered plan, your approval, then each step</td></tr>
+    <tr><td><code>/explore &lt;msg&gt;</code></td><td>Read-only exploration that records findings and summarizes them</td></tr>
+    <tr><td><code>/modify &lt;msg&gt;</code></td><td>Explore &rarr; plan &rarr; execute patches &rarr; save or discard</td></tr>
+    <tr><td><code>/research &lt;msg&gt;</code></td><td>Explore, then write linked research notes next to the database</td></tr>
+    <tr><td><code>/undo [N]</code></td><td>Undo the last N database changes (default 1). A tool row's <strong>Undo</strong> does the same</td></tr>
+    <tr><td><code>/goal &lt;objective&gt;</code></td><td>Work toward a goal until it is met, with <code>/goal pause</code>, <code>resume</code>, <code>drop</code> and <code>show</code></td></tr>
+    <tr><td><code>/btw &lt;question&gt;</code></td><td>Ask a side question while a turn runs</td></tr>
+    <tr><td><code>/memory</code></td><td>Show <code>RIKUGAN.md</code></td></tr>
+    <tr><td><code>/mcp</code></td><td>List configured MCP servers</td></tr>
+    <tr><td><code>/doctor</code></td><td>Check the model, credentials, tools, skills, decompiler and database path</td></tr>
+    <tr><td><code>/rename &lt;title&gt;</code>, <code>/export</code></td><td>Rename the chat, or export it as HTML next to the database</td></tr>
+    <tr><td><code>/agents</code>, <code>/todo</code>, <code>/login</code>, <code>/logout</code>, <code>/new</code>, <code>/fork</code>, <code>/model</code></td><td>Open the agents panel, the todo list, the login sheet, Settings, a new or forked chat, the model picker</td></tr>
+    <tr><td><code>/&lt;skill&gt; args</code></td><td>Run a skill. Skills with <code>mode: plan</code> / <code>mode: exploration</code> start that mode</td></tr>
+    <tr><td><code>/compact</code>, <code>/handoff</code>, <code>/retry</code>, <code>/effort</code>, <code>/fast</code>, <code>/advisor</code>, <code>/model &lt;id&gt;</code></td><td>omc's session commands: compact the context, hand off to a fresh context, retry the last turn, thinking effort, fast mode, advisor, switch model</td></tr>
+    <tr><td>any other <code>/command</code></td><td>Refused (commands that would change the host's working directory or quit are named with the reason)</td></tr>
   </table>
 </div>
 
@@ -479,133 +472,129 @@ cd rikugan</code></pre>
      ADVANCED
      ═══════════════════════════════════════════════ -->
 
-<h2 id="exploration-mode">Exploration Mode</h2>
-<p>Exploration mode is a 4-phase autonomous agent flow for binary modification. The agent explores, plans, patches, and saves &mdash; with user approval at every gate.</p>
+<h2 id="modes">Modes</h2>
+<p>Modes run a sequence of prompts on the current chat. Read-only phases refuse every tool that changes the database, and decisions appear as cards in the chat.</p>
 
-<h3>How to use</h3>
-<pre><code class="language-text">/modify Change the score constant from 100 to 999</code></pre>
-
-<h3>Phases</h3>
-<ol>
-  <li><strong>EXPLORE</strong> &mdash; The agent investigates the binary using all analysis tools. It accumulates findings in a KnowledgeBase (functions, hypotheses, data structures). Runs as a subagent with isolated context.</li>
-  <li><strong>PLAN</strong> &mdash; The agent synthesizes findings into a numbered modification plan with target addresses, current/proposed behavior, and patch strategy. You must approve the plan.</li>
-  <li><strong>EXECUTE</strong> &mdash; The agent applies patches in-memory for each planned change using the platform-specific smart-patch skill. Each patch is verified via decompilation.</li>
-  <li><strong>SAVE</strong> &mdash; You see a summary of all patches (count, bytes modified, verification status). Choose "Save All" to persist or "Discard All" to roll back.</li>
-</ol>
-
-<div class="callout info">
-  <span class="callout-icon">&#x2139;&#xFE0F;</span>
-  <div><code>/explore &lt;msg&gt;</code> runs only the EXPLORE phase in read-only mode &mdash; no patching, no plan. Useful for pure analysis.</div>
-</div>
-
-<h2 id="plan-mode">Plan Mode</h2>
-<p>Plan mode is a simpler two-step workflow: plan first, then execute.</p>
+<h3>Plan &mdash; <code>/plan</code></h3>
 <pre><code class="language-text">/plan Rename all functions in the crypto module with meaningful names</code></pre>
 <ol>
-  <li>The agent generates a numbered plan</li>
-  <li>You approve or reject the plan</li>
-  <li>The agent executes each step with progress tracking</li>
+  <li>The agent writes a numbered plan without tools.</li>
+  <li>You <strong>Approve</strong>, or <strong>Reject</strong> and then <strong>Regenerate</strong> (with optional feedback) or <strong>Cancel</strong>.</li>
+  <li>Each step runs with progress shown on the plan card.</li>
 </ol>
 
-<h2 id="mutation-undo">Mutation &amp; Undo</h2>
-<p>Every mutating tool call (renames, comments, type changes, prototypes) is automatically recorded with a reverse operation. The Mutation Log panel shows the history.</p>
-<pre><code class="language-text">/undo        # undo last mutation
-/undo 5      # undo last 5 mutations</code></pre>
-<p>Supported reverse operations: <code>rename_function</code>, <code>rename_variable</code>, <code>set_comment</code>, <code>set_function_comment</code>, <code>rename_data</code>, <code>set_function_prototype</code>, <code>retype_variable</code>. <code>execute_python</code> calls are marked as non-reversible.</p>
+<h3>Explore &mdash; <code>/explore</code></h3>
+<p>Read-only investigation. The agent logs structured findings (function purposes, constants, data structures, hypotheses) with <code>exploration_report</code> until it is done or the exploration turn limit (Settings &rarr; Behavior) is reached, then a knowledge summary is posted.</p>
+
+<h3>Modify &mdash; <code>/modify</code></h3>
+<pre><code class="language-text">/modify Change the score constant from 100 to 999</code></pre>
+<ol>
+  <li><strong>Explore</strong> &mdash; a subagent investigates in isolation and reports findings. Moving on needs at least one function-purpose finding with an address and one high-relevance hypothesis.</li>
+  <li><strong>Plan</strong> &mdash; the findings become a numbered modification plan for your approval.</li>
+  <li><strong>Execute</strong> &mdash; each change is applied and verified (at most 20 changes).</li>
+  <li><strong>Save</strong> &mdash; a card lists the patches: <strong>Save</strong> keeps them, <strong>Discard</strong> writes the original bytes back.</li>
+</ol>
+
+<h3>Research &mdash; <code>/research</code></h3>
+<p>Explores, then writes Obsidian-compatible notes (wiki-links, tables, mermaid diagrams) to <code>&lt;database dir&gt;/notes/&lt;genre&gt;/</code> with an <code>index.md</code>.</p>
+
+<h2 id="mutation-undo">Undo</h2>
+<p>Every tool call that changes the database is recorded in the chat's mutation log. A reversible change shows <strong>Undo</strong> on its tool row (changes are undone newest first, so undoing an older one also reverts the ones after it), and the header menu has <strong>Undo last database change</strong>.</p>
+<pre><code class="language-text">/undo        # undo the last change
+/undo 5      # undo the last 5 changes</code></pre>
+<p>Reversible: <code>rename_function</code>, <code>rename_variable</code>, <code>set_comment</code>, <code>set_function_comment</code>, <code>set_pseudocode_comment</code>, <code>rename_address</code>, <code>set_function_prototype</code>. Scripts, type creation and application, byte patches and IL/microcode transforms are recorded as irreversible. Files the agent writes are not undone.</p>
+<p>Turn on <strong>Require approval for mutating tools</strong> (Settings &rarr; Behavior) to confirm each change before it happens.</p>
 
 <h2 id="script-approval">Script Approval</h2>
-<p>The <code>execute_python</code> tool always asks permission before running. You see the full Python code with syntax highlighting in a scrollable preview, and can <strong>Allow</strong> or <strong>Deny</strong> each execution.</p>
-<img src="assets/approval_example.png" alt="Script Approval Dialog" class="doc-img" loading="lazy">
+<p><code>execute_python</code> (and the other tools that run model-written code, such as IL workflows and microcode optimizers) always asks first. The card shows the code, then choose <strong>Allow</strong>, <strong>Always allow</strong> for this chat, or <strong>Deny</strong>.</p>
+<img src="assets/approval_example.png" alt="Script Approval" class="doc-img" loading="lazy">
 <div class="callout warn">
   <span class="callout-icon">&#x26A0;&#xFE0F;</span>
-  <div>The agent can never run the target binary on your machine. Script execution is limited to the disassembler's scripting API (IDAPython / Binary Ninja API).</div>
+  <div>Scripts run in the host's own Python (IDAPython / Binary Ninja's interpreter) behind a guard that blocks dangerous modules and builtins. The guard is a blocklist, not a sandbox. The agent never runs the target binary.</div>
 </div>
 
-<h2 id="mcp">MCP Servers</h2>
-<p>Connect external MCP servers to extend Rikugan with additional tools. Create the config file:</p>
-<div class="table-wrap">
-  <table>
-    <tr><th>Host</th><th>Platform</th><th>MCP Config Path</th></tr>
-    <tr><td>IDA Pro</td><td>Linux / macOS</td><td><code>~/.idapro/rikugan/mcp.json</code></td></tr>
-    <tr><td>IDA Pro</td><td>Windows</td><td><code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\mcp.json</code></td></tr>
-    <tr><td>Binary Ninja</td><td>Linux</td><td><code>~/.binaryninja/rikugan/mcp.json</code></td></tr>
-    <tr><td>Binary Ninja</td><td>macOS</td><td><code>~/Library/Application Support/Binary Ninja/rikugan/mcp.json</code></td></tr>
-    <tr><td>Binary Ninja</td><td>Windows</td><td><code>%APPDATA%\Binary Ninja\rikugan\mcp.json</code></td></tr>
-  </table>
+<h2 id="filesystem">Files &amp; Shell</h2>
+<p>The agent can read, write and edit files, search them, run shell commands, search the web and keep a todo list, so a session can produce scripts, notes and patches as well as annotations. Each kind of access (reading files, writing, editing, shell commands) asks the first time in a chat: <strong>Allow once</strong>, <strong>Allow for this chat</strong> (the chat's subagents included) or <strong>Deny</strong>. Settings &rarr; Behavior can allow file access or shell commands without asking.</p>
+<p>The agent's working directory is a per-database scratch folder (<code>~/.rikugan/scratch/&lt;db id&gt;/</code>). The binary's folder is reachable by path.</p>
+<div class="callout warn">
+  <span class="callout-icon">&#x26A0;&#xFE0F;</span>
+  <div>File and shell tools are not sandboxed and file changes are not undone by <code>/undo</code>. A hostile sample can try to steer any agent with prompt injection, so weigh that before allowing shell commands for a sample you don't trust.</div>
 </div>
+
+<h2 id="tools-panel">Subagents &amp; Bulk Renamer</h2>
+<p>The agent can delegate with <code>spawn_subagent</code>: an isolated session with its own context that uses the same host tools, approvals, permissions and undo log, and returns a summary. Its progress shows in the transcript. The <strong>agents panel</strong> (<code>Ctrl+J</code>, or click an agent) lists the chat's agents as a tree with each one's live log, <strong>Stop</strong>, <strong>Steer</strong> (a message to a running agent), <strong>Send summary to chat</strong> and <strong>+ New agent</strong> (preset, perks, turn budget).</p>
+<p>The <strong>bulk renamer</strong> (header menu &rarr; Bulk renamer) renames functions in bulk. Pick functions from the table (filters and search make auto-generated names such as <code>sub_</code>/<code>FUN_</code> easy to select) or send them with <strong>Send to Bulk Rename</strong>. <strong>Quick</strong> mode sends batches of decompiled functions to tool-less model calls (batch size and concurrency in Settings &rarr; Behavior). <strong>Deep</strong> mode runs one subagent per function. Pause, resume, stop and <strong>Undo All</strong> are available.</p>
+
+<h2 id="mcp">MCP Servers</h2>
+<p>Add MCP servers in <strong>Settings &rarr; MCP</strong>: a stdio command (with arguments and environment) or a URL (with headers). They are stored in <code>~/.rikugan/omc/agent/mcp.json</code> and their tools are offered to the agent next to Rikugan's. A server can be disabled without removing it. <code>/mcp</code> lists the configured servers.</p>
 <pre><code class="language-json">{
   "mcpServers": {
     "my-server": {
-      "command": "python",
-      "args": ["-m", "my_mcp_server"],
-      "env": {},
-      "enabled": true
+      "command": "my-mcp-server",
+      "args": ["--stdio"],
+      "env": {}
+    },
+    "remote": {
+      "type": "http",
+      "url": "https://example.com/mcp"
     }
   }
 }</code></pre>
-<p>MCP servers are started in background threads when the plugin loads. Their tools appear with the prefix <code>mcp_&lt;server&gt;_&lt;tool&gt;</code>. Set <code>"enabled": false</code> to keep a server configured without starting it.</p>
-<p>The MCP client uses <strong>JSON-RPC 2.0 with Content-Length framing</strong> and sends periodic heartbeat pings every 30 seconds to detect unresponsive servers. A server is marked unhealthy if a heartbeat times out; it recovers automatically when pings succeed again.</p>
-<p>Use <code>/mcp</code> in the chat to check the health status of all connected servers.</p>
+<p>Project-level MCP files are ignored, so a sample's directory cannot add servers.</p>
+<h3>Binary Ninja's own MCP server</h3>
+<p>Binary Ninja can run an MCP server of its own (turn on <code>ui.mcp.enabled</code> in Binary Ninja's settings and restart). When it is running, Rikugan offers its tools the first time a database shows. <strong>Use them</strong> switches that database's chats to Binary Ninja's <code>bn_*</code> tools, and <strong>No</strong> leaves Rikugan's tools in place. The <strong>MCP</strong> button in the panel header switches between the two at any time. If the server was stopped, the button offers to start it. The answer is remembered for each database.</p>
+<p>While Binary Ninja's tools are on, Rikugan's own analysis tools are hidden for that database, so the model sees one tool set and not two. Every call acts on the chat's own database, even with other files open. Changes made with these tools go through the same approval and mode rules as Rikugan's, but <code>/undo</code> cannot revert them. Turn the button off to get Rikugan's tools and their undo back. The address, port and token come from Binary Ninja's <code>ui.mcp.port</code>, <code>ui.mcp.endpoint</code> and <code>ui.mcp.token</code> settings, and the port must not be 0.</p>
 
 <h2 id="custom-skills">Custom Skills</h2>
-<p>Create custom skills in your user directory:</p>
-<pre><code class="language-text"># IDA Pro
-~/.idapro/rikugan/skills/                                        # Linux / macOS
-%APPDATA%\Hex-Rays\IDA Pro\rikugan\skills\                       # Windows
-
-# Binary Ninja
-~/.binaryninja/rikugan/skills/                                   # Linux
-~/Library/Application Support/Binary Ninja/rikugan/skills/       # macOS
-%APPDATA%\Binary Ninja\rikugan\skills\                           # Windows
-
-my-skill/
-  SKILL.md             # required: frontmatter + prompt body
-  references/          # optional: .md files auto-appended
+<p>Put your own skills in <code>~/.rikugan/omc/agent/skills/</code>:</p>
+<pre><code class="language-text">my-skill/
+  SKILL.md             # required: frontmatter + instructions
+  references/          # optional: extra .md files the skill can point to
     api-notes.md</code></pre>
-
-<h3>Skill Format</h3>
 <pre><code class="language-markdown">---
-name: My Custom Skill
+name: my-skill
 description: What it does in one line
-tags: [analysis, custom]
-allowed_tools: [decompile_function, rename_function]
-mode: exploration
+mode: plan            # optional: plan | exploration
 ---
 Task: &lt;instruction for the agent&gt;
 
 ## Approach
 1. First step...
 2. Second step...</code></pre>
-
 <div class="table-wrap">
   <table>
-    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
-    <tr><td><code>name</code></td><td>string</td><td>Display name</td></tr>
-    <tr><td><code>description</code></td><td>string</td><td>One-line description</td></tr>
-    <tr><td><code>tags</code></td><td>list</td><td>Categorization tags</td></tr>
-    <tr><td><code>allowed_tools</code></td><td>list</td><td>Tool whitelist (empty = all tools)</td></tr>
-    <tr><td><code>mode</code></td><td>string</td><td><code>"exploration"</code> activates 4-phase exploration mode</td></tr>
+    <tr><th>Field</th><th>Description</th></tr>
+    <tr><td><code>name</code></td><td>The skill id, matching the folder name (<code>/my-skill</code>)</td></tr>
+    <tr><td><code>description</code></td><td>One line shown to the model and in autocomplete</td></tr>
+    <tr><td><code>mode</code></td><td>Optional: <code>plan</code> starts <code>/plan</code>, <code>exploration</code> starts <code>/modify</code>, with the skill as instructions</td></tr>
   </table>
 </div>
+<p>A folder with the same name as a built-in skill takes its place. Built-ins can be turned off in Settings &rarr; Skills.</p>
 
 <h2 id="memory">Persistent Memory</h2>
-<p>Rikugan automatically creates a <code>RIKUGAN.md</code> file in the same directory as your IDB/BNDB. This file persists across sessions:</p>
+<p><code>RIKUGAN.md</code> next to your IDB/BNDB keeps findings across sessions:</p>
 <ul>
-  <li>The first 200 lines are loaded into the system prompt on every session</li>
-  <li>The agent can save facts via the <code>save_memory</code> pseudo-tool</li>
-  <li>Approved plans from exploration mode are also saved here</li>
-  <li>Use <code>/memory</code> to view current contents</li>
+  <li>The agent saves facts with the <code>save_memory</code> tool (categorized: function purpose, architecture, naming convention, data structure &hellip;).</li>
+  <li>The first 200 lines are loaded, sanitized, into the system prompt of every new session.</li>
+  <li><code>/memory</code> shows the current contents.</li>
 </ul>
 
-<h2 id="export">Chat Export</h2>
-<p>Right-click a tab or click the <strong>Export</strong> button to save a conversation as Markdown. Tool calls are formatted with language-appropriate syntax highlighting (<code>c</code> for decompiled code, <code>x86asm</code> for disassembly, <code>python</code> for scripts).</p>
+<h2 id="profiles">Profiles</h2>
+<p>Profiles control what data reaches the model and which tools it may use. <code>default</code> and <code>private</code> are built in, and you can create, clone or delete your own in Settings &rarr; Profiles.</p>
+<ul>
+  <li><strong>Hide binary metadata</strong> &mdash; no binary summary, cursor or function name in prompts.</li>
+  <li><strong>IOC redaction</strong> &mdash; hashes, IPv4/IPv6, domains, URLs, registry keys, file paths, emails, crypto wallets, mutex names are replaced in every tool result.</li>
+  <li><strong>Custom filter rules</strong> &mdash; your own regex or literal patterns with replacements.</li>
+  <li><strong>Denied tools</strong> and <strong>denied functions</strong> &mdash; tools the model never sees and functions it must not analyze.</li>
+  <li><strong>Prompt filters</strong> and a <strong>description</strong> added to the system prompt, plus <strong>singular analysis</strong> to keep the agent on one binary.</li>
+</ul>
 
 <!-- ═══════════════════════════════════════════════
      REFERENCE
      ═══════════════════════════════════════════════ -->
 
 <h2 id="tools">Tools Reference</h2>
-<p>50 tools are shared across both hosts with identical interfaces. IDA adds 6 host-specific microcode tools; Binary Ninja adds 13 host-specific IL tools for reading, analyzing, and transforming its intermediate language.</p>
+<p>50 analysis tools are shared by both hosts with identical interfaces. Binary Ninja adds 12 IL tools and IDA adds 8 microcode and pseudocode tools. Decompiler tools are hidden when no decompiler is available, and profiles can deny any tool.</p>
 
 <h3>Shared Tools (50)</h3>
 <div class="table-wrap">
@@ -614,73 +603,66 @@ Task: &lt;instruction for the agent&gt;
     <tr><td>Navigation</td><td><code>get_cursor_position</code> <code>get_current_function</code> <code>jump_to</code> <code>get_name_at</code> <code>get_address_of</code></td></tr>
     <tr><td>Functions</td><td><code>list_functions</code> <code>get_function_info</code> <code>search_functions</code></td></tr>
     <tr><td>Strings</td><td><code>list_strings</code> <code>search_strings</code> <code>get_string_at</code></td></tr>
-    <tr><td>Database</td><td><code>list_segments</code> <code>list_imports</code> <code>list_exports</code> <code>get_binary_info</code> <code>read_bytes</code></td></tr>
+    <tr><td>Database</td><td><code>list_segments</code> <code>list_imports</code> <code>list_exports</code> <code>get_binary_info</code> <code>read_bytes</code> <code>read_global_value</code></td></tr>
     <tr><td>Disassembly</td><td><code>read_disassembly</code> <code>read_function_disassembly</code> <code>get_instruction_info</code></td></tr>
-    <tr><td>Decompiler</td><td><code>decompile_function</code> <code>get_pseudocode</code> <code>get_decompiler_variables</code></td></tr>
+    <tr><td>Decompiler</td><td><code>decompile_function</code> <code>get_decompiler_variables</code> <code>redecompile_function</code></td></tr>
     <tr><td>Xrefs</td><td><code>xrefs_to</code> <code>xrefs_from</code> <code>function_xrefs</code></td></tr>
     <tr><td>Annotations</td><td><code>rename_function</code> <code>rename_variable</code> <code>set_comment</code> <code>set_function_comment</code> <code>rename_address</code> <code>set_type</code></td></tr>
     <tr><td>Types</td><td><code>create_struct</code> <code>modify_struct</code> <code>get_struct_info</code> <code>list_structs</code> <code>create_enum</code> <code>modify_enum</code> <code>get_enum_info</code> <code>list_enums</code> <code>create_typedef</code> <code>apply_struct_to_address</code> <code>apply_type_to_variable</code> <code>set_function_prototype</code> <code>import_c_header</code> <code>suggest_struct_from_accesses</code> <code>propagate_type</code> <code>get_type_libraries</code> <code>import_type_from_library</code></td></tr>
-    <tr><td>Scripting</td><td><code>execute_python</code> &mdash; requires user approval</td></tr>
+    <tr><td>Scripting</td><td><code>execute_python</code> &mdash; always asks first</td></tr>
   </table>
 </div>
 
-<h3>IDA-Only Tools (6)</h3>
+<h3>Binary Ninja Only (12)</h3>
 <div class="table-wrap">
   <table>
     <tr><th>Category</th><th>Tools</th></tr>
-    <tr><td>Microcode</td><td><code>get_microcode</code> <code>get_microcode_block</code> <code>nop_microcode</code> <code>install_microcode_optimizer</code> <code>remove_microcode_optimizer</code> <code>list_microcode_optimizers</code></td></tr>
+    <tr><td>IL read</td><td><code>get_il</code> <code>get_il_block</code> <code>get_cfg</code> <code>track_variable_ssa</code></td></tr>
+    <tr><td>IL transform</td><td><code>nop_instructions</code> <code>il_replace_expr</code> <code>il_set_condition</code> <code>il_nop_expr</code> <code>il_remove_block</code> <code>patch_branch</code> <code>write_bytes</code></td></tr>
+    <tr><td>IL workflow</td><td><code>install_il_workflow</code> &mdash; always asks first</td></tr>
   </table>
 </div>
 
-<h3>Binary Ninja-Only Tools (13)</h3>
+<h3>IDA Only (8)</h3>
 <div class="table-wrap">
   <table>
     <tr><th>Category</th><th>Tools</th></tr>
-    <tr><td>IL Core</td><td><code>get_il</code> <code>get_il_block</code> <code>nop_instructions</code> <code>redecompile_function</code></td></tr>
-    <tr><td>IL Analysis</td><td><code>get_cfg</code> <code>track_variable_ssa</code></td></tr>
-    <tr><td>IL Transform</td><td><code>il_replace_expr</code> <code>il_set_condition</code> <code>il_nop_expr</code> <code>il_remove_block</code> <code>patch_branch</code> <code>write_bytes</code> <code>install_il_workflow</code></td></tr>
+    <tr><td>Microcode</td><td><code>get_microcode</code> <code>get_microcode_block</code> <code>nop_microcode</code> <code>list_microcode_optimizers</code> <code>remove_microcode_optimizer</code> <code>install_microcode_optimizer</code> &mdash; always asks first</td></tr>
+    <tr><td>Pseudocode</td><td><code>set_pseudocode_comment</code> <code>get_pseudocode_comment</code></td></tr>
   </table>
 </div>
 
-<h2 id="providers">Providers</h2>
+<h3>Chat Tools</h3>
 <div class="table-wrap">
   <table>
-    <tr><th>Provider</th><th><code>provider.name</code></th><th>Notes</th></tr>
-    <tr><td>Anthropic (Claude)</td><td><code>anthropic</code></td><td>OAuth auto-detection on macOS, prompt caching, retry with backoff</td></tr>
-    <tr><td>OpenAI</td><td><code>openai</code></td><td>Standard SDK, all models including GPT-4o and o-series</td></tr>
-    <tr><td>Google Gemini</td><td><code>gemini</code></td><td>google-genai SDK</td></tr>
-    <tr><td>Ollama</td><td><code>ollama</code></td><td>Local inference, set <code>api_base</code> to your Ollama URL (default: <code>http://localhost:11434</code>)</td></tr>
-    <tr><td>OpenAI-Compatible</td><td><code>openai_compat</code></td><td>Any endpoint with OpenAI-compatible API. Set <code>api_base</code> to your URL.</td></tr>
+    <tr><th>Tool</th><th>Purpose</th></tr>
+    <tr><td><code>ask_user</code></td><td>Ask you a question (optionally with choices) and wait</td></tr>
+    <tr><td><code>save_memory</code></td><td>Append a fact to <code>RIKUGAN.md</code></td></tr>
+    <tr><td><code>spawn_subagent</code></td><td>Delegate a subtask to an isolated subagent</td></tr>
+    <tr><td><code>exploration_report</code></td><td>Record a finding (explore and modify modes)</td></tr>
+    <tr><td><code>research_note</code></td><td>Write a research note (research mode)</td></tr>
   </table>
 </div>
 
-<h2 id="config-reference">Config Reference</h2>
-<h3>Config Paths</h3>
-<p>All paths below are under each host's user directory. IDA Pro shares the same user directory on Linux and macOS (<code>~/.idapro/</code>); Binary Ninja uses a platform-specific location.</p>
+<h3>Workspace Tools</h3>
+<p>General tools the agent always has: <code>read</code>, <code>write</code>, <code>edit</code>, <code>ast_edit</code>, <code>grep</code>, <code>glob</code>, <code>bash</code>, <code>todo</code> and <code>web_search</code> (disk and shell access ask first, see <a href="#filesystem">Files &amp; Shell</a>). MCP server tools are added next to them.</p>
+
+<h2 id="files">Files</h2>
 <div class="table-wrap">
   <table>
-    <tr><th>File</th><th>IDA Pro — Linux / macOS</th><th>IDA Pro — Windows</th></tr>
-    <tr><td>Main config</td><td><code>~/.idapro/rikugan/config.json</code></td><td><code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\config.json</code></td></tr>
-    <tr><td>MCP config</td><td><code>~/.idapro/rikugan/mcp.json</code></td><td><code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\mcp.json</code></td></tr>
-    <tr><td>Custom skills</td><td><code>~/.idapro/rikugan/skills/</code></td><td><code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\skills\</code></td></tr>
-    <tr><td>Sessions</td><td><code>~/.idapro/rikugan/sessions/</code></td><td><code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\sessions\</code></td></tr>
-    <tr><td>Debug log</td><td><code>~/.idapro/rikugan/rikugan_debug.log</code></td><td><code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\rikugan_debug.log</code></td></tr>
-    <tr><td>Structured log</td><td><code>~/.idapro/rikugan/rikugan_structured.jsonl</code></td><td><code>%APPDATA%\Hex-Rays\IDA Pro\rikugan\rikugan_structured.jsonl</code></td></tr>
-    <tr><td>Persistent memory</td><td colspan="2"><code>&lt;idb_directory&gt;/RIKUGAN.md</code></td></tr>
+    <tr><th>Path</th><th>Content</th></tr>
+    <tr><td><code>~/.rikugan/config.json</code></td><td>Rikugan settings (both hosts)</td></tr>
+    <tr><td><code>~/.rikugan/omc/agent/auth.json</code></td><td>Logins and API keys (0600)</td></tr>
+    <tr><td><code>~/.rikugan/omc/agent/models.yml</code></td><td>Custom connections</td></tr>
+    <tr><td><code>~/.rikugan/omc/agent/mcp.json</code></td><td>MCP servers</td></tr>
+    <tr><td><code>~/.rikugan/omc/agent/skills/</code></td><td>Built-in and custom skills</td></tr>
+    <tr><td><code>~/.rikugan/sessions/&lt;db id&gt;/</code></td><td>Chats of one database (or the session storage directory from Settings)</td></tr>
+    <tr><td><code>~/.rikugan/scratch/&lt;db id&gt;/</code></td><td>Agent working directory, saved oversized tool results</td></tr>
+    <tr><td><code>&lt;database dir&gt;/RIKUGAN.md</code></td><td>Persistent memory</td></tr>
+    <tr><td><code>&lt;database dir&gt;/notes/</code></td><td>Research notes</td></tr>
   </table>
 </div>
-<div class="table-wrap">
-  <table>
-    <tr><th>File</th><th>Binary Ninja — Linux</th><th>Binary Ninja — macOS</th><th>Binary Ninja — Windows</th></tr>
-    <tr><td>Main config</td><td><code>~/.binaryninja/rikugan/config.json</code></td><td><code>~/Library/Application Support/Binary Ninja/rikugan/config.json</code></td><td><code>%APPDATA%\Binary Ninja\rikugan\config.json</code></td></tr>
-    <tr><td>MCP config</td><td><code>~/.binaryninja/rikugan/mcp.json</code></td><td><code>~/Library/Application Support/Binary Ninja/rikugan/mcp.json</code></td><td><code>%APPDATA%\Binary Ninja\rikugan\mcp.json</code></td></tr>
-    <tr><td>Custom skills</td><td><code>~/.binaryninja/rikugan/skills/</code></td><td><code>~/Library/Application Support/Binary Ninja/rikugan/skills/</code></td><td><code>%APPDATA%\Binary Ninja\rikugan\skills\</code></td></tr>
-    <tr><td>Sessions</td><td><code>~/.binaryninja/rikugan/sessions/</code></td><td><code>~/Library/Application Support/Binary Ninja/rikugan/sessions/</code></td><td><code>%APPDATA%\Binary Ninja\rikugan\sessions\</code></td></tr>
-    <tr><td>Debug log</td><td><code>~/.binaryninja/rikugan/rikugan_debug.log</code></td><td><code>~/Library/Application Support/Binary Ninja/rikugan/rikugan_debug.log</code></td><td><code>%APPDATA%\Binary Ninja\rikugan\rikugan_debug.log</code></td></tr>
-    <tr><td>Structured log</td><td><code>~/.binaryninja/rikugan/rikugan_structured.jsonl</code></td><td><code>~/Library/Application Support/Binary Ninja/rikugan/rikugan_structured.jsonl</code></td><td><code>%APPDATA%\Binary Ninja\rikugan\rikugan_structured.jsonl</code></td></tr>
-    <tr><td>Persistent memory</td><td colspan="3"><code>&lt;bndb_directory&gt;/RIKUGAN.md</code></td></tr>
-  </table>
-</div>
+<p><code>RIKUGAN_HOME</code> moves <code>~/.rikugan</code> elsewhere. Messages from Rikugan appear in IDA's Output window or Binary Ninja's Log.</p>
 
 </div><!-- .content -->
 </main>
@@ -693,7 +675,6 @@ Task: &lt;instruction for the agent&gt;
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markdown.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
 <script>
 // ── Tabs ──
 document.querySelectorAll('.tabs').forEach(tabs => {
