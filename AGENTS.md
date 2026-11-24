@@ -171,16 +171,18 @@ registry.add(rk::ToolSpec{
 
 ## Binary Ninja's MCP Server
 
-Binary Ninja runs its own MCP server when `ui.mcp.enabled` is set (`http://127.0.0.1:<ui.mcp.port><ui.mcp.endpoint>`,
-optional bearer token `ui.mcp.token`). `HostMcp` (`src/common/agent/`) talks to it through `McpClient`
-(`src/common/mcp/`, a blocking streamable-HTTP client on plain sockets). The host hooks are in
+Binary Ninja runs its own MCP server when `ui.mcp.enabled` is set or it is started from Plugins → MCP
+(`http://127.0.0.1:<ui.mcp.port><ui.mcp.endpoint>`, default `:24642/mcp`, optional bearer token `ui.mcp.token`).
+Rikugan probes the server itself (an MCP handshake) whatever the setting says. `HostMcp` (`src/common/agent/`) talks
+to it through `McpClient` (`src/common/mcp/`, a blocking streamable-HTTP client on plain sockets). The host hooks are in
 `src/binja/host/BnHostMcp.cpp`. They cover where the server listens, starting it (`MCP\Start Server`), and
 selecting the chat's view, since the server's active view is global. They also mark tools read-only by name
 (the server sends no `readOnlyHint`) and hide its file and view switching.
 
-- `HostMcpBar` (`ui/console/`) looks for the server the first time a database shows. With an earlier yes for that
-  database (`hostMcp` in its `database.json`) the tools turn on. With no answer yet it asks. The header's MCP
-  button toggles, and a click counts as consent.
+- `HostMcpBar` (`ui/console/`) looks for the server whenever a database shows and when the panel shows again, until
+  it answers once for that database. With an earlier yes for that database (`hostMcp` in its `database.json`) the
+  tools turn on. With no answer yet it asks. The header's MCP button toggles, and a click counts as consent; a click
+  that finds no server offers to start it.
 - On: the server's tools join the database's registry (`category` `host_mcp`, flag `External`, `Mutating` unless
   read-only) and `chatToolVisible` hides every non-`chat` Rikugan tool for that database. The system prompt gets
   `prompts/system/host_mcp.md`. omc cannot change a live session's system prompt, so `ChatSession::hostToolsChanged`

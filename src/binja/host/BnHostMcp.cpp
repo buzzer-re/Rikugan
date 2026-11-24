@@ -21,6 +21,8 @@ namespace {
 
 const QString kStartAction = QStringLiteral("MCP\\Start Server");
 constexpr int kSelectTimeoutMs = 30000;
+// where Binary Ninja's MCP plugin listens by default ("MCP server listening at http://127.0.0.1:24642/mcp")
+constexpr uint64_t kDefaultPort = 24642;
 
 // The rows of the Markdown table Binary Ninja's list tools answer with, by column name.
 QList<QHash<QString, QString>> tableRows(const QString& text) {
@@ -108,23 +110,23 @@ void installHostMcp() {
     HostMcp::Hooks h;
     h.serverName = QStringLiteral("Binary Ninja");
     h.locate = [] {
+        // The server is probed whatever "ui.mcp.enabled" says: it can be started from Plugins → MCP without the
+        // setting, and a setting turned on takes effect only after a restart. The settings give its address.
         HostMcp::Location loc;
         Ref<Settings> s = Settings::Instance();
-        if (!s->Contains("ui.mcp.port")) {
-            loc.problem = QStringLiteral("this version of Binary Ninja has no MCP server");
-            return loc;
+        uint64_t port = kDefaultPort;
+        QString path = QStringLiteral("/mcp");
+        if (s->Contains("ui.mcp.port")) {
+            loc.enabled = s->Get<bool>("ui.mcp.enabled");
+            port = s->Get<uint64_t>("ui.mcp.port");
+            if (s->Contains("ui.mcp.endpoint")) path = QString::fromStdString(s->Get<std::string>("ui.mcp.endpoint"));
+            if (s->Contains("ui.mcp.token")) loc.endpoint.token = QString::fromStdString(s->Get<std::string>("ui.mcp.token"));
         }
-        loc.enabled = s->Get<bool>("ui.mcp.enabled");
-        const uint64_t port = s->Get<uint64_t>("ui.mcp.port");
-        QString path = QString::fromStdString(s->Get<std::string>("ui.mcp.endpoint"));
         if (!path.startsWith(QLatin1Char('/'))) path.prepend(QLatin1Char('/'));
         loc.endpoint.host = QStringLiteral("127.0.0.1");
         loc.endpoint.port = quint16(port);
         loc.endpoint.path = path;
-        loc.endpoint.token = QString::fromStdString(s->Get<std::string>("ui.mcp.token"));
-        if (!loc.enabled)
-            loc.problem = QStringLiteral("Binary Ninja's MCP server is off (ui.mcp.enabled)");
-        else if (port == 0 || port > 65535)
+        if (port == 0 || port > 65535)
             loc.problem = QStringLiteral("Binary Ninja's MCP server listens on a port the system picks (ui.mcp.port is 0). "
                                          "Set a fixed port so Rikugan can find it.");
         return loc;

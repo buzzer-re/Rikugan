@@ -2,9 +2,10 @@
 // The host's own MCP server (Binary Ninja's), in the panel: the line under the header that offers its tools for a
 // database or says why they cannot be used, and the state behind the header's MCP button.
 //
-// The first time a database shows, the server is looked for. With the user's earlier yes for that database its
-// tools turn on, with no answer yet the line asks, with a no nothing happens until the button is clicked. Clicking
-// the button is consent. The answer is remembered per database (database.json). UI thread.
+// Whenever a database shows (and when the panel shows again), the server is looked for until it answers: Binary
+// Ninja's server may be started after the panel opened. With the user's earlier yes for that database its tools turn
+// on, with no answer yet the line asks, with a no nothing happens until the button is clicked. Clicking the button is
+// consent. The answer is remembered per database (database.json). UI thread.
 #include <functional>
 #include <memory>
 
@@ -29,6 +30,8 @@ public:
     explicit HostMcpBar(QWidget* parent = nullptr);
 
     void setDatabase(const std::shared_ptr<DbContext>& db);
+    // The panel showed again: looks for the server once more for the current database if it never answered.
+    void recheck();
     // The header button: off when on, otherwise look for the server and use it.
     void toggle();
 
@@ -52,7 +55,7 @@ private:
     void restyle();
 
     std::weak_ptr<DbContext> db_;
-    QSet<QString> looked_;  // databases already looked for at first show
+    QSet<QString> found_;  // databases the server was found for (offered, or used): not looked for again
     bool probing_ = false;
     QLabel* text_ = nullptr;
     QPushButton* yes_ = nullptr;

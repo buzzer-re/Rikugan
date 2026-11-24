@@ -402,9 +402,9 @@ struct PanelCore::Impl {
     }
 
     // ---- actions ----
-    void submit(const QString& raw) {
+    void submit(const QString& raw, const QJsonArray& images = {}) {
         const QString text = raw.trimmed();
-        if (text.isEmpty() || !db) return;
+        if ((text.isEmpty() && images.isEmpty()) || !db) return;
         // a subagent's conversation is open: the text steers that agent (it reads it at its next step)
         if (!agentId.isEmpty()) {
             if (!SubagentRegistry::instance().steer(agentId, text)) composer->setText(raw);
@@ -432,7 +432,7 @@ struct PanelCore::Impl {
         }
         // omc does not echo commands as user messages: show what was typed (a busy chat shows it queued)
         if (text.startsWith(QLatin1Char('/')) && !c->busy()) m->addLocalUser(text);
-        CommandRouter::submit(*c, text);
+        CommandRouter::submit(*c, text, images);
         view->scrollToEnd();
     }
 
@@ -991,7 +991,7 @@ void PanelCore::Impl::build() {
         });
     }
 
-    QObject::connect(composer, &Composer::submitted, q, [this](const QString& t) { submit(t); });
+    QObject::connect(composer, &Composer::submitted, q, [this](const QString& t, const QJsonArray& images) { submit(t, images); });
     QObject::connect(composer, &Composer::stopRequested, q, [this] { stop(); });
     QObject::connect(composer, &Composer::modelPickerRequested, q, [this] {
         if (picker->isVisible()) picker->dismiss();
@@ -1154,6 +1154,8 @@ void PanelCore::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
     // the theme may have changed while the panel was hidden
     d->themeTimer.start();
+    // a server started while the panel was hidden (Binary Ninja's MCP): look again
+    d->mcpBar->recheck();
 }
 
 void PanelCore::changeEvent(QEvent* event) {

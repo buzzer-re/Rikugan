@@ -75,8 +75,12 @@ void HostMcpBar::setDatabase(const std::shared_ptr<DbContext>& db) {
     db_ = db;
     hide();
     Q_EMIT stateChanged();
-    if (!db || !HostMcp::instance().supported() || looked_.contains(db->dbId)) return;
-    looked_.insert(db->dbId);
+    recheck();
+}
+
+void HostMcpBar::recheck() {
+    const auto db = db_.lock();
+    if (!db || probing_ || db->hostMcp.load() || !HostMcp::instance().supported() || found_.contains(db->dbId)) return;
     // an earlier no: the button is there when the user changes their mind
     if (hostMcpConsent(db->sessionsDir()) == false) return;
     probe(false);
@@ -111,6 +115,7 @@ void HostMcpBar::probed(const std::weak_ptr<DbContext>& target, bool asked, cons
     const bool current = db && db == db_.lock();
     const QString server = HostMcp::instance().serverName();
     if (db && p.ok && p.tools > 0) {
+        found_.insert(db->dbId);
         const std::optional<bool> consent = hostMcpConsent(db->sessionsDir());
         if (asked || consent == true) {
             // clicking the button is the consent
@@ -134,24 +139,22 @@ void HostMcpBar::probed(const std::weak_ptr<DbContext>& target, bool asked, cons
     } else if (asked && current) {
         if (p.ok) {
             notify(tr("%1's MCP server at %2 offers no tools.").arg(server, p.url), QString(), {}, tr("Dismiss"));
-        } else if (!p.enabled) {
-            notify(tr("%1's MCP server is off. Turn on \u201cui.mcp.enabled\u201d in %1's settings (Ctrl+,), restart %1, "
-                    "then click MCP again.")
-                     .arg(server),
-                 QString(), {}, tr("Dismiss"));
         } else {
-            notify(tr("%1's MCP server does not answer at %2. It may have been stopped (Plugins \u2192 MCP).")
-                     .arg(server, p.url),
-                 tr("Start it"),
+            // a server that does not answer: whatever the setting says (it may have been started from the menu, or
+            // the setting turned on without a restart), starting it is the next step
+            const QString why = p.enabled ? tr("%1's MCP server does not answer at %2.").arg(server, p.url)
+                                          : tr("%1's MCP server is not running (\u201cui.mcp.enabled\u201d is off).").arg(server);
+            notify(why + QLatin1Char(' ') + tr("Start it now?"), tr("Start it"),
                  [this] {
                      if (!HostMcp::instance().startServer()) {
-                         notify(tr("%1 could not start its MCP server. Start it from Plugins \u2192 MCP \u2192 Start Server.")
+                         notify(tr("%1 could not start its MCP server. Start it from Plugins \u2192 MCP \u2192 Start Server, "
+                                  "or turn on \u201cui.mcp.enabled\u201d in its settings, then click MCP again.")
                                   .arg(HostMcp::instance().serverName()),
                               QString(), {}, tr("Dismiss"));
                          return;
                      }
                      // the server listens a moment after the command
-                     QTimer::singleShot(400, this, [this] { probe(true); });
+                     QTimer::singleShot(600, this, [this] { probe(true); });
                  },
                  tr("Dismiss"));
             text_->setToolTip(p.error);
