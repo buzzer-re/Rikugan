@@ -10,15 +10,27 @@ A reverse-engineering agent for **IDA Pro** and **Binary Ninja** that integrates
 
 ## Install
 
-Builds and installs for IDA Pro, Binary Ninja, or both (Linux and macOS).
+Installs the release's prebuilt plugins for IDA Pro, Binary Ninja, or both (every host found). Linux and macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex
+```
+
+Each package is checked against its `.sha256` and unpacked into the host's plugins folder (`--binja-only` / `--ida-only`, `--version X.Y.Z`; Windows: `-Target`, `-Version`). A Rikugan 1.x (Python) install of the same host is moved to `~/.rikugan-1.x-backup/` first. Binary Ninja plugins are tied to its API version: after a Binary Ninja update, install the matching Rikugan release, or build it yourself.
+
+**Building from source** (`build.sh` on Linux and macOS, `build.ps1` on Windows) produces the same packages in `dist/`; `install.sh --from dist` / `install.ps1 -From dist` installs them. See [DEVELOPMENT.md](DEVELOPMENT.md) for the toolchains.
 
 ```bash
 git clone --recursive https://github.com/buzzer-re/Rikugan
 git clone https://github.com/buzzer-re/Oh-My-C ohmyc     # libomc, next to Rikugan
-cd Rikugan && ./install.sh
+cd Rikugan && ./build.sh && ./install.sh --from dist
 ```
-
-You need CMake, a C++20 compiler, the OpenSSL 3 and zlib headers, curl and bsdtar or 7-Zip to unpack Qt (Debian/Ubuntu: `build-essential cmake ninja-build libssl-dev zlib1g-dev libarchive-tools curl`, macOS: the Xcode command line tools and `brew install cmake openssl@3`; ninja is optional), and the host installed in its default place (or `BN_INSTALL_DIR=` / `IDA_DIR=`). The installer fetches the official Qt headers matching each host (`tools/fetch_qt.sh`). Binary Ninja plugins are tied to its API version: re-run `./install.sh` after a Binary Ninja update.
 
 Then open the panel (Ctrl+Shift+I in IDA, the Rikugan sidebar icon in Binary Ninja), and follow **Connect a model**: sign in with a subscription (Claude, ChatGPT/Codex, Gemini, Copilot …), paste an API key, point it at a local server, or reuse the logins of an omc agent already on the machine, then pick the model. No restart is needed. Ctrl+M switches models later. Settings → Provider also takes API keys, and its **+** button adds a custom connection to any OpenAI-compatible, Anthropic or Ollama endpoint, local servers included. If you also use the omc command-line agent, tick "Also use the logins of the omc command-line agent" to share its logins.
 
@@ -87,14 +99,14 @@ Also supports any OpenAI-compatible endpoint and local servers.
 ## Requirements
 
 - IDA Pro 9.3 (Hex-Rays for the decompiler tools) or Binary Ninja (UI mode)
-- Linux or macOS
+- Linux, macOS or Windows 10/11 x64
 - At least one model: an account login, an API key, or a local server
 
-Windows is not supported: libomc has no Windows port yet. The Python version of Rikugan (v1.x) remains in the git history for Windows users.
+On Windows, omc's shell tool runs Git Bash when Git for Windows is installed, else PowerShell.
 
 ## What changed in 2.0
 
-Rikugan 2.0 is a native rewrite on top of libomc. Gone with the Python version: Windows support, Rikugan's own provider layer (the new one covers far more providers and logins), the macOS-keychain Claude Code OAuth import and encrypted API keys (credentials live in `~/.rikugan/omc/agent/auth.json`, mode 0600), importing Claude Code / Codex skills and MCP servers, the research-note reviewer chain, resuming a cancelled mode, skill `allowed_tools`, and undo of file writes. Old chats and settings are not migrated.
+Rikugan 2.0 is a native rewrite on top of libomc. Gone with the Python version: Rikugan's own provider layer (the new one covers far more providers and logins), the macOS-keychain Claude Code OAuth import and encrypted API keys (credentials live in `~/.rikugan/omc/agent/auth.json`, mode 0600 on Linux and macOS), importing Claude Code / Codex skills and MCP servers, the research-note reviewer chain, resuming a cancelled mode, skill `allowed_tools`, and undo of file writes. Old chats and settings are not migrated.
 
 ## Conclusion
 

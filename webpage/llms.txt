@@ -12,7 +12,7 @@ Rikugan is a native C++ plugin. Its agent — turn loop, model providers and log
 
 ## Key Facts
 
-- **Hosts**: IDA Pro 9.3 (Hex-Rays for the decompiler tools) and Binary Ninja (UI mode). Linux and macOS.
+- **Hosts**: IDA Pro 9.3 (Hex-Rays for the decompiler tools) and Binary Ninja (UI mode). Linux, macOS and Windows 10/11 x64.
 - **Models**: every provider and login libomc supports (Claude, ChatGPT/Codex, Gemini, Copilot, API keys …), any OpenAI-compatible endpoint, local servers (Ollama, LM Studio, llama.cpp).
 - **Tools**: 50 shared analysis tools, plus 12 Binary Ninja IL tools or 8 IDA microcode/pseudocode tools; 5 chat tools (ask_user, save_memory, spawn_subagent, exploration_report, research_note); read/write/edit/grep/glob/bash/web_search/todo, each disk or shell kind asking once per chat.
 - **Binary Ninja MCP**: with `ui.mcp.enabled`, the panel offers Binary Ninja's own MCP tools (`bn_*`) per database. The header's MCP button switches a database between them and Rikugan's analysis tools. Their changes are not in `/undo`.
@@ -26,12 +26,14 @@ Rikugan is a native C++ plugin. Its agent — turn loop, model providers and log
 ## Installation
 
 ```bash
-git clone --recursive https://github.com/buzzer-re/Rikugan
-git clone https://github.com/buzzer-re/Oh-My-C ohmyc
-cd Rikugan && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash          # Linux, macOS
 ```
 
-Needs CMake, a C++20 compiler, OpenSSL 3 and zlib headers, curl, and bsdtar (macOS tar) or 7-Zip. The installer fetches the Qt headers matching each host and installs into the host's plugin directory. Re-run it after a Binary Ninja update.
+```powershell
+irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex                  # Windows
+```
+
+The installers download the release's prebuilt plugin for each host found, check it against its `.sha256` and unpack it into the host's plugins folder. To build from source: `./build.sh` (Linux, macOS) or `.\build.ps1` (Windows) write the same packages to `dist/`, and `./install.sh --from dist` / `.\install.ps1 -From dist` installs them. Binary Ninja plugins are tied to its API version: after a Binary Ninja update, install the matching release or rebuild.
 
 ## Source
 

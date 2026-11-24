@@ -9,22 +9,26 @@ repository as `../ohmyc`), linked into the plugin. Rikugan adds what is specific
 analysis tools, the Qt chat panel, per-database chats, undo of database changes, the plan/explore/modify/research
 modes, subagents that can use the host tools, the bulk renamer, analysis profiles, and the RE prompts and skills.
 
-Platforms: Linux and macOS (libomc has no Windows port). Hosts: IDA Pro 9.3, Binary Ninja (built against the API
-revision in `~/binaryninja/api_REVISION.txt`).
+Platforms: Linux, macOS and Windows 10/11 x64 (libomc.dll, omc's MinGW-w64 build, next to the MSVC-built plugin).
+Hosts: IDA Pro 9.3, Binary Ninja (built against the API revision in `<BN install>/api_REVISION.txt`).
 
 ## Directory Structure
 
 ```
 CMakeLists.txt            one host per build tree: RIKUGAN_HOST = binja | ida | none (tests)
-cmake/                    omc.cmake (libomc prelink), build_omc.sh, embed.cmake (skills/ + prompts/ -> plugin bytes)
+cmake/                    omc.cmake (libomc: prelink on Linux/macOS, build_omc.sh; DLL + import library on Windows,
+                          build_omc_win.cmake), embed.cmake (skills/ + prompts/ -> plugin bytes)
 mk/omc-vars.mk            asks omc's Makefile for its library objects and link flags
 third_party/              binaryninja-api (pinned to BN's api_REVISION), ida-sdk (v9.3.0-sdk.3) — git submodules
-tools/fetch_qt.sh         official Qt headers/tools matching each host (6.11.1 BN, 6.8.2 IDA)
+tools/                    fetch_qt.sh / fetch_qt.ps1 (official Qt headers/tools matching each host: 6.11.1 BN, 6.8.2
+                          IDA), vsenv.ps1 (MSVC environment for PowerShell)
+build.sh, build.ps1       build the plugins and package the release assets into dist/
+install.sh, install.ps1   install a release's packages (or dist/ with --from / -From) into the hosts' plugins folders
 prompts/                  every model-facing text (MANIFEST.md lists files and placeholders)
 skills/                   built-in skills (synced into Rikugan's omc agent dir at start)
 src/common/
   omc/                    OmcSession (one libomc session + its worker), EventQueue, AgentHome, ServiceSession, AuthSync,
-                          LoginFlow (provider logins), UserErrors, YamlWriter
+                          LoginFlow (provider logins), UserErrors, YamlWriter, OmcLibrary (loads libomc.dll on Windows)
   tools/                  Tool.h (ToolSpec/ToolCall), ToolRegistry, ToolDispatcher, MutationLog, ResultCache, Artifacts
   host/                   Host interface (one open database), MainThreadCall, onMain()
   agent/                  DbContext, ChatIndex, ChatSession, ChatContext, ChatTools, Permissions, Subagents, ModeDriver,
@@ -36,7 +40,7 @@ src/common/
                           transcript/ (TranscriptModel reducer, TranscriptView + delegate, Cards);
                           console/ (ConsoleHeader, ActivityStrip, Composer, Palette, ModelPicker, StatusLine,
                           AgentsPanel, LoginSheet, GetStarted, HostMcpBar); tools/ (bulk renamer page); settings/
-  util/                   Files, Log, Embedded
+  util/                   Files, Env (environment shared with libomc, home folder), Log, Embedded
 src/binja/                Plugin.cpp (sidebar, notifications, commands), host/ (BnHost, Python, BnHostMcp), tools/
 src/ida/                  sdk/Plugin.cpp (dock, hooks, actions), host/ (IdaHost, tools), sdk/ (SDK subclasses, -fno-rtti)
 tests/native/             QtTest suite (none tree) against omc's mock model server
@@ -46,20 +50,28 @@ tests/ida/                idalib tool smoke test (rikugan_ida_tooltest)
 ## Building
 
 ```bash
-tools/fetch_qt.sh 6.11.1            # Binary Ninja's Qt (also used by the test tree)
+tools/fetch_qt.sh 6.11.1            # Binary Ninja's Qt (also used by the test tree); Windows: tools\fetch_qt.ps1
 tools/fetch_qt.sh 6.8.2             # IDA 9.3's Qt (built with -qtnamespace QT; we compile with QT_NAMESPACE=QT)
 cmake -S . -B build/none  -G Ninja -DRIKUGAN_HOST=none  -DCMAKE_PREFIX_PATH=~/Qt/6.11.1/<kit> && cmake --build build/none
 cmake -S . -B build/binja -G Ninja -DRIKUGAN_HOST=binja -DCMAKE_PREFIX_PATH=~/Qt/6.11.1/<kit> && cmake --build build/binja
 cmake -S . -B build/ida   -G Ninja -DRIKUGAN_HOST=ida   -DCMAKE_PREFIX_PATH=~/Qt/6.8.2/<kit>  && cmake --build build/ida
-./ci-local.sh                       # tests + every host plugin available on this machine
-./install.sh                        # build and install for the hosts found
+./ci-local.sh                       # tests + every host plugin available on this machine (Windows: .\ci-local.ps1)
+./build.sh                          # build and package the hosts found into dist/ (Windows: .\build.ps1)
+./install.sh --from dist            # install them (without --from: the latest GitHub release; Windows: install.ps1)
 ```
 
 - libomc is prelinked into one object whose only globals are `omc_*` (`cmake/build_omc.sh`, the same recipe as
   omc's `make lib`), so omc's internals never clash with the host's symbols. The plugins export only their entry
   points (`PLUGIN`; `CorePluginABIVersion`, `CorePluginInit`, `UIPluginABIVersion`, `UIPluginInit`).
+- Windows: the plugins are MSVC builds (the hosts' Qt and C++ ABI); libomc is omc's MinGW-w64 `libomc.dll` behind its
+  C API, linked through an import library made from `libomc.def` and delay-loaded. `rk::loadOmcLibrary` loads it at
+  plugin init from the plugin's folder (IDA: `plugins\rikugan\`) or its `rikugan\` subfolder (Binary Ninja, which
+  loads every top-level DLL in `plugins\` as a plugin). The DLL has its own C runtime (msvcrt.dll): memory omc returns
+  is freed with `omc_free`, and environment variables omc reads are set with `rk::setEnv` (`util/Env.h`), which updates
+  that runtime's copy too.
 - Each host links its own Qt at runtime. The official Qt headers only provide declarations and moc; IDA's Qt is
-  namespaced, Binary Ninja's is not, so the UI code is compiled once per host tree.
+  namespaced, Binary Ninja's is not, so the UI code is compiled once per host tree. On Windows the IDA tree links the
+  SDK's import libraries for IDA and its Qt, so no IDA install is needed to build it.
 - A Binary Ninja update that bumps the core/UI ABI needs the `third_party/binaryninja-api` submodule moved to the new
   `api_REVISION.txt` commit and a rebuild.
 
@@ -114,7 +126,8 @@ chat switcher) are child widgets built once and only filtered. Timers run only w
 
 ## Settings and Files
 
-- `~/.rikugan/config.json` — `RikuganConfig` (`RIKUGAN_HOME` overrides the root).
+- `~/.rikugan/config.json` — `RikuganConfig` (`RIKUGAN_HOME` overrides the root; `~` is `$HOME` when set, else the
+  user's home, on Windows `%USERPROFILE%`).
 - `~/.rikugan/omc/` — Rikugan's own omc configuration (`OMC_CONFIG_DIR`); `omc/agent/` holds `auth.json`,
   `models.yml` (custom endpoints), `mcp.json`, `skills/`, and a `config.yml` Rikugan rewrites at every start to keep
   omc's host-unfriendly behaviours off (cache warming, sleep prevention, skill-description compression, project MCP).
@@ -182,16 +195,21 @@ selecting the chat's view, since the server's active view is global. They also m
   plugin shutdown, after `Host::closing` is set). UI updates arrive through `EventQueue` (one coalesced `postEvent`
   per burst) or `QMetaObject::invokeMethod(rk::uiAnchor(), ..., Qt::QueuedConnection)` guarded by `QPointer`. No
   polling timers while idle. omc callbacks never block.
-- **Unload safety** (`util/ModuleLifetime.h`). IDA unloads `rikugan.so` while its event loop keeps running, so
-  nothing may run plugin code afterwards. Never `std::thread(...).detach()`: use `rk::spawnThread`, which unload
-  joins. Post cross-thread results to `rk::uiAnchor()`, not `qApp`, and parent module-wide timers to it. A widget
-  removed with `deleteLater` stays parented (`hide()` it, don't `setParent(nullptr)`).
+- **Unload safety** (`util/ModuleLifetime.h`). IDA unloads `rikugan.so` / `rikugan.dll` while its event loop keeps
+  running, so nothing may run plugin code afterwards. Never `std::thread(...).detach()`: use `rk::spawnThread`, which
+  unload joins. Post cross-thread results to `rk::uiAnchor()`, not `qApp`, and parent module-wide timers to it. A
+  widget removed with `deleteLater` stays parented (`hide()` it, don't `setParent(nullptr)`).
 - **IDA**: every SDK call on the main thread (`IdaHost::runOnMainThread`: `execute_sync` with `MFF_NOWAIT` and
-  `MFF_READ`/`MFF_WRITE`). Files that subclass SDK types live in `src/ida/sdk/` (built with `-fno-rtti`). Include Qt
-  and STL headers before `ida/host/IdaSdk.h`. Never let a C++ exception unwind through an IDA callback.
+  `MFF_READ`/`MFF_WRITE`). Files that subclass SDK types live in `src/ida/sdk/` (built with `-fno-rtti` by
+  GCC/clang). Include Qt and STL headers before `ida/host/IdaSdk.h`. Never let a C++ exception unwind through an IDA
+  callback.
 - **Binary Ninja**: the core API is thread-safe, so every tool runs on a tool worker, mutating ones and
   `execute_python` included (exclusive, so in order). Only tools that touch the UI (`jump_to`) run on the main
   thread (`ExecuteOnMainThread`): a tool that waits on analysis or a script there freezes Binary Ninja.
+- **Windows**: platform code stays behind `#ifdef _WIN32` in `util/Env`, `omc/OmcLibrary`, `mcp/McpClient` (Winsock)
+  and `util/Files`. Variables omc reads are set with `rk::setEnv` / `rk::unsetEnv`, never `qputenv`/`setenv` alone
+  (libomc.dll's C runtime keeps its own environment copy); the home folder is `rk::homeDir()` (`$HOME` first, as omc
+  does). Embedded prompts and skills have their CRLF line ends normalized at build time.
 - No stubs, placeholders or `TODO: implement`. Errors are reported, never swallowed.
 
 ## Security
@@ -217,10 +235,11 @@ Rikugan processes adversarial binaries. Their strings, names and code reach the 
 in a temporary home: the omc bridge, the chat core with a fake host (host tools, exclusivity, cancellation, undo,
 artifacts, transcript replay, omc's chat titles), permissions, commands, logins, sanitization, modes, the bulk
 renamer, settings, the theme, the transcript reducer and the UI (offscreen: cards, permissions, chat switcher).
-`build/ida/rikugan_ida_tooltest` runs every IDA tool on a real database through idalib.
+`build/ida/rikugan_ida_tooltest` runs every IDA tool on a real database through idalib (`/bin/ls`; Windows
+`notepad.exe` with IDA's folder on `PATH`).
 
 ## Commit Practices
 
 - Prefix: `fix(scope)`, `feat(scope)`, `refactor(scope)`, `security`, `docs`. Scopes: `ida`, `binja`, `agent`, `ui`,
   `omc`, `tools`, `build`.
-- One logical change per commit. Run `./ci-local.sh` before opening a PR.
+- One logical change per commit. Run `./ci-local.sh` (Windows: `.\ci-local.ps1`) before opening a PR.

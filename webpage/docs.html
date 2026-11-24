@@ -297,46 +297,39 @@ td code{font-size:.82rem}
 <h2 id="requirements">Requirements</h2>
 <ul>
   <li><strong>IDA Pro 9.3</strong> (Hex-Rays for the decompiler tools) or <strong>Binary Ninja</strong> (UI mode)</li>
-  <li><strong>Linux or macOS</strong></li>
+  <li><strong>Linux, macOS or Windows 10/11 x64</strong></li>
   <li>At least one model: an account login, an API key, or a local server</li>
 </ul>
 <div class="callout info">
   <span class="callout-icon">&#x2139;&#xFE0F;</span>
-  <div>Windows is not supported: libomc has no Windows port yet. Rikugan 1.x (Python) remains in the git history.</div>
+  <div>On Windows, the agent's shell tool runs Git Bash when Git for Windows is installed, else PowerShell.</div>
 </div>
 
 <h2 id="installation">Installation</h2>
 <div class="steps">
   <div class="step">
-    <h4>Install the build tools</h4>
-    <p>CMake, a C++20 compiler, the OpenSSL 3 and zlib headers, <code>curl</code>, and <code>bsdtar</code> or 7-Zip to unpack Qt. On Debian/Ubuntu:</p>
-    <pre><code class="language-bash">sudo apt install build-essential cmake ninja-build libssl-dev zlib1g-dev libarchive-tools curl</code></pre>
-    <p>On macOS, with the Xcode command line tools and Homebrew:</p>
-    <pre><code class="language-bash">brew install cmake openssl@3</code></pre>
-    <p>macOS's own <code>tar</code> unpacks Qt, and <code>ninja</code> is optional (faster rebuilds).</p>
-  </div>
-
-  <div class="step">
-    <h4>Clone Rikugan and libomc side by side</h4>
-    <pre><code class="language-bash">git clone --recursive https://github.com/buzzer-re/Rikugan
-git clone https://github.com/buzzer-re/Oh-My-C ohmyc     # libomc, next to Rikugan</code></pre>
-  </div>
-
-  <div class="step">
-    <h4>Build and install</h4>
-    <pre><code class="language-bash">cd Rikugan && ./install.sh          # every host found
-./install.sh --binja-only           # or one host
-./install.sh --ida-only</code></pre>
-    <p>The installer fetches the official Qt headers matching each host (<code>tools/fetch_qt.sh</code>: Qt 6.11.1 for Binary Ninja, 6.8.2 for IDA 9.3), builds the plugin and copies it to the host's plugin directory:</p>
+    <h4>Install the release</h4>
+    <pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash      # Linux, macOS</code></pre>
+    <pre><code class="language-powershell">irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex              # Windows</code></pre>
+    <p>The installer downloads the prebuilt plugin of each host it finds from the GitHub release, checks it against its <code>.sha256</code> and unpacks it into the host's plugins folder (<code>--binja-only</code>, <code>--ida-only</code>, <code>--version X.Y.Z</code>; on Windows <code>-Target</code>, <code>-Version</code>). A Rikugan 1.x (Python) install of the same host is moved to <code>~/.rikugan-1.x-backup/</code> first.</p>
     <div class="table-wrap">
       <table>
         <tr><th>Host</th><th>Plugin</th></tr>
-        <tr><td>IDA Pro</td><td><code>~/.idapro/plugins/rikugan.so</code> (<code>.dylib</code> on macOS)</td></tr>
+        <tr><td>IDA Pro (Linux, macOS)</td><td><code>~/.idapro/plugins/rikugan.so</code> (<code>.dylib</code> on macOS)</td></tr>
+        <tr><td>IDA Pro (Windows)</td><td><code>%APPDATA%\Hex-Rays\IDA Pro\plugins\rikugan\</code> (<code>rikugan.dll</code>, <code>libomc.dll</code>, <code>ida-plugin.json</code>)</td></tr>
         <tr><td>Binary Ninja (Linux)</td><td><code>~/.binaryninja/plugins/librikugan.so</code></td></tr>
         <tr><td>Binary Ninja (macOS)</td><td><code>~/Library/Application Support/Binary Ninja/plugins/librikugan.dylib</code></td></tr>
+        <tr><td>Binary Ninja (Windows)</td><td><code>%APPDATA%\Binary Ninja\plugins\rikugan.dll</code>, with <code>libomc.dll</code> in <code>plugins\rikugan\</code></td></tr>
       </table>
     </div>
-    <p>Hosts are looked up in their default places. Point the installer elsewhere with <code>BN_INSTALL_DIR=</code>, <code>IDA_DIR=</code>, or <code>OMC_DIR=</code> for libomc.</p>
+  </div>
+
+  <div class="step">
+    <h4>Or build it</h4>
+    <pre><code class="language-bash">git clone --recursive https://github.com/buzzer-re/Rikugan
+git clone https://github.com/buzzer-re/Oh-My-C ohmyc     # libomc, next to Rikugan
+cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1; .\install.ps1 -From dist</code></pre>
+    <p>The build scripts fetch the official Qt headers matching each host (Qt 6.11.1 for Binary Ninja, 6.8.2 for IDA 9.3), build the plugins and write the release packages to <code>dist/</code>. Linux and macOS need CMake, a C++20 compiler, the OpenSSL 3 and zlib headers, <code>curl</code>, and <code>bsdtar</code> or 7-Zip (Debian/Ubuntu: <code>sudo apt install build-essential cmake ninja-build libssl-dev zlib1g-dev libarchive-tools curl</code>; macOS: the Xcode command line tools and <code>brew install cmake openssl@3</code>). Windows needs Visual Studio 2022 or later with <strong>Desktop development with C++</strong>, and builds libomc through WSL or MSYS2, or takes it from omc's release (<code>.\build.ps1 -OmcVersion latest</code>). Hosts are looked up in their default places; <code>BN_INSTALL_DIR</code>, <code>IDA_DIR</code> and <code>OMC_DIR</code> point elsewhere.</p>
   </div>
 
   <div class="step">
@@ -348,7 +341,7 @@ git clone https://github.com/buzzer-re/Oh-My-C ohmyc     # libomc, next to Rikug
 
 <div class="callout warn">
   <span class="callout-icon">&#x26A0;&#xFE0F;</span>
-  <div>Binary Ninja plugins are tied to its API version: re-run <code>./install.sh</code> after a Binary Ninja update.</div>
+  <div>Binary Ninja plugins are tied to its API version: after a Binary Ninja update, install the matching Rikugan release or rebuild.</div>
 </div>
 
 <h2 id="models">Provider &amp; Model</h2>

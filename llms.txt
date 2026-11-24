@@ -1,6 +1,6 @@
 # Rikugan (六眼)
 
-> A reverse-engineering agent that lives inside IDA Pro 9.3 and Binary Ninja as a native C++ plugin (Linux, macOS). Its agent — turn loop, every model provider and login, sessions, compaction, retries, skills, MCP, file/shell/search tools — is libomc (oh-my-c), linked in-process. Rikugan adds the host analysis tools, the Qt chat panel, per-database chats, undo, plan/explore/modify/research modes, subagents with host tools, the bulk renamer, analysis profiles, and the RE prompts and skills. Rikugan 1.x was a Python plugin; it remains only in the git history.
+> A reverse-engineering agent that lives inside IDA Pro 9.3 and Binary Ninja as a native C++ plugin (Linux, macOS, Windows). Its agent — turn loop, every model provider and login, sessions, compaction, retries, skills, MCP, file/shell/search tools — is libomc (oh-my-c), linked in-process (on Windows: libomc.dll beside the plugin). Rikugan adds the host analysis tools, the Qt chat panel, per-database chats, undo, plan/explore/modify/research modes, subagents with host tools, the bulk renamer, analysis profiles, and the RE prompts and skills. Rikugan 1.x was a Python plugin; it remains only in the git history.
 
 ## Documentation
 
@@ -26,7 +26,7 @@
 
 ```
 CMakeLists.txt     RIKUGAN_HOST = binja | ida | none (tests)
-cmake/             omc.cmake + build_omc.sh (libomc prelink), embed.cmake (skills/ + prompts/ into the plugin)
+cmake/             omc.cmake + build_omc.sh / build_omc_win.cmake (libomc), embed.cmake (skills/ + prompts/ into the plugin)
 prompts/           model-facing texts (MANIFEST.md)
 skills/            12 built-in skills
 src/common/        omc/ agent/ tools/ host/ security/ config/ ui/ util/
@@ -35,7 +35,9 @@ src/ida/           sdk/Plugin.cpp, host/ (IdaHost, tools/), sdk/ (SDK subclasses
 tests/native/      QtTest suite against omc's mock model
 tests/ida/         idalib tool test
 third_party/       binaryninja-api, ida-sdk (submodules)
-tools/fetch_qt.sh  Qt headers matching each host
+tools/             fetch_qt.sh / fetch_qt.ps1 (Qt headers matching each host), vsenv.ps1 (MSVC environment)
+build.sh build.ps1 build and package the plugins into dist/
+install.sh install.ps1  install a release (or dist/) into the hosts' plugins folders
 ```
 
 ## Commands

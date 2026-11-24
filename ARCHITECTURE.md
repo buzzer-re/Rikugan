@@ -1,8 +1,8 @@
 # ARCHITECTURE.md — Rikugan Internals
 
-Rikugan 2.x is a native C++20 / Qt Widgets plugin for IDA Pro 9.3 and Binary Ninja (Linux, macOS). The agent —
-turn loop, providers and logins, session files, compaction, retries, skills, MCP and the file/shell/search tools —
-is **libomc** ([oh-my-c](https://github.com/buzzer-re/Oh-My-C)), linked into the plugin. Rikugan supplies the
+Rikugan 2.x is a native C++20 / Qt Widgets plugin for IDA Pro 9.3 and Binary Ninja (Linux, macOS, Windows). The
+agent — turn loop, providers and logins, session files, compaction, retries, skills, MCP and the file/shell/search
+tools — is **libomc** ([oh-my-c](https://github.com/buzzer-re/Oh-My-C)), linked into the plugin. Rikugan supplies the
 reverse-engineering half: host analysis tools, the chat panel, per-database chats, undo, modes, subagents with host
 tools, the bulk renamer, analysis profiles, prompts and skills. (Rikugan 1.x was a Python plugin; it remains in the
 git history.)
@@ -58,6 +58,17 @@ IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
   whose only globals are the `omc_*` API (`ld -r` + `objcopy --keep-global-symbols`, `-exported_symbols_list` on
   macOS). omc's internals cannot collide with the host process; the plugin modules export only their entry points
   (`rk_export_only`).
+- **Windows.** The hosts are MSVC programs (Qt, C++ ABI), while omc builds with MinGW-w64, so libomc stays a DLL:
+  `cmake/build_omc_win.cmake` runs omc's `make WINDOWS=1` (through WSL or MSYS2) or takes a prebuilt `libomc.dll`
+  (`OMC_LIB_DIR`, e.g. omc's Windows release), makes an MSVC import library from `libomc.def` and copies the DLL next
+  to the modules. Only the C API crosses the boundary. The plugins delay-load the DLL (`/DELAYLOAD:libomc.dll`) because
+  neither host searches the plugin's folder for dependencies: `rk::loadOmcLibrary` (`omc/OmcLibrary.h`) loads it by
+  full path at plugin init (IDA: `plugins\rikugan\libomc.dll`; Binary Ninja: `plugins\rikugan\libomc.dll` beside
+  `plugins\rikugan.dll`, since it loads every top-level DLL as a plugin), checks `omc_api_version`, and keeps it
+  loaded for the life of the process. libomc's C runtime is msvcrt.dll with its own copy of the environment, so
+  every variable omc reads (`OMC_CONFIG_DIR` …) is set through `rk::setEnv`, which also calls msvcrt's `_putenv_s`.
+  In library mode omc installs no crash handler; it adds a console control handler (inert in a GUI host), starts
+  Winsock and sets a 1 ms timer resolution.
 - The whole conversation with omc is its RPC protocol: JSON frames sent with `omc_send` and received through one event
   callback per session. Rikugan uses `prompt`, `get_state`, `get_messages`, `get_last_assistant_text`, `set_model`,
   `fork`, `set_event_filter`, `set_host_tools`, login/account commands, and the control frames `host_tool_result`,
@@ -102,9 +113,9 @@ IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
 - **Cards.** Approvals, `ask_user` and mode decisions go through the chat's `ChatUi` bridge:
   the asking worker blocks on a condition until the user answers or the call's `CancelToken` fires; the UI thread only
   shows the card.
-- **Unload** (`util/ModuleLifetime.h`). IDA dlcloses `rikugan.so` at exit with its Qt event loop still running, so no
-  plugin thread, posted event or timer may outlive it. Background threads start through `spawnThread`; results from
-  workers are posted to `uiAnchor()`, a plugin-owned QObject that also parents module-wide timers.
+- **Unload** (`util/ModuleLifetime.h`). IDA unloads `rikugan.so` / `.dll` at exit with its Qt event loop still
+  running, so no plugin thread, posted event or timer may outlive it. Background threads start through `spawnThread`;
+  results from workers are posted to `uiAnchor()`, a plugin-owned QObject that also parents module-wide timers.
 - **Shutdown (IDA).** `~RikuganPlugmod` sets `Host::closing`, deletes the panel synchronously (and with it every
   event posted to its widgets and chats), drops the database, closes the widget, runs `ServiceSession::shutdown` and
   `ToolDispatcher::shutdown`, then `shutdownModule(5000)`: joins the spawned threads and deletes the anchor. Closing
@@ -367,7 +378,7 @@ Rikugan processes adversarial binaries; strings, names and code from the sample 
   project context files, rules and project MCP are off, so a sample tree cannot inject settings or start processes.
   omc commands that would `chdir` the host process are refused.
 - **Credentials** live in `~/.rikugan/omc/agent/auth.json` (0600), written atomically; models.yml with endpoint keys
-  is 0600.
+  is 0600. On Windows the files inherit the user profile's ACL (the user, SYSTEM and administrators).
 
 **Residual risks.** Sanitisation is pattern-based and cannot catch every phrasing of an injection. With shell access
 granted, an injected instruction can reach `bash` with the user's privileges, and file changes are not undoable. The
@@ -383,4 +394,4 @@ chat.
   exclusivity and order, cancellation, undo, artifacts, transcript replay), sanitisation and IOC filters, modes, the
   bulk renamer, settings and widgets offscreen.
 - `tests/ida/` (`build/ida/rikugan_ida_tooltest`): every model-visible IDA tool against a fresh idalib database of
-  `/bin/ls` with the cases in `tool_cases.json`, then `/undo` of a rename.
+  `/bin/ls` (Windows: `notepad.exe`) with the cases in `tool_cases.json`, then `/undo` of a rename.
