@@ -74,6 +74,36 @@ QString exportToolResult(const QString& text) {
 
 }  // namespace
 
+std::optional<QString> typedUserText(const QJsonObject& m) {
+    const auto str = [&m](const char* k) { return m.value(QLatin1String(k)).toString(); };
+    if (str("role") != QLatin1String("user") || m.value(QLatin1String("synthetic")).toBool() ||
+        str("attribution") == QLatin1String("agent"))
+        return std::nullopt;
+    const QString customType = str("customType");
+    QString text;
+    if (customType == QLatin1String("skill-prompt")) {
+        // the content is the expanded skill; details.prompt is the invocation, "/skill:<slug> ..." as CommandRouter
+        // sent it for the "/<slug> ..." the user typed
+        text = m.value(QLatin1String("details")).toObject().value(QLatin1String("prompt")).toString().trimmed();
+        if (text.startsWith(QLatin1String("/skill:"))) text.remove(1, 6);
+    } else {
+        // every other custom message is omc's (replayed ones carry sourceRole "custom"), as are shell/hook output
+        // and file mentions
+        if (!customType.isEmpty() || !str("sourceRole").isEmpty()) return std::nullopt;
+        text = stripContextPrefix(contentText(m.value(QLatin1String("content"))));
+        if (text.trimmed().startsWith(QLatin1String("[SYSTEM]"))) return std::nullopt;
+    }
+    int images = 0;
+    for (const QJsonValue& v : m.value(QLatin1String("content")).toArray())
+        if (v.toObject().value(QLatin1String("type")).toString() == QLatin1String("image")) ++images;
+    if (images > 0) {
+        const QString note = images == 1 ? QStringLiteral("[1 image]") : QStringLiteral("[%1 images]").arg(images);
+        text = text.trimmed().isEmpty() ? note : text + QLatin1Char('\n') + note;
+    }
+    if (text.trimmed().isEmpty()) return std::nullopt;
+    return text;
+}
+
 bool writeMarkdownExport(const QJsonArray& messages, const QString& path, const QString& model, const QString& file,
                          QString* error) {
     QStringList lines{QStringLiteral("# Rikugan Chat Export\n")};
@@ -85,9 +115,7 @@ bool writeMarkdownExport(const QJsonArray& messages, const QString& path, const 
         const QJsonObject m = v.toObject();
         const QString role = m.value(QLatin1String("role")).toString();
         if (role == QLatin1String("user")) {
-            const QString text = stripContextPrefix(contentText(m.value(QLatin1String("content"))));
-            if (text.trimmed().startsWith(QLatin1String("[SYSTEM]"))) continue;
-            lines << QStringLiteral("## You\n\n%1\n").arg(text);
+            if (const std::optional<QString> text = typedUserText(m)) lines << QStringLiteral("## You\n\n%1\n").arg(*text);
         } else if (role == QLatin1String("assistant")) {
             QStringList text;
             QList<QJsonObject> calls;

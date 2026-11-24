@@ -94,7 +94,8 @@ public:
     void addCard(ItemKind kind, int requestId, const QJsonObject& payload);
     void cancelCard(int requestId);
     void promptFinished(const QString& status, const QString& error);
-    // A command the user typed that omc does not echo back as a user message.
+    // A command the user typed, shown as typed. omc echoes only a /skill back as a user message, which then
+    // replaces this line (see onMessageStart).
     void addLocalUser(const QString& text);
     // Host tool names (Host kind); the rest are classified by name.
     void setHostTools(const QSet<QString>& names);
@@ -163,6 +164,8 @@ private:
 
     // the current turn
     quint64 step_ = 0, text_ = 0, thinking_ = 0, task_ = 0;
+    QString textLead_;       // whitespace streamed before the text row exists (it opens on the first visible text)
+    quint64 localEcho_ = 0;  // the newest addLocalUser row
     QHash<QString, quint64> tools_;      // toolCallId -> item (cleared at turn_start: providers reuse ids)
     QHash<int, QString> blockTool_;      // contentIndex of the streaming message -> toolCallId
     QHash<QString, quint64> agentTask_;  // spawn_subagent toolCallId -> Task item

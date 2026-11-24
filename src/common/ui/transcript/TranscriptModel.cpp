@@ -4,10 +4,10 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 
+#include "common/agent/ChatExport.h"
 #include "common/agent/ChatSession.h"
 #include "common/agent/DbContext.h"
 #include "common/agent/Subagents.h"
-#include "common/agent/SystemPrompt.h"
 #include "common/omc/UserErrors.h"
 #include "common/tools/MutationLog.h"
 #include "common/tools/ToolRegistry.h"
@@ -28,9 +28,6 @@ qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
 // tools whose payload the transcript shows elsewhere (the question card, the todo list)
 bool hiddenTool(const QString& name) { return name == QLatin1String("ask_user") || name == QLatin1String("todo"); }
 
-// internal prompts (mode phases, system hints) are user messages the user never typed
-bool hiddenUserText(const QString& text) { return text.trimmed().startsWith(QLatin1String("[SYSTEM]")); }
-
 QString contentText(const QJsonValue& content) {
     if (content.isString()) return content.toString();
     QStringList parts;
@@ -39,30 +36,6 @@ QString contentText(const QJsonValue& content) {
         if (str(b, "type") == QLatin1String("text")) parts << str(b, "text");
     }
     return parts.join(QLatin1Char('\n'));
-}
-
-QString userText(const QJsonObject& m) { return stripContextPrefix(contentText(m.value(QLatin1String("content")))); }
-
-// What a user-role message shows as the user's line, or an empty string when the user never typed it. omc replays
-// its own injections as user turns: custom messages (goal and todo context, background job results, reminders),
-// shell and hook output, file mentions (sourceRole), turns marked synthetic or written by the agent. A /skill
-// invocation replays as its expanded prompt: the line is what the user typed (details.prompt).
-QString typedUserText(const QJsonObject& m) {
-    if (str(m, "customType") == QLatin1String("skill-prompt"))
-        return m.value(QLatin1String("details")).toObject().value(QLatin1String("prompt")).toString();
-    if (!str(m, "sourceRole").isEmpty() || m.value(QLatin1String("synthetic")).toBool() ||
-        str(m, "attribution") == QLatin1String("agent"))
-        return {};
-    QString text = userText(m);
-    if (hiddenUserText(text)) return {};
-    int images = 0;
-    for (const QJsonValue& v : m.value(QLatin1String("content")).toArray())
-        if (str(v.toObject(), "type") == QLatin1String("image")) ++images;
-    if (images > 0) {
-        const QString note = images == 1 ? QStringLiteral("[1 image]") : QStringLiteral("[%1 images]").arg(images);
-        text = text.trimmed().isEmpty() ? note : text + QLatin1Char('\n') + note;
-    }
-    return text;
 }
 
 // The argument a tool row shows next to its name.
@@ -202,6 +175,7 @@ void TranscriptModel::clear() {
     rowCache_.clear();
     endResetModel();
     step_ = text_ = thinking_ = task_ = 0;
+    textLead_.clear();
     tools_.clear();
     blockTool_.clear();
     agentTask_.clear();
@@ -418,6 +392,7 @@ void TranscriptModel::finishStreaming() {
         }
         *cur = 0;
     }
+    textLead_.clear();
 }
 
 void TranscriptModel::addNotice(const QString& text, bool error) {
@@ -743,14 +718,23 @@ void TranscriptModel::applyFrame(const QJsonObject& f) {
 void TranscriptModel::onMessageStart(const QJsonObject& m) {
     const QString role = str(m, "role");
     if (role == QLatin1String("user")) {
-        const QString text = typedUserText(m);
-        // commands are shown when typed (addLocalUser); internal prompts never
-        if (text.trimmed().isEmpty() || text.trimmed().startsWith(QLatin1Char('/'))) return;
+        const std::optional<QString> text = typedUserText(m);
+        if (!text) return;
         finishStreaming();
         step_ = 0;
+        // the /skill typed here is on screen as typed (addLocalUser): omc's message for it takes that line, which
+        // then reads as it will on replay
+        if (str(m, "customType") == QLatin1String("skill-prompt")) {
+            const quint64 echo = std::exchange(localEcho_, 0);
+            if (echo && !items_.isEmpty() && items_.last().id == echo) {
+                items_.last().text = *text;
+                touch(int(items_.size()) - 1);
+                return;
+            }
+        }
         TranscriptItem u;
         u.kind = ItemKind::User;
-        u.text = text;
+        u.text = *text;
         append(std::move(u));
     } else if (role == QLatin1String("assistant")) {
         finishStreaming();
@@ -767,7 +751,7 @@ void TranscriptModel::addLocalUser(const QString& text) {
     TranscriptItem u;
     u.kind = ItemKind::User;
     u.text = text;
-    append(std::move(u));
+    localEcho_ = items_.at(append(std::move(u))).id;
 }
 
 void TranscriptModel::onMessageUpdate(const QJsonObject& f) {
@@ -776,11 +760,19 @@ void TranscriptModel::onMessageUpdate(const QJsonObject& f) {
     const int index = ev.value(QLatin1String("contentIndex")).toInt(-1);
     const qint64 now = nowMs();
     if (t == QLatin1String("text_delta")) {
-        stream(textItem(ItemKind::Text, now), str(ev, "delta"));
+        // no row (nor step) until there is something to show: a whitespace-only answer leaves nothing behind
+        const QString d = str(ev, "delta");
+        if (!text_ && d.trimmed().isEmpty()) textLead_ += d;
+        else stream(textItem(ItemKind::Text, now), std::exchange(textLead_, {}) + d);
     } else if (t == QLatin1String("text_end")) {
+        textLead_.clear();
+        // the full text: it also stands for a block whose deltas never came
+        const QString content = str(ev, "content");
+        const bool full = !content.trimmed().isEmpty();
+        if (full && !text_) textItem(ItemKind::Text, now);
         revealAll(text_);
         if (TranscriptItem* it = itemById(text_)) {
-            if (ev.contains(QLatin1String("content"))) it->text = str(ev, "content");
+            if (full) it->text = content;
             it->streaming = false;
             computeChips(*it);
             touch(rowOfId(text_));
@@ -811,6 +803,7 @@ void TranscriptModel::onMessageUpdate(const QJsonObject& f) {
             touch(rowOfId(text_));
         }
         text_ = 0;
+        textLead_.clear();
         onToolStart(id, str(block, "name"), {}, now);
     } else if (t == QLatin1String("toolcall_end")) {
         const QJsonObject call = ev.value(QLatin1String("toolCall")).toObject();
@@ -830,7 +823,8 @@ void TranscriptModel::onMessageEnd(const QJsonObject& m) {
     const QJsonObject u = m.value(QLatin1String("usage")).toObject();
     if (!u.isEmpty())
         activity([&](ChatActivity& a) {
-            a.tokensIn += qint64(u.value(QLatin1String("input")).toDouble() + u.value(QLatin1String("cacheRead")).toDouble());
+            a.tokensIn += qint64(u.value(QLatin1String("input")).toDouble() + u.value(QLatin1String("cacheRead")).toDouble() +
+                                 u.value(QLatin1String("cacheWrite")).toDouble());
             a.tokensOut += qint64(u.value(QLatin1String("output")).toDouble());
             a.cost += u.value(QLatin1String("cost")).toObject().value(QLatin1String("total")).toDouble();
         });
@@ -1187,6 +1181,7 @@ void TranscriptModel::applyTranscript(const QJsonArray& messages) {
     items_.clear();
     rowCache_.clear();
     step_ = text_ = thinking_ = task_ = 0;
+    textLead_.clear();
     tools_.clear();
     blockTool_.clear();
     agentTask_.clear();
@@ -1197,12 +1192,12 @@ void TranscriptModel::applyTranscript(const QJsonArray& messages) {
         const QJsonObject m = v.toObject();
         const QString role = str(m, "role");
         if (role == QLatin1String("user")) {
-            const QString text = typedUserText(m);
-            if (text.trimmed().isEmpty()) continue;
+            const std::optional<QString> text = typedUserText(m);
+            if (!text) continue;
             step_ = 0;
             TranscriptItem u;
             u.kind = ItemKind::User;
-            u.text = text;
+            u.text = *text;
             u.timeMs = qint64(m.value(QLatin1String("timestamp")).toDouble());
             append(std::move(u));
         } else if (role == QLatin1String("assistant")) {

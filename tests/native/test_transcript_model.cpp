@@ -1,10 +1,13 @@
 // The transcript reducer: what a stream of omc frames and a replayed session turn into — coalesced streaming,
-// tool rows that survive providers reusing call ids, hidden internal prompts, cards that block the composer,
-// cancellation, /btw answers and the goal shown in the activity strip.
+// tool rows that survive providers reusing call ids, hidden internal prompts (alike live, on replay and in the
+// Markdown export), cards that block the composer, cancellation, /btw answers and the goal shown in the activity strip.
+#include <QFile>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QtTest>
 
 #include "TestEnv.h"
+#include "common/agent/ChatExport.h"
 #include "common/ui/transcript/TranscriptModel.h"
 
 using namespace rk::ui;
@@ -264,7 +267,7 @@ private Q_SLOTS:
         QCOMPARE(inserted.count(), 0);
         QCOMPARE(kinds(m), (QList<ItemKind>{ItemKind::User, ItemKind::Step, ItemKind::Thinking, ItemKind::Tool, ItemKind::Step,
                                             ItemKind::Text, ItemKind::User}));
-        QCOMPARE(m.at(6).text, QString("/skill:vuln-audit main"));
+        QCOMPARE(m.at(6).text, QString("/vuln-audit main"));
         const TranscriptItem& tool = m.at(3);
         QCOMPARE(tool.status, ToolStatus::Done);
         QCOMPARE(tool.label, QString("0x401000 \u2192 main"));
@@ -275,6 +278,99 @@ private Q_SLOTS:
         QSignalSpy after(&m, &QAbstractItemModel::rowsInserted);
         m.applyFrame(QJsonObject{{"type", "notice"}, {"message", "hello"}});
         QCOMPARE(after.count(), 1);
+    }
+
+    // One rule decides which user messages the user typed: the live stream, a replay and the Markdown export show the
+    // same lines.
+    void injectedUserMessagesStayOutEverywhere() {
+        const auto text = [](const char* t) { return QJsonArray{QJsonObject{{"type", "text"}, {"text", t}}}; };
+        const QJsonArray messages{
+            QJsonObject{{"role", "user"}, {"attribution", "user"}, {"content", text("[SYSTEM] Phase: explore")}},
+            QJsonObject{{"role", "user"}, {"synthetic", true}, {"customType", "goal-mode-context"}, {"content", text("<goal_context>x</goal_context>")}},
+            QJsonObject{{"role", "user"}, {"customType", "async-result"}, {"content", text("job 3 finished")}},
+            QJsonObject{{"role", "user"}, {"attribution", "agent"}, {"content", text("continue the plan")}},
+            QJsonObject{{"role", "user"}, {"sourceRole", "bashExecution"}, {"content", text("ls output")}},
+            QJsonObject{{"role", "user"}, {"attribution", "user"},
+                        {"content", text("<rikugan_context>\nCurrent address: 0x401000\n</rikugan_context>\n\nrename main")}},
+            QJsonObject{{"role", "user"}, {"customType", "skill-prompt"}, {"attribution", "user"},
+                        {"details", QJsonObject{{"prompt", "/skill:vuln-audit main"}}}, {"content", text("<skill>long body</skill>")}}};
+        const QStringList typed{"rename main", "/vuln-audit main"};
+        const auto userLines = [](const TranscriptModel& m) {
+            QStringList out;
+            for (int i = 0; i < m.rowCount(); ++i)
+                if (m.at(i).kind == ItemKind::User) out << m.at(i).text;
+            return out;
+        };
+
+        TranscriptModel live;
+        for (const QJsonValue& v : messages) {
+            // the panel shows a command as typed; omc's skill message then takes that line instead of adding one
+            if (v.toObject().value("customType").toString() == "skill-prompt") live.addLocalUser("/vuln-audit   main");
+            QJsonObject start{{"type", "message_start"}, {"message", v}};
+            live.applyFrame(start);
+        }
+        QCOMPARE(userLines(live), typed);
+        QCOMPARE(live.rowCount(), 2);
+
+        TranscriptModel replay;
+        replay.applyTranscript(messages);
+        QCOMPARE(userLines(replay), typed);
+        QCOMPARE(replay.rowCount(), 2);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("chat.md");
+        QString error;
+        QVERIFY2(rk::writeMarkdownExport(messages, path, "mock/mock-1", {}, &error), qPrintable(error));
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QString md = QString::fromUtf8(f.readAll());
+        QCOMPARE(md.count(QString("## You")), 2);
+        QVERIFY(md.contains(QString("## You\n\nrename main\n")));
+        QVERIFY(md.contains(QString("## You\n\n/vuln-audit main\n")));
+        for (const char* hidden : {"[SYSTEM]", "goal_context", "job 3", "continue the plan", "ls output", "rikugan_context", "long body"})
+            QVERIFY2(!md.contains(QString::fromLatin1(hidden)), hidden);
+    }
+
+    // an answer that is only whitespace leaves no row (nor a step); leading whitespace of a real answer is kept
+    void whitespaceOnlyTextLeavesNoRow() {
+        TranscriptModel m;
+        m.applyFrame(message("message_start", "assistant"));
+        m.applyFrame(delta("text_delta", "\n\n"));
+        m.applyFrame(delta("text_delta", "  "));
+        QCOMPARE(m.rowCount(), 0);
+        m.applyFrame(QJsonObject{{"type", "message_update"},
+                                 {"assistantMessageEvent", QJsonObject{{"type", "text_end"}, {"content", "\n\n  "}}}});
+        m.applyFrame(message("message_end", "assistant"));
+        QCOMPARE(m.rowCount(), 0);
+
+        m.applyFrame(message("message_start", "assistant"));
+        m.applyFrame(delta("text_delta", "\n"));
+        m.applyFrame(delta("text_delta", "    int x;"));
+        m.applyFrame(message("message_end", "assistant"));
+        QCOMPARE(kinds(m), (QList<ItemKind>{ItemKind::Step, ItemKind::Text}));
+        QCOMPARE(m.at(1).text, QString("\n    int x;"));
+        QVERIFY(!m.at(1).streaming);
+    }
+
+    // a text block that arrives whole (text_end, no deltas) is shown
+    void textEndWithoutDeltasShowsTheText() {
+        TranscriptModel m;
+        m.applyFrame(message("message_start", "assistant"));
+        m.applyFrame(QJsonObject{{"type", "message_update"},
+                                 {"assistantMessageEvent", QJsonObject{{"type", "text_end"}, {"content", "All done."}}}});
+        QCOMPARE(kinds(m), (QList<ItemKind>{ItemKind::Step, ItemKind::Text}));
+        QCOMPARE(m.at(1).text, QString("All done."));
+        QVERIFY(!m.at(1).streaming);
+    }
+
+    // prompt caching: tokens written to the cache are input too
+    void usageCountsCacheWrites() {
+        TranscriptModel m;
+        const QJsonObject usage{{"input", 10}, {"output", 5}, {"cacheRead", 100}, {"cacheWrite", 50}, {"cost", QJsonObject{{"total", 0.25}}}};
+        m.applyFrame(message("message_end", "assistant", {{"usage", usage}}));
+        QCOMPARE(m.activity().tokensIn, qint64(160));
+        QCOMPARE(m.activity().tokensOut, qint64(5));
     }
 
     // A thought is open while it streams and folds when it ends; one the user folded or opened while it streamed keeps
