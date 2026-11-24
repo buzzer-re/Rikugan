@@ -54,18 +54,30 @@ rk::ActionContext actionContext(TWidget* widget) {
 }
 
 struct RikuganPlugmod : public plugmod_t, public event_listener_t {
+    // HT_UI and HT_IDB number their events independently (HT_UI 0 is ui_range, HT_IDB 0 is closebase), so each hook
+    // needs its own listener: a shared switch would close the database whenever the disassembly range changes.
+    struct IdbListener : public event_listener_t {
+        RikuganPlugmod* mod = nullptr;
+        ssize_t idaapi on_event(ssize_t code, va_list) override {
+            if (code == idb_event::closebase) mod->closeDatabase();
+            return 0;
+        }
+    };
+
     TWidget* widget = nullptr;
     QPointer<rk::PanelCore> panel;
     std::shared_ptr<rk::DbContext> db;
     std::vector<std::unique_ptr<action_handler_t>> handlers;
     std::vector<std::string> actionNames;
+    IdbListener idbListener;
 
     RikuganPlugmod() {
         rk::setLogSink([](const QString& m) { msg("%s\n", m.toUtf8().constData()); });
         rk::AgentHome::prepare();
         registerActions();
+        idbListener.mod = this;
         ::hook_event_listener(HT_UI, this, this);
-        ::hook_event_listener(HT_IDB, this, this);
+        ::hook_event_listener(HT_IDB, &idbListener, this);
         const char* idb = get_path(PATH_TYPE_IDB);
         if (idb && *idb) openDatabase();
         msg("Rikugan loaded (libomc %s)\n", omc_version());
@@ -75,7 +87,7 @@ struct RikuganPlugmod : public plugmod_t, public event_listener_t {
     // plugin code goes first (see ModuleLifetime.h).
     ~RikuganPlugmod() override {
         ::unhook_event_listener(HT_UI, this);
-        ::unhook_event_listener(HT_IDB, this);
+        ::unhook_event_listener(HT_IDB, &idbListener);
         rk::Host::closing = true;
         if (panel) {
             panel->setDatabase(nullptr);
@@ -136,10 +148,10 @@ struct RikuganPlugmod : public plugmod_t, public event_listener_t {
         db.reset();
     }
 
+    // HT_UI only (HT_IDB goes to idbListener)
     ssize_t idaapi on_event(ssize_t code, va_list va) override {
         switch (code) {
         case ui_database_inited: openDatabase(); break;
-        case idb_event::closebase: closeDatabase(); break;
         case ui_screen_ea_changed: {
             const ea_t ea = va_arg(va, ea_t);
             if (db) {
