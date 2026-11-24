@@ -71,6 +71,18 @@ private Q_SLOTS:
         QVERIFY2(fb.text.contains("slow done"), qPrintable(fb.text));
     }
 
+    // a builtin omc runs without the agent (/compact) answers its prompt and sends no prompt_result: the chat
+    // finishes instead of showing "Thinking…" for ever
+    void localCommandFinishesThePrompt() {
+        auto chat = newChat();
+        Finished f = run(*chat, "say:something to compact");
+        QVERIFY(f.done);
+        f = run(*chat, "/compact");
+        QVERIFY2(f.done, "the /compact prompt never finished");
+        QCOMPARE(f.status, QStringLiteral("completed"));
+        QVERIFY(!chat->busy());
+    }
+
     // a command that runs a job of its own waits for the running turn, then runs from the queue
     void commandTypedWhileBusyWaitsItsTurn() {
         auto chat = newChat();

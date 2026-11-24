@@ -252,13 +252,21 @@ OmcSession::PromptOutcome OmcSession::prompt(const QString& text, const QJsonArr
     QJsonObject cmd{{"type", "prompt"}, {"id", QString::fromStdString(id)}, {"message", text}};
     if (!images.isEmpty()) cmd.insert(QStringLiteral("images"), images);
     omc_send(s_, compactJson(cmd).constData());
+    // a builtin command that ran without the agent (/compact): its response, sent once it finished, says
+    // agentInvoked false and no prompt_result follows
+    auto ranLocally = [&] {
+        return response->done &&
+               response->frame.value(QStringLiteral("data")).toObject().value(QStringLiteral("agentInvoked")) == QJsonValue(false);
+    };
+    bool local = false;
     {
         std::unique_lock<std::mutex> lk(mu_);
         // a refused prompt gets a failed response and never a prompt_result
         cv_.wait(lk, [&] {
             return result->done || (response->done && !response->frame.value(QStringLiteral("success")).toBool(true)) ||
-                   closing_.load();
+                   ranLocally() || closing_.load();
         });
+        local = !result->done && ranLocally() && response->frame.value(QStringLiteral("success")).toBool(true);
         waiters_.erase(id);
         waiters_.erase("prompt:" + id);
         // goal mode: the first prompt_result comes early (sessionSettled:false) and omc keeps running continuation
@@ -266,7 +274,9 @@ OmcSession::PromptOutcome OmcSession::prompt(const QString& text, const QJsonArr
         if (result->done && !result->frame.value(QStringLiteral("sessionSettled")).toBool(true))
             cv_.wait(lk, [&] { return settled_ > settledBefore || closing_.load(); });
     }
-    if (!result->done || result->frame.isEmpty()) {
+    if (local) {
+        out.status = QStringLiteral("completed");
+    } else if (!result->done || result->frame.isEmpty()) {
         out.status = QStringLiteral("error");
         out.error = response->frame.value(QStringLiteral("error")).toString(QStringLiteral("the prompt was refused"));
     } else {
