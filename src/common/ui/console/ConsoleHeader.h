@@ -15,7 +15,8 @@ class ConsoleHeader : public QWidget {
 public:
     explicit ConsoleHeader(QWidget* parent = nullptr);
 
-    void setTitle(const QString& title);
+    // `icon` is a painted kind (Theme.h kindIcon): chat, plug (connect a model), agent (a subagent's conversation)
+    void setTitle(const QString& title, const QString& icon = QStringLiteral("chat"));
     void setChatActionsEnabled(bool enabled);
     void setUndoAvailable(bool available);
     // The host MCP switch: shown only on a host with an MCP server.
@@ -45,6 +46,7 @@ private:
     // a narrow header (Binary Ninja's sidebar) keeps the title: the palette and MCP buttons drop their words first
     void fit();
     QToolButton* title_ = nullptr;
+    QString titleIcon_ = QStringLiteral("chat");
     QToolButton* mcp_ = nullptr;
     bool mcpOn_ = false;
     bool mcpBusy_ = false;

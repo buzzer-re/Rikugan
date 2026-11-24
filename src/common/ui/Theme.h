@@ -66,8 +66,8 @@ Q_SIGNALS:
 // name on their top level). Never styles the host.
 QString themeStylesheet();
 
-// Painted icons, cached per colour and theme. kind: host | workspace | web | agent; status: running | done | error |
-// denied | pending | cancelled.
+// Painted icons, cached per colour and theme. kind: host | workspace | web | chip | edit | terminal | search | chat |
+// plug | agent; status: running | done | error | denied | pending | cancelled.
 QIcon kindIcon(const QString& kind, const QColor& color);
 QIcon statusIcon(const QString& status);
 

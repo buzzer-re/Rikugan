@@ -157,6 +157,29 @@ void paintKind(QPainter& p, const QString& kind, const QColor& c, int s) {
     } else if (kind == QLatin1String("search")) {  // a magnifier
         p.drawEllipse(QPointF(m - 1.2, m - 1.2), m - 4, m - 4);
         p.drawLine(QPointF(m + 2, m + 2), QPointF(s - 2.5, s - 2.5));
+    } else if (kind == QLatin1String("chat")) {  // a speech bubble with two lines of text: a chat
+        QPainterPath tail;
+        tail.moveTo(3.8, s - 4.5);
+        tail.lineTo(3, s - 1.5);
+        tail.lineTo(7.5, s - 4.5);
+        tail.closeSubpath();
+        QPainterPath bubble;
+        bubble.addRoundedRect(QRectF(1.5, 2, s - 3, s - 6.5), 3, 3);
+        p.drawPath(bubble.united(tail));
+        p.drawLine(QPointF(4.5, 5), QPointF(s - 4.5, 5));
+        p.drawLine(QPointF(4.5, 7.5), QPointF(s - 6.5, 7.5));
+    } else if (kind == QLatin1String("plug")) {  // a plug on its cable: connect a model
+        p.drawLine(QPointF(m - 2, 1.5), QPointF(m - 2, 4.5));
+        p.drawLine(QPointF(m + 2, 1.5), QPointF(m + 2, 4.5));
+        QPainterPath body;
+        body.moveTo(m - 4, 4.5);
+        body.lineTo(m + 4, 4.5);
+        body.lineTo(m + 4, 7);
+        body.quadTo(m + 4, 9.5, m, 9.5);
+        body.quadTo(m - 4, 9.5, m - 4, 7);
+        body.closeSubpath();
+        p.drawPath(body);
+        p.drawLine(QPointF(m, 9.5), QPointF(m, s - 1.5));
     } else {  // agent: three linked nodes
         const QPointF a(m, 3.5), b(3.5, s - 3.5), d(s - 3.5, s - 3.5);
         p.drawLine(a, b);

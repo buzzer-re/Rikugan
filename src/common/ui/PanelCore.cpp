@@ -592,7 +592,7 @@ struct PanelCore::Impl {
         status->setVisible(!setupShown);
         if (setupShown) {
             mcpBar->hide();
-            header->setTitle(QObject::tr("Connect a model"));
+            header->setTitle(QObject::tr("Connect a model"), QStringLiteral("plug"));
             header->setChatActionsEnabled(false);
         } else {
             syncChrome();
@@ -701,7 +701,7 @@ struct PanelCore::Impl {
         const auto info = SubagentRegistry::instance().get(agentId);
         const QString name = info ? (info->name.isEmpty() ? info->id : info->name) : agentId;
         const bool live = info && (info->status == SubagentStatus::Running || info->status == SubagentStatus::Pending);
-        header->setTitle(QStringLiteral("↳ ") + name);
+        header->setTitle(name, QStringLiteral("agent"));
         header->setChatActionsEnabled(false);
         composer->setInputEnabled(live);
         composer->setRunning(false);

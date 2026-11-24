@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QHBoxLayout>
+#include <QKeySequence>
 #include <QMenu>
 #include <QResizeEvent>
 #include <QToolButton>
@@ -20,7 +21,8 @@ ConsoleHeader::ConsoleHeader(QWidget* parent) : QWidget(parent) {
     title_ = new QToolButton(this);
     title_->setObjectName(QStringLiteral("rk_title"));
     title_->setCursor(Qt::PointingHandCursor);
-    title_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    title_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    title_->setIconSize(QSize(14, 14));
     title_->setToolTip(tr("Switch chat"));
     title_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     row->addWidget(title_, 0);
@@ -32,7 +34,8 @@ ConsoleHeader::ConsoleHeader(QWidget* parent) : QWidget(parent) {
     mcp_->hide();
     row->addWidget(mcp_);
     palette_ = new QToolButton(this);
-    palette_->setText(tr("\u2318 Ctrl K"));
+    palette_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    palette_->setIconSize(QSize(12, 12));
     palette_->setToolTip(tr("Commands (Ctrl+K)"));
     palette_->setCursor(Qt::PointingHandCursor);
     row->addWidget(palette_);
@@ -71,8 +74,10 @@ ConsoleHeader::ConsoleHeader(QWidget* parent) : QWidget(parent) {
     setTitle(tr("New chat"));
 }
 
-void ConsoleHeader::setTitle(const QString& title) {
-    title_->setText(QStringLiteral("\u25A2  ") + title + QStringLiteral("  \u25BE"));
+void ConsoleHeader::setTitle(const QString& title, const QString& icon) {
+    titleIcon_ = icon;
+    title_->setIcon(kindIcon(icon, theme().fg));
+    title_->setText(QStringLiteral(" ") + title + QStringLiteral("  \u25BE"));
     fit();
 }
 
@@ -83,7 +88,8 @@ void ConsoleHeader::resizeEvent(QResizeEvent* event) {
 
 void ConsoleHeader::fit() {
     const QString dot = mcpBusy_ ? QStringLiteral("\u25CC") : mcpOn_ ? QStringLiteral("\u25CF") : QStringLiteral("\u25CB");
-    palette_->setText(tr("\u2318 Ctrl K"));
+    // the platform's own spelling of the shortcut: Ctrl+K, or ⌘K on macOS
+    palette_->setText(QKeySequence(QStringLiteral("Ctrl+K")).toString(QKeySequence::NativeText));
     mcp_->setText(dot + QStringLiteral(" MCP"));
     auto needed = [this] {
         const QMargins m = layout()->contentsMargins();
@@ -92,7 +98,7 @@ void ConsoleHeader::fit() {
             if (!b->isHidden()) w += b->sizeHint().width() + layout()->spacing();
         return w;
     };
-    if (needed() > width()) palette_->setText(QStringLiteral("\u2318"));
+    if (needed() > width()) palette_->setText(QString());
     if (needed() > width()) mcp_->setText(dot);
 }
 
@@ -121,7 +127,9 @@ void ConsoleHeader::restyle() {
     QFont bold = t.ui;
     bold.setWeight(QFont::DemiBold);
     title_->setFont(bold);
+    title_->setIcon(kindIcon(titleIcon_, t.fg));
     palette_->setFont(t.uiSmall);
+    palette_->setIcon(kindIcon(QStringLiteral("search"), t.fg2));
     mcp_->setFont(t.uiSmall);
     setStyleSheet(QStringLiteral("#rk_header { background: %1; border-bottom: 1px solid %2; }"
                                  "#rk_header QToolButton { color: %3; border: none; border-radius: 5px; padding: 3px 7px; }"
