@@ -9,6 +9,8 @@
 
 #include "common/config/Paths.h"
 #include "common/config/RikuganConfig.h"
+#include "common/omc/AuthSync.h"
+#include "common/omc/ExternalLogins.h"
 #include "common/omc/YamlWriter.h"
 #include "common/util/Embedded.h"
 #include "common/util/Env.h"
@@ -86,6 +88,8 @@ void AgentHome::prepare() {
     syncSkills();
     writeProjectPrompt();
     writeModelsYaml();
+    // Claude Code's and Codex's logins before the first session reads auth.json
+    if (RikuganConfig::instance().useExternalLogins) ExternalLogins::syncFiles(rikuganAuthPath(), {}, false);
 }
 
 void AgentHome::writeModelsYaml() {

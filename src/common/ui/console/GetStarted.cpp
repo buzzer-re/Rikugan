@@ -16,9 +16,11 @@
 #include "common/config/RikuganConfig.h"
 #include "common/omc/AgentHome.h"
 #include "common/omc/AuthSync.h"
+#include "common/omc/ExternalLogins.h"
 #include "common/omc/ServiceSession.h"
 #include "common/ui/Theme.h"
 #include "common/ui/WelcomeView.h"
+#include "common/ui/settings/ExternalLoginsConsent.h"
 #include "common/util/Files.h"
 #include "common/util/ModuleLifetime.h"
 
@@ -295,6 +297,11 @@ void GetStarted::start() {
     connect(addRow(chooseRows_, this, tr("Use a local model"), tr("Ollama, LM Studio or any OpenAI-compatible server"),
                    QStringLiteral("local")),
             &SuggestionRow::activated, this, [this] { show(Local); });
+    if (!RikuganConfig::instance().useExternalLogins)
+        if (const QList<ExternalLogin> found = ExternalLogins::find(); !found.isEmpty())
+            connect(addRow(chooseRows_, this, tr("Use my %1 login").arg(externalToolNames(found)),
+                           tr("The subscription you are signed in to on this computer"), QStringLiteral("external")),
+                    &SuggestionRow::activated, this, &GetStarted::useExternalLogins);
     if (!RikuganConfig::instance().useOmcLogins && omcLoginsFound())
         connect(addRow(chooseRows_, this, tr("Use my omc logins"),
                        tr("Reuse the sign-ins of the omc agent on this computer"),
@@ -409,6 +416,24 @@ void GetStarted::saveLocal() {
     }
     AgentHome::writeModelsYaml();
     show(Restart);
+}
+
+void GetStarted::useExternalLogins() {
+    const QList<ExternalLogin> found = ExternalLogins::find();
+    if (found.isEmpty() || !confirmExternalLogins(this, found)) return;
+    RikuganConfig& cfg = RikuganConfig::instance();
+    cfg.useExternalLogins = true;
+    cfg.save();
+    QPointer<GetStarted> self(this);
+    ServiceSession::get()->post([self](OmcSession&) {
+        ExternalLogins::syncNow();
+        QMetaObject::invokeMethod(
+            uiAnchor(),
+            [self] {
+                if (self) self->waitForModels(QStringLiteral("*"));
+            },
+            Qt::QueuedConnection);
+    });
 }
 
 void GetStarted::useOmcLogins() {

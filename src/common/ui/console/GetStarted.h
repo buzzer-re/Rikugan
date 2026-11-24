@@ -53,6 +53,7 @@ private:
     void saveKey();
     void saveLocal();
     void useOmcLogins();
+    void useExternalLogins();
     void restyle();
     QWidget* page(const QString& title, const QString& text, QVBoxLayout** body);
 

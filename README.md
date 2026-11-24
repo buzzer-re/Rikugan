@@ -32,7 +32,7 @@ git clone https://github.com/buzzer-re/Oh-My-C ohmyc     # libomc, next to Rikug
 cd Rikugan && ./build.sh && ./install.sh --from dist
 ```
 
-Then open the panel (Ctrl+Shift+I in IDA, the Rikugan sidebar icon in Binary Ninja), and follow **Connect a model**: sign in with a subscription (Claude, ChatGPT/Codex, Gemini, Copilot …), paste an API key, point it at a local server, or reuse the logins of an omc agent already on the machine, then pick the model. No restart is needed. Ctrl+M switches models later. Settings → Provider also takes API keys, and its **+** button adds a custom connection to any OpenAI-compatible, Anthropic or Ollama endpoint, local servers included. If you also use the omc command-line agent, tick "Also use the logins of the omc command-line agent" to share its logins.
+Then open the panel (Ctrl+Shift+I in IDA, the Rikugan sidebar icon in Binary Ninja), and follow **Connect a model**: sign in with a subscription (Claude, ChatGPT/Codex, Gemini, Copilot …), paste an API key, point it at a local server, or reuse the logins of an omc agent already on the machine, then pick the model. No restart is needed. Ctrl+M switches models later. Settings → Provider also takes API keys, and its **+** button adds a custom connection to any OpenAI-compatible, Anthropic or Ollama endpoint, local servers included. If you also use the omc command-line agent, tick "Also use the logins of the omc command-line agent" to share its logins. Signed in to Claude Code or the Codex CLI? **Use my Claude Code / Codex login** (or the Settings → Provider checkbox) shares that subscription, after you confirm: using a subscription outside its own tool may be against the provider's terms.
 
 ## Is this another MCP client?
 
@@ -106,7 +106,7 @@ On Windows, omc's shell tool runs Git Bash when Git for Windows is installed, el
 
 ## What changed in 2.0
 
-Rikugan 2.0 is a native rewrite on top of libomc. Gone with the Python version: Rikugan's own provider layer (the new one covers far more providers and logins), the macOS-keychain Claude Code OAuth import and encrypted API keys (credentials live in `~/.rikugan/omc/agent/auth.json`, mode 0600 on Linux and macOS), importing Claude Code / Codex skills and MCP servers, the research-note reviewer chain, resuming a cancelled mode, skill `allowed_tools`, and undo of file writes. Old chats and settings are not migrated.
+Rikugan 2.0 is a native rewrite on top of libomc. Gone with the Python version: Rikugan's own provider layer (the new one covers far more providers and logins), encrypted API keys (credentials live in `~/.rikugan/omc/agent/auth.json`, mode 0600 on Linux and macOS), importing Claude Code / Codex skills and MCP servers, the research-note reviewer chain, resuming a cancelled mode, skill `allowed_tools`, and undo of file writes. Old chats and settings are not migrated.
 
 ## Conclusion
 

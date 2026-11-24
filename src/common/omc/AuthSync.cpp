@@ -8,6 +8,7 @@
 #include "common/config/Paths.h"
 #include "common/config/RikuganConfig.h"
 #include "common/omc/AgentHome.h"
+#include "common/omc/ExternalLogins.h"
 #include "common/omc/ServiceSession.h"
 #include "common/util/Files.h"
 #include "common/util/Log.h"
@@ -19,15 +20,16 @@ namespace {
 double expires(const QJsonObject& e) { return e.value(QStringLiteral("expires")).toDouble(0); }
 bool isOauth(const QJsonObject& e) { return e.value(QStringLiteral("type")).toString() == QLatin1String("oauth"); }
 
-// one writer of Rikugan's auth.json at a time
-std::mutex& authMutex() {
+std::mutex& authMutex() { return authFileMutex(); }
+
+}  // namespace
+
+std::mutex& authFileMutex() {
     static std::mutex mu;
     return mu;
 }
 
 QString rikuganAuthPath() { return paths::omcAgentDir() + QStringLiteral("/auth.json"); }
-
-}  // namespace
 
 AuthMergeResult mergeAuth(QJsonObject& r, QJsonObject& o) {
     AuthMergeResult res;
@@ -72,6 +74,7 @@ bool AuthSync::syncFiles(const QString& rPath, const QString& oPath) {
 
 void AuthSync::run() {
     if (RikuganConfig::instance().useOmcLogins) syncNow();
+    ExternalLogins::run();
 }
 
 bool AuthSync::syncNow() {

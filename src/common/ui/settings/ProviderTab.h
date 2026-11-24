@@ -85,6 +85,7 @@ private:
     QLabel* status_ = nullptr;
     QLabel* restartHint_ = nullptr;
     QCheckBox* useOmcLogins_ = nullptr;
+    QCheckBox* useExternal_ = nullptr;
     QCheckBox* discover_ = nullptr;
 };
 

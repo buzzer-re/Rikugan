@@ -372,6 +372,14 @@ providers only in O are copied to R; for an OAuth login in both, the one that ex
 in both keep R's; R-only entries never go to O; nothing is deleted. Writes are atomic and 0600, and omc reloads
 credentials when R changed. It runs after each prompt, after a login and when Settings closes.
 
+**ExternalLogins** ("Use my Claude Code / Codex login", `omc/ExternalLogins.h`, asked once with the providers'
+policy links) shares the subscription logins of Claude Code (`~/.claude/.credentials.json`, the macOS keychain item
+"Claude Code-credentials" when there is no file) and the Codex CLI (`~/.codex/auth.json`) as R's `anthropic` and
+`openai-codex` OAuth credentials: imported when R has none; for the same account the later expiry wins on both sides
+(refresh tokens are single-use, so a token omc refreshed is written back to the tool's file or keychain item, other
+fields kept); an API key or another account's login in R is left alone. It runs at start, after each prompt and when
+turned on.
+
 ## 12. Security model
 
 Rikugan processes adversarial binaries; strings, names and code from the sample reach the model and the UI.

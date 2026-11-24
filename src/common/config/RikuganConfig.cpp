@@ -50,6 +50,7 @@ RikuganConfig RikuganConfig::load() {
     str("model", c.model);
     str("thinking", c.thinking);
     boolean("use_omc_logins", c.useOmcLogins);
+    boolean("use_external_logins", c.useExternalLogins);
     boolean("discover_local_models", c.discoverLocalModels);
     boolean("auto_allow_files", c.autoAllowFiles);
     boolean("auto_allow_commands", c.autoAllowCommands);
@@ -88,6 +89,7 @@ bool RikuganConfig::save() const {
         {"model", c.model},
         {"thinking", c.thinking},
         {"use_omc_logins", c.useOmcLogins},
+        {"use_external_logins", c.useExternalLogins},
         {"discover_local_models", c.discoverLocalModels},
         {"auto_allow_files", c.autoAllowFiles},
         {"auto_allow_commands", c.autoAllowCommands},

@@ -21,6 +21,7 @@ struct RikuganConfig {
     QString model;     // "provider/id" or empty for omc's default
     QString thinking;  // off|minimal|low|medium|high|xhigh|max or empty
     bool useOmcLogins = false;
+    bool useExternalLogins = false;  // Claude Code's and Codex's logins (ExternalLogins.h)
     bool discoverLocalModels = false;
     // Disk and shell tools ask once per chat (Permissions.h) unless these are on: then every chat runs them freely.
     bool autoAllowFiles = false;     // read, write, edit

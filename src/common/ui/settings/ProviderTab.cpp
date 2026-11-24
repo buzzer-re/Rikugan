@@ -21,15 +21,18 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QUrl>
 #include <QVBoxLayout>
 
 #include "common/config/Paths.h"
 #include "common/omc/AgentHome.h"
 #include "common/omc/AuthSync.h"
+#include "common/omc/ExternalLogins.h"
 #include "common/omc/ServiceSession.h"
 #include "common/ui/Theme.h"
 #include "common/ui/console/LoginSheet.h"
+#include "common/ui/settings/ExternalLoginsConsent.h"
 #include "common/ui/settings/ServiceRpc.h"
 #include "common/util/Files.h"
 #include "common/util/ModuleLifetime.h"
@@ -192,6 +195,39 @@ ProviderTab::ProviderTab(const RikuganConfig& cfg, QWidget* parent)
             this, [](OmcSession&) { return QJsonObject{{"changed", AuthSync::syncNow()}}; },
             [this](const QJsonObject& r) {
                 setStatus(status_, r.value(QStringLiteral("changed")).toBool() ? tr("Copied your omc logins.") : tr("No new omc logins found."),
+                          settings::kHintStyle);
+                readAuthFile();
+                refreshProviders();
+                refreshModels();
+            });
+    });
+    useExternal_ = new QCheckBox(tr("Also use the Claude Code and Codex logins on this computer"));
+    useExternal_->setObjectName(QStringLiteral("useExternalLogins"));
+    useExternal_->setChecked(cfg.useExternalLogins);
+    useExternal_->setToolTip(
+        tr("Shares the subscription you are signed in to in Claude Code (Anthropic) and the Codex CLI (ChatGPT) with\n"
+           "Rikugan; refreshed tokens are written back so both keep working. Using a subscription outside its own\n"
+           "tool may be against the provider's terms."));
+    layout->addWidget(useExternal_);
+    connect(useExternal_, &QCheckBox::toggled, this, [this](bool on) {
+        if (!on) return;
+        const QList<ExternalLogin> found = ExternalLogins::find();
+        if (found.isEmpty()) {
+            setStatus(status_, tr("No Claude Code or Codex login found on this computer."), settings::kHintStyle);
+            return;
+        }
+        if (!ui::confirmExternalLogins(this, found)) {
+            QSignalBlocker block(useExternal_);
+            useExternal_->setChecked(false);
+            return;
+        }
+        setStatus(status_, tr("Using your %1 login\u2026").arg(ui::externalToolNames(found)), settings::kHintStyle);
+        settings::serviceJob(
+            this, [](OmcSession&) { return QJsonObject{{"changed", ExternalLogins::syncNow()}}; },
+            [this, found](const QJsonObject& r) {
+                setStatus(status_, r.value(QStringLiteral("changed")).toBool()
+                                       ? tr("Using your %1 login.").arg(ui::externalToolNames(found))
+                                       : tr("Rikugan already has a login for that provider: it stays as it is."),
                           settings::kHintStyle);
                 readAuthFile();
                 refreshProviders();
@@ -591,6 +627,7 @@ void ProviderTab::apply(RikuganConfig& c) const {
     c.model = modelKey();
     c.thinking = thinking_->currentData().toString();
     c.useOmcLogins = useOmcLogins_->isChecked();
+    c.useExternalLogins = useExternal_->isChecked();
     c.discoverLocalModels = discover_->isChecked();
     c.customEndpoints = customs_;
 }
