@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QMap>
+#include <QSet>
 #include <QMetaObject>
 #include <QThread>
 #include <QUuid>
@@ -25,6 +26,8 @@ public:
     QString dbPath;
     std::mutex mu;
     QMap<uint64_t, QString> names{{0x401000, "sub_401000"}, {0x402000, "sub_402000"}};
+    // rename_function answers "No function at ..." as ok text for these, like the hosts do
+    QSet<uint64_t> renameMissing;
     std::vector<Event> events;
     std::atomic<bool> slowCancelled{false};
     QElapsedTimer clock;
@@ -80,6 +83,7 @@ public:
                                QString old;
                                {
                                    std::lock_guard<std::mutex> g(mu);
+                                   if (renameMissing.contains(ea)) return ToolResult::ok(QStringLiteral("No function at %1").arg(rk::hex(ea)));
                                    old = names.value(ea);
                                    names[ea] = c.str("new_name");
                                }

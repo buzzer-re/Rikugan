@@ -225,6 +225,36 @@ private Q_SLOTS:
         for (const rk::RenameJob& j : engine->jobs()) QCOMPARE(j.status, rk::RenameStatus::Pending);
     }
 
+    // the host's rename answers "No function at ..." as ok text: that job failed, it is not renamed nor undone
+    void quickModeHostRenameFailure() {
+        {
+            std::lock_guard<std::mutex> g(host->mu);
+            host->renameMissing.insert(0x402000);
+        }
+        Collector c;
+        auto engine = rk::BulkRenamerEngine::create(db, {1, 1, kSayTemplate}, c.sink());
+        engine->enqueue(jobsFor({{0x401000, "sub_401000"}, {0x402000, "sub_402000"}}));
+        engine->start(false);
+        QVERIFY(rktest::waitFor([&] { return c.count(rk::RenameEventType::AllDone) == 1; }, 60000));
+        QCOMPARE(c.count(rk::RenameEventType::JobCompleted), 1);
+        QCOMPARE(c.count(rk::RenameEventType::JobError), 1);
+        const auto err = c.last(rk::RenameEventType::JobError);
+        QCOMPARE(err->address, uint64_t(0x402000));
+        QVERIFY2(err->error.contains("No function at 0x402000"), qPrintable(err->error));
+        for (const rk::RenameJob& j : engine->jobs())
+            QCOMPARE(j.status, j.address == 0x402000 ? rk::RenameStatus::Failed : rk::RenameStatus::Completed);
+        QCOMPARE(nameAt(0x401000), QStringLiteral("parse_header"));
+        QCOMPARE(nameAt(0x402000), QStringLiteral("sub_402000"));
+
+        c.clear();
+        engine->undoAll();
+        QVERIFY(rktest::waitFor([&] { return c.count(rk::RenameEventType::AllDone) == 1; }, 20000));
+        QCOMPARE(c.last(rk::RenameEventType::AllDone)->total, 1);
+        QCOMPARE(nameAt(0x401000), QStringLiteral("sub_401000"));
+        std::lock_guard<std::mutex> g(host->mu);
+        host->renameMissing.clear();
+    }
+
     void quickModeUnparsableReplyAndDecompileError() {
         Collector c;
         // the real quick prompt: the mock answers "plain answer", which names nothing

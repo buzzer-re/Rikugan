@@ -15,6 +15,7 @@
 #include "common/config/Profile.h"
 #include "common/config/RikuganConfig.h"
 #include "common/omc/OmcSession.h"
+#include "common/tools/MutationLog.h"
 #include "common/tools/ToolDispatcher.h"
 #include "common/util/Embedded.h"
 #include "common/util/Log.h"
@@ -342,8 +343,10 @@ QString BulkRenamerEngine::runTool(const QString& tool, const QJsonObject& args,
 }
 
 void BulkRenamerEngine::rename(uint64_t address, const QString& name) {
-    runTool(QStringLiteral("rename_function"), QJsonObject{{"address", hex(address)}, {"new_name", name}}, false);
+    const QString result = runTool(QStringLiteral("rename_function"), QJsonObject{{"address", hex(address)}, {"new_name", name}}, false);
     db_->cache.invalidate();  // runDirect bypasses the dispatcher's cache flush
+    // the hosts answer "No function at ..." / "Failed to rename ..." as ok text
+    if (!MutationLog::mutationSucceeded(QStringLiteral("rename_function"), result)) throw ToolError(result);
 }
 
 // ---- quick mode ----
