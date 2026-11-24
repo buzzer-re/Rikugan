@@ -47,6 +47,8 @@ public:
     void closeDatabase(const QString& dbId);
     // Plugin unload: every chat closes now.
     void closeAll();
+    // Settings were saved: every chat takes them (ChatSession::settingsChanged).
+    void settingsChanged();
 
 Q_SIGNALS:
     // A chat's state changed (the panel showing it updates its chrome).

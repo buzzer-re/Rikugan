@@ -46,9 +46,10 @@ QString loadMemory(const QString& path) {
 
 }  // namespace
 
-QStringList builtinTools(bool subagent) {
+QStringList builtinTools(const AnalysisProfile& profile, bool subagent) {
     QStringList t{"read", "write", "edit", "ast_edit", "grep", "glob", "bash", "web_search"};
     if (!subagent) t << QStringLiteral("todo");  // omc strips todo from subagents
+    t.removeIf([&](const QString& n) { return profile.deniedTools.contains(n); });
     return t;
 }
 

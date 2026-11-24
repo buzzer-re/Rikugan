@@ -5,12 +5,13 @@
 
 namespace rk {
 
+struct AnalysisProfile;
 struct ChatContext;
 struct DbContext;
 
-// The omc built-in tools every session gets. Disk and shell tools are always present: the user approves each kind
-// (read, write, edit, bash) once per chat (Permissions.h). Subagents get the same minus todo.
-QStringList builtinTools(bool subagent = false);
+// The omc built-in tools a session gets: all but the ones the profile denies. The user approves each disk and shell
+// kind (read, write, edit, bash) once per chat (Permissions.h). Subagents get the same minus todo.
+QStringList builtinTools(const AnalysisProfile& profile, bool subagent = false);
 
 // Base prompt + host intro/tool usage/capabilities + workspace + filesystem/shell sections + profile sections +
 // RIKUGAN.md + current binary. Reads the host (binary info) on the calling thread through onMain when needed.

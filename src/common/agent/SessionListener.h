@@ -23,6 +23,9 @@ public:
     void onHostToolCall(const QJsonObject& call) override;
     void onHostToolCancel(const QString& targetId) override;
     void onOpenFailed(const QString& error) override;
+    // omc's own tools (files, shell, web, MCP servers) get what ToolDispatcher does to host tools: injection markers
+    // stripped, then the profile's IOC filter.
+    std::optional<QString> filterToolResult(const QString& tool, const QString& text) override;
 
 private:
     std::shared_ptr<ChatContext> ctx_;

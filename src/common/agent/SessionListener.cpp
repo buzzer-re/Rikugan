@@ -3,7 +3,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 
+#include "common/security/Sanitize.h"
 #include "common/tools/ToolDispatcher.h"
+#include "common/tools/ToolRegistry.h"
 
 namespace rk {
 
@@ -67,6 +69,16 @@ void SessionListener::onHostToolCancel(const QString& targetId) {
 void SessionListener::onOpenFailed(const QString& error) {
     const QJsonObject f{{"type", "rikugan_open_failed"}, {"error", error}};
     onFrame("rikugan_open_failed", QJsonDocument(f).toJson(QJsonDocument::Compact).toStdString());
+}
+
+std::optional<QString> SessionListener::filterToolResult(const QString& tool, const QString& text) {
+    // host tools went through ToolDispatcher already
+    if (!ctx_ || (ctx_->registry && ctx_->registry->find(tool))) return std::nullopt;
+    QString out = sanitize::stripInjectionMarkers(text);
+    if (ctx_->profile.hasAnyIocFilter())
+        out = sanitize::stripIocs(out, ctx_->profile.iocFilters, ctx_->profile.customFilterRules);
+    if (out == text) return std::nullopt;
+    return out;
 }
 
 }  // namespace rk

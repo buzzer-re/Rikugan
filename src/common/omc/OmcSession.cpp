@@ -110,6 +110,7 @@ void OmcSession::openOnWorker() {
         if (auto l = listener()) l->onOpenFailed(openError_);
         return;
     }
+    omc_set_result_filter(s_, &OmcSession::onFilterResult, [](void*, char* text) { delete[] text; }, this);
     QJsonArray events;
     for (const char* e : {"agent_start", "turn_start", "turn_end", "message_start", "message_update", "message_end",
                           "tool_execution_start", "tool_execution_update", "tool_execution_end",
@@ -160,6 +161,17 @@ void OmcSession::run() {
 }
 
 void OmcSession::onEvent(void* ud, const char* json) { static_cast<OmcSession*>(ud)->handleEvent(json); }
+
+char* OmcSession::onFilterResult(void* ud, const char* tool, const char* text) {
+    const std::shared_ptr<OmcListener> l = static_cast<OmcSession*>(ud)->listener();
+    if (!l) return nullptr;
+    const std::optional<QString> out = l->filterToolResult(QString::fromUtf8(tool ? tool : ""), QString::fromUtf8(text));
+    if (!out) return nullptr;
+    const QByteArray u = out->toUtf8();
+    char* copy = new char[size_t(u.size()) + 1];
+    std::memcpy(copy, u.constData(), size_t(u.size()) + 1);
+    return copy;
+}
 
 void OmcSession::handleEvent(const char* json) {
     const size_t len = std::strlen(json);

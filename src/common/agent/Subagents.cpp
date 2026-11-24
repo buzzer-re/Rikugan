@@ -269,7 +269,7 @@ SubagentOutcome runSubagent(ChatContext& parent, const SubagentSpec& spec, const
         o.noTools = true;
         o.systemPrompt = buildSystemPrompt(*db, *child, {});
     } else {
-        o.builtinTools = builtinTools(true);
+        o.builtinTools = builtinTools(child->profile, true);
         o.systemPrompt = buildSystemPrompt(*db, *child, o.builtinTools);
         const auto specs = db->registry.visible(child->profile, db->host->hasDecompiler(),
                                                 [child](const QString& n) { return chatToolVisible(*child, n); });

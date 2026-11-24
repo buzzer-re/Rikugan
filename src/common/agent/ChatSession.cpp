@@ -224,7 +224,7 @@ void ChatSession::ensureOpen() {
 
 void ChatSession::openSession() {
     const RikuganConfig& cfg = RikuganConfig::instance();
-    const QStringList builtin = builtinTools();
+    const QStringList builtin = builtinTools(ctx_->profile);
     const std::shared_ptr<ChatContext> ctx = ctx_;
     const auto specs = db_->registry.visible(ctx->profile, db_->host->hasDecompiler(),
                                              [ctx](const QString& n) { return chatToolVisible(*ctx, n); });
@@ -283,6 +283,15 @@ void ChatSession::hostToolsChanged() {
     const QJsonArray tools = chatHostTools(*ctx_);
     session_->post([tools](OmcSession& s) { s.request(QJsonObject{{"type", "set_host_tools"}, {"tools", tools}}); });
     reopenWhenIdle_ = true;
+}
+
+void ChatSession::settingsChanged() {
+    if (busy_) {
+        reopenWhenIdle_ = true;
+        return;
+    }
+    ctx_->profile = activeProfile();
+    closeSession();
 }
 
 void ChatSession::sendPrompt(const QString& text, const QJsonArray& givenImages) {
@@ -518,6 +527,7 @@ void ChatSession::startNext() {
     reclaimSteering();
     if (reopenWhenIdle_) {
         reopenWhenIdle_ = false;
+        ctx_->profile = activeProfile();
         closeSession();
     }
     // images of messages the agent took while it ran are in omc's hands: only the waiting ones keep theirs

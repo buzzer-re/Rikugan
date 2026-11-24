@@ -47,6 +47,10 @@ public:
     // session opens, so an idle session closes and resumes on demand. A busy one takes the new tools now and
     // closes when the run ends.
     void hostToolsChanged();
+    // Settings were saved: the active profile, MCP servers and the rest apply once the session reopens. An idle chat
+    // takes the profile now and its session closes (resumes on demand); a busy one when its run ends (tool workers
+    // read the profile while it runs).
+    void settingsChanged();
 
     // A prompt for the model (the per-prompt context block is added here). Queued while busy.
     // `images`: omc image blocks ({type: image, data, mimeType}) sent with the text. A message that waits in the queue
@@ -127,7 +131,7 @@ private:
     std::function<void(const QString&)> commandRunner_;
     bool busy_ = false;
     bool transcriptPending_ = false;
-    bool reopenWhenIdle_ = false;  // hostToolsChanged while busy
+    bool reopenWhenIdle_ = false;  // hostToolsChanged / settingsChanged while busy
     std::function<void(const QJsonObject&)> forkDone_;
     std::map<int, std::function<void()>> jobDone_;
     int nextJob_ = 1;

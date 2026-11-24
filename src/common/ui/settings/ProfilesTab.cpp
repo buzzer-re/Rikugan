@@ -202,7 +202,7 @@ QGroupBox* ProfilesTab::buildDeniedToolsSection() {
     auto* lay = new QVBoxLayout(group);
     deniedTools_ = new QPlainTextEdit;
     deniedTools_->setMaximumHeight(60);
-    deniedTools_->setPlaceholderText(tr("One tool name per line (e.g. list_functions, read_bytes)"));
+    deniedTools_->setPlaceholderText(tr("One tool name per line (e.g. list_functions, read_bytes, bash, web_search)"));
     lay->addWidget(deniedTools_);
     return group;
 }

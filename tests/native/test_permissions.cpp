@@ -154,6 +154,28 @@ private Q_SLOTS:
         QCOMPARE(chat->context()->permissions->pendingCount(), 0);
     }
 
+    void profileFiltersOmcToolsAndFollowsSettings() {
+        // omc's own tools pass the profile's IOC filter, and a profile switched in Settings reaches an open chat
+        rk::RikuganConfig& cfg = rk::RikuganConfig::instance();
+        cfg.autoAllowFiles = true;
+        QFile f(db->scratchDir() + "/c2.txt");
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("beacon to 203.0.113.7\n");
+        f.close();
+        cfg.activeProfile = QStringLiteral("default");
+        auto chat = newChat();
+        Run r = run(*chat, R"(seq:[["read",{"path":"c2.txt"}]])", rk::PermissionChoice::AllowOnce);
+        QVERIFY(r.done);
+        QVERIFY2(r.text.contains("203.0.113.7"), qPrintable(r.text));
+
+        cfg.activeProfile = QStringLiteral("private");
+        chat->settingsChanged();
+        r = run(*chat, R"(seq:[["read",{"path":"c2.txt"}],["grep",{"pattern":"beacon"}]])", rk::PermissionChoice::AllowOnce);
+        cfg.activeProfile = QStringLiteral("default");
+        QVERIFY(r.done);
+        QVERIFY2(!r.text.contains("203.0.113.7") && r.text.contains("[IP_REDACTED]"), qPrintable(r.text));
+    }
+
     void cleanupTestCase() {
         rk::RikuganConfig::instance().autoAllowFiles = false;
         rk::RikuganConfig::instance().autoAllowCommands = false;

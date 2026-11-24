@@ -60,6 +60,12 @@ void ChatHub::closeDatabase(const QString& dbId) {
     }
 }
 
+void ChatHub::settingsChanged() {
+    for (auto& db : chats_)
+        for (LiveChat& c : db)
+            if (c.session) c.session->settingsChanged();
+}
+
 void ChatHub::closeAll() {
     const QStringList ids = chats_.keys();
     for (const QString& id : ids) closeDatabase(id);

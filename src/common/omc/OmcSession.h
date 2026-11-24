@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -49,6 +50,13 @@ public:
     virtual void onHostToolCancel(const QString& targetId) = 0;
     // The session could not be created (worker thread).
     virtual void onOpenFailed(const QString& error) { (void)error; }
+    // A text block of any tool's result before the model sees it (tool worker thread): the replacement, or nullopt
+    // to keep it.
+    virtual std::optional<QString> filterToolResult(const QString& tool, const QString& text) {
+        (void)tool;
+        (void)text;
+        return std::nullopt;
+    }
 };
 
 class OmcSession : public std::enable_shared_from_this<OmcSession> {
@@ -100,6 +108,7 @@ public:
 private:
     OmcSession(OmcOptions opts, std::shared_ptr<OmcListener> listener);
     static void onEvent(void* ud, const char* json);
+    static char* onFilterResult(void* ud, const char* tool, const char* text);
     void handleEvent(const char* json);
     void run();
     void openOnWorker();

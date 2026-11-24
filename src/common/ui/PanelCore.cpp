@@ -430,7 +430,8 @@ struct PanelCore::Impl {
                 return;
             }
         }
-        // omc does not echo commands as user messages: show what was typed (a busy chat shows it queued)
+        // omc echoes no command but a skill (whose echo replaces this row): show what was typed (a busy chat shows it
+        // queued)
         if (text.startsWith(QLatin1Char('/')) && !c->busy()) m->addLocalUser(text);
         CommandRouter::submit(*c, text, images);
         view->scrollToEnd();
@@ -1142,6 +1143,7 @@ void PanelCore::showTools() { d->pages->setCurrentIndex(1); }
 void PanelCore::openSettings() {
     SettingsDialog dlg(this);
     QObject::connect(&dlg, &SettingsDialog::settingsChanged, this, [this] {
+        ChatHub::instance().settingsChanged();
         d->composer->setCommands(CommandRouter::catalog());
         d->refreshWelcome();
         d->picker->refresh();
