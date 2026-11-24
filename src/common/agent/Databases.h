@@ -36,11 +36,13 @@ std::shared_ptr<DbContext> load(const QString& path, const std::shared_ptr<Cance
 
 // How the host opens a file in a tab of its window (a view of the user's, with its own chats): on a tool worker.
 // Hosts with one database per window (IDA) set none.
-using TabOpener = std::function<std::shared_ptr<DbContext>(const QString& path, QString* error)>;
+// Waits for the tab to open (a large file loads for a while) until `token` is cancelled.
+using TabOpener = std::function<std::shared_ptr<DbContext>(const QString& path, const std::shared_ptr<CancelToken>& token,
+                                                           QString* error)>;
 void setTabOpener(TabOpener opener);
 bool canOpenTab();
 // Opens `path` in a host tab (or returns the tab already showing it).
-std::shared_ptr<DbContext> openTab(const QString& path, QString* error);
+std::shared_ptr<DbContext> openTab(const QString& path, const std::shared_ptr<CancelToken>& token, QString* error);
 // Releases a database load() opened; false for any other.
 bool close(const QString& dbId);
 // Plugin shutdown: releases every loaded database (and forgets the loader and the tab opener).

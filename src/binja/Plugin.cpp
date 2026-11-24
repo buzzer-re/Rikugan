@@ -1,9 +1,13 @@
 // Binary Ninja entry points: the Rikugan sidebar, view/address tracking, context-menu commands.
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <vector>
 
+#include <QFileInfo>
 #include <QImage>
 #include <QPointer>
 #include <QTimer>
@@ -101,6 +105,25 @@ QWidget* fullWindowTab(UIContext* ui) {
     for (QWidget* tab : ui->getTabs())
         if (tab->objectName() == QLatin1String(kFullWindowTab)) return tab;
     return nullptr;
+}
+
+// open_database with in_tab: Binary Ninja opens a file's tab asynchronously (a large binary loads after
+// openFilename returns), so the tool waits for OnAfterOpenFile to hand over the new tab's database, by file path.
+struct PendingTabs {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::map<QString, std::shared_ptr<rk::DbContext>> opened;  // path -> its database (null: waiting)
+};
+PendingTabs g_pendingTabs;
+
+QString samePath(const QString& path) {
+    const QFileInfo fi(path);
+    const QString c = fi.canonicalFilePath().isEmpty() ? fi.absoluteFilePath() : fi.canonicalFilePath();
+#ifdef _WIN32
+    return c.toLower();
+#else
+    return c;
+#endif
 }
 
 // The full-window chat manager lists every view: each open tab's database exists once it is open.
@@ -210,9 +233,21 @@ public:
         }
         return true;
     }
-    void OnAfterOpenFile(UIContext* context, FileContext*, ViewFrame* frame) override {
+    void OnAfterOpenFile(UIContext* context, FileContext* file, ViewFrame* frame) override {
+        if (!frame) return;
+        {
+            std::lock_guard<std::mutex> g(g_pendingTabs.mu);
+            auto it = g_pendingTabs.opened.find(samePath(file->getFilename()));
+            if (it != g_pendingTabs.opened.end()) {
+                it->second = dbFor(frame->getCurrentBinaryView());
+                g_pendingTabs.cv.notify_all();
+                // the agent opened it from the full-window chat: the chats stay in front
+                if (QWidget* full = fullWindowTab(context)) context->activateTab(full);
+                return;
+            }
+        }
         // the full-window chat manager lists it at once
-        if (frame && fullWindowTab(context)) dbFor(frame->getCurrentBinaryView());
+        if (fullWindowTab(context)) dbFor(frame->getCurrentBinaryView());
     }
     void OnAfterSaveFile(UIContext*, FileContext* file, ViewFrame*) override {
         // "Save as" moves the database: its chats are reopened from the new file
@@ -384,18 +419,45 @@ BINARYNINJAPLUGIN bool UIPluginInit() {
         return db;
     });
     // open_database with in_tab: a tab of the user's, opened on the main thread; the full-window chats stay in front
-    rk::databases::setTabOpener([](const QString& path, QString* error) -> std::shared_ptr<rk::DbContext> {
+    rk::databases::setTabOpener([](const QString& path, const std::shared_ptr<rk::CancelToken>& token,
+                                   QString* error) -> std::shared_ptr<rk::DbContext> {
+        const QString key = samePath(path);
+        {
+            std::lock_guard<std::mutex> g(g_pendingTabs.mu);
+            g_pendingTabs.opened[key] = nullptr;
+        }
         std::shared_ptr<rk::DbContext> db;
+        bool started = false;
         ExecuteOnMainThreadAndWait([&] {
             UIContext* ui = UIContext::activeContext();
             if (!ui) return;
-            QWidget* before = ui->getCurrentTab();
-            if (!ui->openFilename(path)) return;
-            ViewFrame* frame = ui->getViewFrameForTab(ui->getCurrentTab());
-            db = frame ? dbFor(frame->getCurrentBinaryView()) : nullptr;
-            if (before && before->objectName() == QLatin1String(kFullWindowTab)) ui->activateTab(before);
+            // a tab already showing it
+            for (QWidget* tab : ui->getTabs()) {
+                ViewFrame* frame = ui->getViewFrameForTab(tab);
+                FileContext* fc = frame ? frame->getFileContext() : nullptr;
+                if (fc && samePath(fc->getFilename()) == key) {
+                    db = dbFor(frame->getCurrentBinaryView());
+                    return;
+                }
+            }
+            started = ui->openFilename(path);
         });
-        if (!db && error) *error = QStringLiteral("Binary Ninja did not open it");
+        if (!db && started) {
+            // loading a large binary takes a while; the user's Stop ends the wait (the tab still opens)
+            std::unique_lock<std::mutex> lk(g_pendingTabs.mu);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+            while (!g_pendingTabs.opened[key] && !(token && token->cancelled()) && std::chrono::steady_clock::now() < deadline)
+                g_pendingTabs.cv.wait_for(lk, std::chrono::milliseconds(250));
+            db = g_pendingTabs.opened[key];
+        }
+        {
+            std::lock_guard<std::mutex> g(g_pendingTabs.mu);
+            g_pendingTabs.opened.erase(key);
+        }
+        if (!db && error)
+            *error = !started                      ? QStringLiteral("Binary Ninja did not open it")
+                     : token && token->cancelled() ? QStringLiteral("cancelled while Binary Ninja was loading it")
+                                                   : QStringLiteral("Binary Ninja is still loading it after 10 minutes");
         return db;
     });
     // Binary Ninja's own MCP server: its tools can stand in for Rikugan's once the user agrees (HostMcpBar)

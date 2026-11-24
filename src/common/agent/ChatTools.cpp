@@ -119,10 +119,11 @@ ToolResult openDatabase(ToolCall& call) {
     ChatContext& chat = chatOf(call);
     const QString path = QFileInfo(expandHome(call.str("path").trimmed())).absoluteFilePath();
     if (call.str("path").trimmed().isEmpty()) return ToolResult::error(QStringLiteral("Error: 'path' is required."));
-    if (auto open = databases::find(path))
+    const bool inTab = call.boolean("in_tab") && databases::canOpenTab();
+    // one loaded in the background still gets its tab when asked for one
+    if (auto open = databases::find(path); open && !(inTab && databases::openedByRikugan(open->dbId)))
         return ToolResult::ok(QStringLiteral("Already open:\n%1").arg(databaseLine(*open, chat.dbId)));
     if (!QFileInfo(path).isFile()) return ToolResult::error(QStringLiteral("Error: no such file: %1").arg(path));
-    const bool inTab = call.boolean("in_tab") && databases::canOpenTab();
     // the path comes from the model: the user says yes first
     if (!chat.ui) return ToolResult::error(QStringLiteral("Error: no user is attached to this chat to approve opening a file."));
     const QString open = QStringLiteral("Open it");
@@ -133,7 +134,7 @@ ToolResult openDatabase(ToolCall& call) {
         {open, QStringLiteral("Don't open")}, call.token());
     if (a.cancelled || a.text != open) return ToolResult::ok(QStringLiteral("The user declined to open %1.").arg(path));
     QString error;
-    const auto db = inTab ? databases::openTab(path, &error) : databases::load(path, call.token(), &error);
+    const auto db = inTab ? databases::openTab(path, call.token(), &error) : databases::load(path, call.token(), &error);
     if (!db) return ToolResult::error(QStringLiteral("Error: could not open %1: %2").arg(path, error));
     if (inTab)
         return ToolResult::ok(QStringLiteral("Opened in a new tab (its analysis runs in the background; the user can chat "
@@ -306,14 +307,14 @@ void registerChatTools(ToolRegistry& r) {
         {}, 0, 20000, listDatabases});
     r.add(ToolSpec{
         "open_database", "chat",
-        "Open a file on disk (a binary or a .bndb) as another database, analysed in the background, to compare it with "
-        "this one or study it on its own. The current view and this chat's database are not touched. With in_tab it "
-        "opens in a tab of the host's window instead, a view the user sees and can chat in: use that when the user asks "
-        "to open or show a file. The user approves first. Returns the database id; then use ask_database. Prefer this "
-        "over loading files with execute_python.",
+        "Open a file on disk (a binary or a .bndb) as another database, to compare it with this one or study it on its "
+        "own. It opens in a new tab of the host's window, a view the user sees and can chat in; with in_tab false it is "
+        "analysed in the background with no tab instead. This chat's database is not touched. The user approves first. "
+        "Returns the database id; then use ask_database. Prefer this over loading files with execute_python.",
         {ToolParam{"path", ToolParam::String, "Absolute path of the file to open.", {}, {}, {}},
          ToolParam{"reason", ToolParam::String, "Why you need it (shown to the user).", QString(), {}, {}},
-         ToolParam{"in_tab", ToolParam::Boolean, "Open it in a new tab of the host's window (a view the user sees).", false, {}, {}}},
+         ToolParam{"in_tab", ToolParam::Boolean,
+                   "Open it in a new tab of the host's window (a view the user sees). False: in the background, no tab.", true, {}, {}}},
         Blocking | Exclusive, 20000, openDatabase});
     r.add(ToolSpec{
         "ask_database", "chat",

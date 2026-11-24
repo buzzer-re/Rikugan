@@ -102,7 +102,7 @@ bool canOpenTab() {
     return bool(g_tabOpener);
 }
 
-std::shared_ptr<DbContext> openTab(const QString& path, QString* error) {
+std::shared_ptr<DbContext> openTab(const QString& path, const std::shared_ptr<CancelToken>& token, QString* error) {
     if (auto open = find(path); open && !openedByRikugan(open->dbId)) return open;
     TabOpener opener;
     {
@@ -117,7 +117,7 @@ std::shared_ptr<DbContext> openTab(const QString& path, QString* error) {
         if (error) *error = QStringLiteral("no such file: %1").arg(path);
         return nullptr;
     }
-    return opener(path, error);
+    return opener(path, token, error);
 }
 
 bool close(const QString& dbId) {
