@@ -5,11 +5,19 @@
 #include <chrono>
 #include <cstring>
 
+#ifdef _WIN32
+#include <mutex>
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <QJsonDocument>
 #include <QUrl>
@@ -26,81 +34,164 @@ qint64 nowMs() {
         .count();
 }
 
-QString sysError() { return QString::fromLocal8Bit(std::strerror(errno)); }
+// The few socket calls below differ between BSD sockets and Winsock: descriptor type, error codes, non-blocking mode,
+// waiting (select on Windows: WSAPoll misses a failed non-blocking connect on older Windows 10).
+#ifdef _WIN32
+using SocketFd = SOCKET;
+constexpr SocketFd kNoSocket = INVALID_SOCKET;
+constexpr short kWaitRead = 1, kWaitWrite = 2;
+
+int lastError() { return WSAGetLastError(); }
+bool interrupted(int e) { return e == WSAEINTR; }
+bool wouldBlock(int e) { return e == WSAEWOULDBLOCK; }
+bool inProgress(int e) { return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS; }
+void closeSocket(SocketFd fd) { ::closesocket(fd); }
+
+QString errorText(int e) {
+    wchar_t* text = nullptr;
+    const DWORD n = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                   nullptr, DWORD(e), 0, reinterpret_cast<wchar_t*>(&text), 0, nullptr);
+    QString s = n ? QString::fromWCharArray(text, int(n)).trimmed() : QStringLiteral("socket error %1").arg(e);
+    LocalFree(text);
+    return s;
+}
+
+void netInit() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        WSADATA wd;
+        WSAStartup(MAKEWORD(2, 2), &wd);
+    });
+}
+
+SocketFd openSocket(const addrinfo* ai) {
+    netInit();
+    const SocketFd fd = ::WSASocketW(ai->ai_family, ai->ai_socktype, ai->ai_protocol, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+    if (fd == kNoSocket) return fd;
+    u_long one = 1;
+    ::ioctlsocket(fd, FIONBIO, &one);
+    return fd;
+}
+
+// >0 ready, 0 timeout, <0 error. A failed connect shows in the exception set.
+int waitReady(SocketFd fd, short what, int ms) {
+    fd_set rd, wr, ex;
+    FD_ZERO(&rd);
+    FD_ZERO(&wr);
+    FD_ZERO(&ex);
+    if (what == kWaitRead) FD_SET(fd, &rd);
+    else FD_SET(fd, &wr);
+    FD_SET(fd, &ex);
+    timeval tv{ms / 1000, (ms % 1000) * 1000};
+    return ::select(0, &rd, &wr, &ex, &tv);
+}
+#else
+using SocketFd = int;
+constexpr SocketFd kNoSocket = -1;
+constexpr short kWaitRead = POLLIN, kWaitWrite = POLLOUT;
+
+int lastError() { return errno; }
+bool interrupted(int e) { return e == EINTR; }
+bool wouldBlock(int e) { return e == EAGAIN || e == EWOULDBLOCK; }
+bool inProgress(int e) { return e == EINPROGRESS; }
+void closeSocket(SocketFd fd) { ::close(fd); }
+QString errorText(int e) { return QString::fromLocal8Bit(std::strerror(e)); }
+
+SocketFd openSocket(const addrinfo* ai) {
+    const SocketFd fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd == kNoSocket) return fd;
+    ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+    ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK);
+#ifdef SO_NOSIGPIPE
+    const int one = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+    return fd;
+}
+
+int waitReady(SocketFd fd, short what, int ms) {
+    pollfd p{fd, what, 0};
+    return ::poll(&p, 1, ms);
+}
+#endif
+
+QString sysError() { return errorText(lastError()); }
 
 class Socket {
 public:
     ~Socket() {
-        if (fd_ >= 0) ::close(fd_);
+        if (fd_ != kNoSocket) closeSocket(fd_);
     }
-    int fd() const { return fd_; }
-    void reset(int fd) {
-        if (fd_ >= 0) ::close(fd_);
+    SocketFd fd() const { return fd_; }
+    void reset(SocketFd fd) {
+        if (fd_ != kNoSocket) closeSocket(fd_);
         fd_ = fd;
     }
 
 private:
-    int fd_ = -1;
+    SocketFd fd_ = kNoSocket;
 };
 
-// Waits until `fd` is ready for `events`, in short slices so a cancelled call ends promptly.
-void waitFor(int fd, short events, const CancelToken* cancel, qint64 deadline) {
+// Waits until `fd` is ready for `what`, in short slices so a cancelled call ends promptly.
+void waitFor(SocketFd fd, short what, const CancelToken* cancel, qint64 deadline) {
     for (;;) {
         if (cancel && cancel->cancelled()) throw ToolError(QStringLiteral("Cancelled"));
         const qint64 left = deadline - nowMs();
         if (left <= 0) throw ToolError(QStringLiteral("the MCP server did not answer in time"));
-        pollfd p{fd, events, 0};
-        const int r = ::poll(&p, 1, int(std::min<qint64>(left, 100)));
+        const int r = waitReady(fd, what, int(std::min<qint64>(left, 100)));
         if (r > 0) return;
-        if (r < 0 && errno != EINTR) throw ToolError(sysError());
+        if (r < 0 && !interrupted(lastError())) throw ToolError(sysError());
     }
 }
 
 void connectTo(Socket& sock, const McpEndpoint& e, const CancelToken* cancel, qint64 deadline) {
+#ifdef _WIN32
+    netInit();
+#endif
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     addrinfo* list = nullptr;
     const QByteArray host = e.host.toUtf8(), port = QByteArray::number(e.port);
-    if (const int rc = ::getaddrinfo(host.constData(), port.constData(), &hints, &list); rc != 0)
-        throw ToolError(QStringLiteral("cannot resolve %1: %2").arg(e.host, QString::fromLocal8Bit(gai_strerror(rc))));
+    if (const int rc = ::getaddrinfo(host.constData(), port.constData(), &hints, &list); rc != 0) {
+#ifdef _WIN32
+        const QString why = errorText(rc);
+#else
+        const QString why = QString::fromLocal8Bit(gai_strerror(rc));
+#endif
+        throw ToolError(QStringLiteral("cannot resolve %1: %2").arg(e.host, why));
+    }
     QString failure;
     for (addrinfo* ai = list; ai; ai = ai->ai_next) {
-        sock.reset(::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol));
-        if (sock.fd() < 0) {
+        sock.reset(openSocket(ai));
+        if (sock.fd() == kNoSocket) {
             failure = sysError();
             continue;
         }
-        ::fcntl(sock.fd(), F_SETFD, FD_CLOEXEC);
-        ::fcntl(sock.fd(), F_SETFL, ::fcntl(sock.fd(), F_GETFL) | O_NONBLOCK);
-#ifdef SO_NOSIGPIPE
-        const int one = 1;
-        ::setsockopt(sock.fd(), SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
-#endif
-        if (::connect(sock.fd(), ai->ai_addr, ai->ai_addrlen) == 0) break;
-        if (errno != EINPROGRESS) {
+        if (::connect(sock.fd(), ai->ai_addr, socklen_t(ai->ai_addrlen)) == 0) break;
+        if (!inProgress(lastError())) {
             failure = sysError();
-            sock.reset(-1);
+            sock.reset(kNoSocket);
             continue;
         }
         try {
-            waitFor(sock.fd(), POLLOUT, cancel, deadline);
+            waitFor(sock.fd(), kWaitWrite, cancel, deadline);
         } catch (...) {
             ::freeaddrinfo(list);
             throw;
         }
         int err = 0;
         socklen_t len = sizeof err;
-        ::getsockopt(sock.fd(), SOL_SOCKET, SO_ERROR, &err, &len);
+        ::getsockopt(sock.fd(), SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &len);
         if (err == 0) break;
-        failure = QString::fromLocal8Bit(std::strerror(err));
-        sock.reset(-1);
+        failure = errorText(err);
+        sock.reset(kNoSocket);
     }
     ::freeaddrinfo(list);
-    if (sock.fd() < 0) throw ToolError(QStringLiteral("cannot connect to %1: %2").arg(e.url(), failure));
+    if (sock.fd() == kNoSocket) throw ToolError(QStringLiteral("cannot connect to %1: %2").arg(e.url(), failure));
 }
 
-void sendAll(int fd, const QByteArray& data, const CancelToken* cancel, qint64 deadline) {
+void sendAll(SocketFd fd, const QByteArray& data, const CancelToken* cancel, qint64 deadline) {
 #ifdef MSG_NOSIGNAL
     const int flags = MSG_NOSIGNAL;
 #else
@@ -108,12 +199,13 @@ void sendAll(int fd, const QByteArray& data, const CancelToken* cancel, qint64 d
 #endif
     qsizetype off = 0;
     while (off < data.size()) {
-        const ssize_t n = ::send(fd, data.constData() + off, size_t(data.size() - off), flags);
+        const int chunk = int(std::min<qsizetype>(data.size() - off, 1 << 20));
+        const auto n = ::send(fd, data.constData() + off, chunk, flags);
         if (n > 0) {
             off += n;
-        } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            waitFor(fd, POLLOUT, cancel, deadline);
-        } else if (n < 0 && errno != EINTR) {
+        } else if (n < 0 && wouldBlock(lastError())) {
+            waitFor(fd, kWaitWrite, cancel, deadline);
+        } else if (n < 0 && !interrupted(lastError())) {
             throw ToolError(QStringLiteral("cannot send to the MCP server: %1").arg(sysError()));
         }
     }
@@ -237,11 +329,12 @@ McpClient::Reply McpClient::post(const QByteArray& json, qint64 id, const Cancel
                 if (stream && id >= 0 && findReply(sseMessages(r.body), id)) break;
             }
         }
-        waitFor(sock.fd(), POLLIN, cancel, deadline);
-        const ssize_t n = ::recv(sock.fd(), buf, sizeof buf, 0);
+        waitFor(sock.fd(), kWaitRead, cancel, deadline);
+        const auto n = ::recv(sock.fd(), buf, int(sizeof buf), 0);
         if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            throw ToolError(QStringLiteral("cannot read from the MCP server: %1").arg(sysError()));
+            const int err = lastError();
+            if (interrupted(err) || wouldBlock(err)) continue;
+            throw ToolError(QStringLiteral("cannot read from the MCP server: %1").arg(errorText(err)));
         }
         if (n == 0) {  // closed: whatever arrived is the reply
             if (headerEnd < 0) throw ToolError(QStringLiteral("the MCP server closed the connection without replying"));

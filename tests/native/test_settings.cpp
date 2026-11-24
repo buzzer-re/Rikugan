@@ -1,6 +1,8 @@
 // Settings dialog against the mock environment: provider → model choice, API keys in auth.json, custom
 // connections, mcp.json, and Settings on a fresh install with no credentials at all.
+#ifndef _WIN32
 #include <sys/stat.h>
+#endif
 
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -98,9 +100,11 @@ private Q_SLOTS:
         QVERIFY(ok);
         QCOMPARE(auth.value("anthropic").toObject(), (QJsonObject{{"type", "api_key"}, {"key", "sk-test"}}));
         QCOMPARE(auth.value("other").toObject().value("key").toString(), QStringLiteral("K1"));
+#ifndef _WIN32  // Windows: the profile directory's ACL, not a mode, keeps auth.json private
         struct stat st {};
         QCOMPARE(::stat(QFile::encodeName(path).constData(), &st), 0);
         QCOMPARE(int(st.st_mode & 0777), 0600);
+#endif
 
         QFile::remove(path);
         rk::ServiceSession::reloadCredentials();

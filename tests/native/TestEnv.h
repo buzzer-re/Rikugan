@@ -29,6 +29,9 @@ struct Registrar {
 // Spins the Qt event loop until `pred` is true or `ms` pass.
 bool waitFor(const std::function<bool()>& pred, int ms = 10000);
 
+// The Python interpreter for omc's mock server and script checks: RK_PYTHON (set by CTest), else python3.
+QString python();
+
 }  // namespace rktest
 
 #define RK_TEST(Class) static rktest::Registrar rk_registrar_##Class([] { return static_cast<QObject*>(new Class); });

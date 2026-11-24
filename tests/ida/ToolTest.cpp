@@ -1,13 +1,16 @@
-// rikugan_ida_tooltest: runs every model-visible IDA tool against a fresh database of /bin/ls through idalib, with
-// the cases of tests/ida/tool_cases.json, then checks that /undo restores a rename_function.
+// rikugan_ida_tooltest: runs every model-visible IDA tool against a fresh database of a system binary through idalib,
+// with the cases of tests/ida/tool_cases.json, then checks that /undo restores a rename_function.
 //
-//   rikugan_ida_tooltest [--dump DIR]   (DIR gets one <n>_<tool>.txt per case and the resolved arguments)
+//   rikugan_ida_tooltest [--dump DIR] [--binary FILE]
+//     DIR gets one <n>_<tool>.txt per case and the resolved arguments; FILE defaults to /bin/ls
+//     (Windows: %SystemRoot%\System32\notepad.exe)
 #include <cstdio>
 #include <map>
 #include <set>
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -92,6 +95,10 @@ std::map<QString, QString> findPlaceholders() {
             break;
         }
     }
+    // the database's own type library (gnulnx_x64, mssdk64_win10 ...)
+    const til_t* idati = get_idati();
+    if (idati != nullptr && idati->nbases > 0 && idati->base[0] != nullptr && idati->base[0]->name != nullptr)
+        vars["til"] = qs(idati->base[0]->name);
     return vars;
 }
 
@@ -132,8 +139,15 @@ QString oneLine(const QString& s, int max = 110) {
 
 int main(int argc, char** argv) {
     QString dumpDir;
-    for (int i = 1; i + 1 < argc; ++i)
+#ifdef _WIN32
+    QString source = QDir::fromNativeSeparators(qEnvironmentVariable("SystemRoot")) + QStringLiteral("/System32/notepad.exe");
+#else
+    QString source = QStringLiteral("/bin/ls");
+#endif
+    for (int i = 1; i + 1 < argc; ++i) {
         if (QString::fromUtf8(argv[i]) == QLatin1String("--dump")) dumpDir = QString::fromUtf8(argv[i + 1]);
+        if (QString::fromUtf8(argv[i]) == QLatin1String("--binary")) source = QString::fromUtf8(argv[i + 1]);
+    }
 
     QFile casesFile(QStringLiteral(RK_TOOL_CASES));
     if (!casesFile.open(QIODevice::ReadOnly)) {
@@ -143,9 +157,9 @@ int main(int argc, char** argv) {
     const QJsonArray cases = QJsonDocument::fromJson(casesFile.readAll()).object().value(QStringLiteral("cases")).toArray();
 
     QTemporaryDir tmp;
-    const QString binary = tmp.filePath(QStringLiteral("ls"));
-    if (!QFile::copy(QStringLiteral("/bin/ls"), binary)) {
-        out(QStringLiteral("cannot copy /bin/ls"));
+    const QString binary = tmp.filePath(QFileInfo(source).fileName());
+    if (!QFile::copy(source, binary)) {
+        out(QStringLiteral("cannot copy ") + source);
         return 2;
     }
     if (init_library() != 0) {
@@ -171,7 +185,7 @@ int main(int argc, char** argv) {
         host.registerTools(registry);
 
         const std::map<QString, QString> vars = findPlaceholders();
-        for (const char* key : {"func", "string_ea", "data_ea"})
+        for (const char* key : {"func", "string_ea", "data_ea", "til"})
             if (!vars.count(QLatin1String(key))) {
                 out(QStringLiteral("no ${%1} found in the database").arg(QLatin1String(key)));
                 close_database(false);

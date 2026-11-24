@@ -15,6 +15,7 @@
 #include "TestEnv.h"
 #include "common/config/RikuganConfig.h"
 #include "common/omc/AgentHome.h"
+#include "common/util/Env.h"
 #include "common/ui/settings/SettingsDialog.h"
 
 namespace rktest {
@@ -41,20 +42,29 @@ bool waitFor(const std::function<bool()>& pred, int ms) {
     return true;
 }
 
+QString python() {
+    const QString p = qEnvironmentVariable("RK_PYTHON");
+    return p.isEmpty() ? QStringLiteral("python3") : p;
+}
+
 }  // namespace rktest
 
 namespace {
 
 // HOME, RIKUGAN_HOME and TMPDIR inside `dir`, and no provider keys from the environment: nothing may touch the real
-// ~/.rikugan, ~/.omc or credentials, and a developer's ANTHROPIC_API_KEY must not change what the tests see.
+// ~/.rikugan, ~/.omc or credentials, and a developer's ANTHROPIC_API_KEY must not change what the tests see. Through
+// rk::setEnv so libomc's own C runtime (Windows) sees the same environment.
 void isolate(const QTemporaryDir& dir) {
-    qputenv("HOME", dir.path().toUtf8());
-    qputenv("RIKUGAN_HOME", (dir.path() + "/.rikugan").toUtf8());
-    qputenv("TMPDIR", dir.path().toUtf8());
+    rk::setEnv("HOME", dir.path());
+    rk::setEnv("RIKUGAN_HOME", dir.path() + "/.rikugan");
+    rk::setEnv("TMPDIR", dir.path());
+#ifdef _WIN32
+    rk::setEnv("USERPROFILE", QDir::toNativeSeparators(dir.path()));  // Qt's home on Windows
+#endif
     QDir().mkpath(dir.path() + "/.git");  // bounds omc's project walk (see ../ohmyc/tests/e2e/run.sh)
     static const QRegularExpression credential(QStringLiteral("(_API_KEY|_TOKEN|_SECRET)$|^AWS_|^GOOGLE_APPLICATION"));
     for (const QString& k : QProcessEnvironment::systemEnvironment().keys())
-        if (credential.match(k).hasMatch()) qunsetenv(k.toUtf8().constData());
+        if (credential.match(k).hasMatch()) rk::unsetEnv(k.toUtf8().constData());
 }
 
 // A fresh install, run as a child of SettingsTest: no endpoints, no keys, no logins. omc's catalog and credentials
@@ -98,7 +108,7 @@ int main(int argc, char** argv) {
     QProcessEnvironment pe = QProcessEnvironment::systemEnvironment();
     pe.insert("MOCK_LOG", tmp.path() + "/mock.jsonl");
     mock.setProcessEnvironment(pe);
-    mock.start("python3", {"-I", qEnvironmentVariable("RK_OMC_DIR") + "/tests/e2e/mock_openai.py",
+    mock.start(rktest::python(), {"-I", qEnvironmentVariable("RK_OMC_DIR") + "/tests/e2e/mock_openai.py",
                            QString::number(rktest::g_env.port)});
     if (!mock.waitForStarted()) qFatal("cannot start the mock model server");
     rktest::waitFor([&] {

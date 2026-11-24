@@ -9,8 +9,12 @@ foreach(_f ${_files})
     endif()
     file(RELATIVE_PATH _rel "${ROOT}" "${_f}")
     file(READ "${_f}" _hex HEX)
-    file(SIZE "${_f}" _size)
     string(REGEX REPLACE "([0-9a-f][0-9a-f])" "'\\\\x\\1'," _bytes "${_hex}")
+    # every embedded file is text for the model: a Windows checkout (core.autocrlf) or a zip download has CRLF line
+    # ends, which must not reach prompts or skills. Byte tokens, so the match never straddles two bytes.
+    string(REPLACE "'\\x0d','\\x0a'," "'\\x0a'," _bytes "${_bytes}")
+    string(LENGTH "${_bytes}" _len)
+    math(EXPR _size "${_len} / 7")  # one token per byte: '\xNN',
     string(APPEND _body "const char d${_i}[] = {${_bytes}0};\n")
     string(APPEND _table "    {\"${_rel}\", std::string_view(d${_i}, ${_size})},\n")
     math(EXPR _i "${_i} + 1")

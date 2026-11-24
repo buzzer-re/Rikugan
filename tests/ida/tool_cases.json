@@ -1,5 +1,5 @@
 {
-  "comment": "Cases for rikugan_ida_tooltest, run in order against /bin/ls. ${...} are values found in the database at run time. A case passes when its result is not an error (or is one, with expect_error) and contains expect_contains.",
+  "comment": "Cases for rikugan_ida_tooltest, run in order against a system binary (/bin/ls; notepad.exe on Windows). ${...} are values found in the database at run time. A case passes when its result is not an error (or is one, with expect_error) and contains expect_contains.",
   "cases": [
     {"tool": "get_cursor_position", "args": {}, "expect_contains": "${func}"},
     {"tool": "get_current_function", "args": {}, "expect_contains": "Name: ${func_name}"},
@@ -78,7 +78,7 @@
     {"tool": "suggest_struct_from_accesses", "args": {"address": "${func}"}},
     {"tool": "propagate_type", "args": {"struct_name": "RkStruct"}, "expect_contains": "Triggered type propagation for 'RkStruct'"},
     {"tool": "get_type_libraries", "args": {}, "expect_contains": "Type libraries:"},
-    {"tool": "import_type_from_library", "args": {"til_name": "gnulnx_arm64", "type_name": "rk_missing_type"}, "expect_contains": "Type 'rk_missing_type' not found in 'gnulnx_arm64'"},
+    {"tool": "import_type_from_library", "args": {"til_name": "${til}", "type_name": "rk_missing_type"}, "expect_contains": "Type 'rk_missing_type' not found in '${til}'"},
 
     {"tool": "execute_python", "args": {"code": "print(idc.get_func_name(${func}))"}, "expect_contains": "stdout:\n${func_name}"},
     {"tool": "execute_python", "args": {"code": "rk_counter = 41"}, "expect_contains": "(no output)"},

@@ -405,7 +405,7 @@ private Q_SLOTS:
             "results = [json.loads(d['__rk_exec'](c, ns)) for c in json.loads(sys.argv[2])]\n"
             "print(json.dumps({'leaked': leaked, 'results': results}))\n";
         QProcess p;
-        p.start("python3", {"-I", "-c", QString::fromLatin1(driver), prelude,
+        p.start(rktest::python(), {"-I", "-c", QString::fromLatin1(driver), prelude,
                             QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(codes)).toJson())});
         QVERIFY(p.waitForFinished(30000));
         const QByteArray err = p.readAllStandardError();

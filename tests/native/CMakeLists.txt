@@ -1,8 +1,21 @@
 file(GLOB RK_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
 add_executable(rikugan_tests ${RK_TEST_SOURCES} $<TARGET_OBJECTS:rikugan_common>)
-target_include_directories(rikugan_tests PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(rikugan_tests PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(rikugan_tests PRIVATE $<TARGET_PROPERTY:rikugan_common,INTERFACE_COMPILE_DEFINITIONS>)
 target_link_libraries(rikugan_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Test)
 rk_link_omc(rikugan_tests)
+if(WIN32)
+    target_link_libraries(rikugan_tests PRIVATE ws2_32)
+endif()
+# omc's mock model server (and the guard-prelude checks) run on this interpreter
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME rikugan_tests COMMAND rikugan_tests)
-set_tests_properties(rikugan_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;RK_OMC_DIR=${OMC_DIR}" TIMEOUT 600)
+set_tests_properties(rikugan_tests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;RK_OMC_DIR=${OMC_DIR};RK_PYTHON=${Python3_EXECUTABLE}" TIMEOUT 600)
+if(WIN32)
+    # libomc.dll sits next to the plugins in the tree root; the Qt DLLs are the kit's
+    get_target_property(_rk_moc Qt6::moc IMPORTED_LOCATION)
+    get_filename_component(_rk_qt_bin "${_rk_moc}" DIRECTORY)
+    set_target_properties(rikugan_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    set_tests_properties(rikugan_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_rk_qt_bin}")
+endif()

@@ -1,7 +1,5 @@
 #include "common/omc/AgentHome.h"
 
-#include <cstdlib>
-
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -13,6 +11,7 @@
 #include "common/config/RikuganConfig.h"
 #include "common/omc/YamlWriter.h"
 #include "common/util/Embedded.h"
+#include "common/util/Env.h"
 #include "common/util/Files.h"
 
 namespace rk {
@@ -21,8 +20,6 @@ namespace {
 
 QString g_standaloneAgentDir;
 constexpr char kMarker[] = ".rikugan-builtin";
-
-void setEnv(const char* k, const QString& v) { ::setenv(k, v.toUtf8().constData(), 1); }
 
 QString firstExisting(std::initializer_list<const char*> files) {
     for (const char* f : files)
@@ -68,14 +65,14 @@ void AgentHome::prepare() {
     const QString userConfig = qEnvironmentVariable("OMC_CONFIG_DIR");
     g_standaloneAgentDir = !userAgent.isEmpty()   ? expandHome(userAgent)
                            : !userConfig.isEmpty() ? expandHome(userConfig) + QStringLiteral("/agent")
-                                                   : QDir::homePath() + QStringLiteral("/.omc/agent");
+                                                   : homeDir() + QStringLiteral("/.omc/agent");
 
     setEnv("OMC_CONFIG_DIR", paths::omcConfigDir());
-    ::unsetenv("OMC_CODING_AGENT_DIR");
-    ::unsetenv("PI_CODING_AGENT_DIR");
+    unsetEnv("OMC_CODING_AGENT_DIR");
+    unsetEnv("PI_CODING_AGENT_DIR");
     // chats are named by omc after their first exchange; a stale value from the environment would stop it
-    ::unsetenv("OMC_NO_TITLE");
-    ::unsetenv("PI_NO_TITLE");
+    unsetEnv("OMC_NO_TITLE");
+    unsetEnv("PI_NO_TITLE");
     if (!RikuganConfig::instance().discoverLocalModels) setEnv("OMC_NO_LOCAL_DISCOVERY", QStringLiteral("1"));
     if (qEnvironmentVariableIsEmpty("OMC_EXTRA_CA_CERTS")) {
         // the libcrypto a host loads first (Binary Ninja bundles one) may look for CAs elsewhere

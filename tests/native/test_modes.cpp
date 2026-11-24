@@ -154,7 +154,7 @@ private Q_SLOTS:
         // models.yml once per process)
         const int port = rktest::env().modePort;
         mock.setProcessChannelMode(QProcess::ForwardedErrorChannel);
-        mock.start(QStringLiteral("python3"), {QStringLiteral("-I"), script, QString::number(port)});
+        mock.start(rktest::python(), {QStringLiteral("-I"), script, QString::number(port)});
         QVERIFY(mock.waitForStarted());
         QVERIFY(rktest::waitFor([port] {
             QTcpSocket s;

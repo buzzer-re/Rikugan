@@ -3,13 +3,14 @@
 #include <QDir>
 
 #include "common/config/RikuganConfig.h"
+#include "common/util/Env.h"
 #include "common/util/Files.h"
 
 namespace rk::paths {
 
 QString home() {
     QString env = qEnvironmentVariable("RIKUGAN_HOME");
-    return env.isEmpty() ? QDir::homePath() + QStringLiteral("/.rikugan") : expandHome(env);
+    return env.isEmpty() ? homeDir() + QStringLiteral("/.rikugan") : expandHome(env);
 }
 
 QString configFile() { return home() + QStringLiteral("/config.json"); }

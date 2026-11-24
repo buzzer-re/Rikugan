@@ -22,6 +22,7 @@
 #include "common/agent/Databases.h"
 #include "common/agent/DbContext.h"
 #include "common/omc/AgentHome.h"
+#include "common/omc/OmcLibrary.h"
 #include "common/omc/ServiceSession.h"
 #include "common/ui/ChatHub.h"
 #include "common/ui/PanelCore.h"
@@ -196,6 +197,10 @@ BINARYNINJAPLUGIN bool CorePluginInit() { return true; }
 
 BINARYNINJAPLUGIN bool UIPluginInit() {
     rk::setLogSink([](const QString& m) { LogInfo("%s", m.toUtf8().constData()); });
+    if (QString error; !rk::loadOmcLibrary(&error)) {
+        LogError("Rikugan: %s", error.toUtf8().constData());
+        return false;
+    }
     rk::AgentHome::prepare();
     // the panel speaks Binary Ninja's colours: its addresses, symbols, highlight hues and code tokens
     rk::ui::setHostColors([] {

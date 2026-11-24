@@ -9,9 +9,22 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using TestSocket = SOCKET;
+constexpr TestSocket kNoSocket = INVALID_SOCKET;
+inline void closeSocket(TestSocket s) { ::closesocket(s); }
+#define SHUT_RDWR SD_BOTH
+#define MSG_NOSIGNAL 0
+#else
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+using TestSocket = int;
+constexpr TestSocket kNoSocket = -1;
+inline void closeSocket(TestSocket s) { ::close(s); }
+#endif
 
 #include "FakeHost.h"
 #include "TestEnv.h"
@@ -36,9 +49,13 @@ public:
     };
 
     FakeMcpServer() {
+#ifdef _WIN32
+        WSADATA wd;
+        WSAStartup(MAKEWORD(2, 2), &wd);
+#endif
         fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
         int one = 1;
-        ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof one);
         sockaddr_in a{};
         a.sin_family = AF_INET;
         a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -51,7 +68,7 @@ public:
     ~FakeMcpServer() {
         stop_ = true;
         ::shutdown(fd_, SHUT_RDWR);
-        ::close(fd_);
+        closeSocket(fd_);
         thread_.join();
     }
 
@@ -77,19 +94,19 @@ public:
 private:
     void serve() {
         while (!stop_) {
-            const int c = ::accept(fd_, nullptr, nullptr);
-            if (c < 0) return;
+            const TestSocket c = ::accept(fd_, nullptr, nullptr);
+            if (c == kNoSocket) return;
             handle(c);
-            ::close(c);
+            closeSocket(c);
         }
     }
 
-    void handle(int c) {
+    void handle(TestSocket c) {
         QByteArray in;
         char buf[4096];
         qsizetype end = -1, length = 0;
         while (end < 0 || in.size() < end + 4 + length) {
-            const ssize_t n = ::recv(c, buf, sizeof buf, 0);
+            const auto n = ::recv(c, buf, int(sizeof buf), 0);
             if (n <= 0) return;
             in.append(buf, n);
             if (end < 0 && (end = in.indexOf("\r\n\r\n")) >= 0) {
@@ -167,22 +184,22 @@ private:
         reply(c, 200, msg, {});
     }
 
-    static void writeAll(int c, const QByteArray& data) {
+    static void writeAll(TestSocket c, const QByteArray& data) {
         qsizetype off = 0;
         while (off < data.size()) {
-            const ssize_t n = ::send(c, data.constData() + off, size_t(data.size() - off), MSG_NOSIGNAL);
+            const auto n = ::send(c, data.constData() + off, int(data.size() - off), MSG_NOSIGNAL);
             if (n <= 0) return;
             off += n;
         }
     }
-    static void reply(int c, int status, const QJsonObject& msg, const QByteArray& session) {
+    static void reply(TestSocket c, int status, const QJsonObject& msg, const QByteArray& session) {
         const QByteArray body = QJsonDocument(msg).toJson(QJsonDocument::Compact);
         QByteArray head = "HTTP/1.1 " + QByteArray::number(status) + " OK\r\nConnection: close\r\nContent-Type: application/json\r\n";
         if (!session.isEmpty()) head += "MCP-Session-Id: " + session + "\r\n";
         writeAll(c, head + "Content-Length: " + QByteArray::number(body.size()) + "\r\n\r\n" + body);
     }
 
-    int fd_ = -1;
+    TestSocket fd_ = kNoSocket;
     quint16 port_ = 0;
     std::thread thread_;
     std::atomic<bool> stop_{false};

@@ -1,6 +1,9 @@
 // IDA type tools, IDA 9 paths (ida_struct and ida_enum are gone; offsets of the UDT API are in
 // bits). Subclasses ctree_visitor_t and user_lvar_modifier_t: built without RTTI.
 #include <map>
+#ifdef _MSC_VER
+#include <__msvc_int128.hpp>
+#endif
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -14,7 +17,13 @@ namespace rk::ida {
 
 namespace {
 
+// offsets plus access sizes as 1.x's Python ints did: a sum past 2^64 still prints right. MSVC has no __int128; its
+// standard library's unsigned 128-bit type (what <random> and <chrono> use) has the same operators.
+#ifdef _MSC_VER
+using u128 = std::_Unsigned128;
+#else
 using u128 = unsigned __int128;
+#endif
 
 QString u128Str(u128 v) {
     if (v == 0) return QStringLiteral("0");

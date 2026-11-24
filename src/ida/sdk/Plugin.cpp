@@ -14,6 +14,7 @@
 #include "common/agent/Subagents.h"
 #include "common/host/Host.h"
 #include "common/omc/AgentHome.h"
+#include "common/omc/OmcLibrary.h"
 #include "common/omc/ServiceSession.h"
 #include "common/tools/ToolDispatcher.h"
 #include "common/ui/ChatHub.h"
@@ -236,6 +237,11 @@ struct RikuganPlugmod : public plugmod_t, public event_listener_t {
 
 plugmod_t* idaapi rk_init() {
     if (!is_idaq()) return nullptr;  // the panel needs IDA's Qt UI
+    QString error;
+    if (!rk::loadOmcLibrary(&error)) {
+        msg("Rikugan: %s\n", error.toUtf8().constData());
+        return nullptr;
+    }
     g_mod = new RikuganPlugmod;
     return g_mod;
 }
