@@ -3,6 +3,8 @@
 #include <atomic>
 
 #include <QCheckBox>
+#include <QComboBox>
+#include <QLineEdit>
 #include <QLabel>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -21,6 +23,12 @@
 #include "common/ui/console/Palette.h"
 #include "common/ui/transcript/Cards.h"
 #include "common/ui/transcript/TranscriptView.h"
+#include "common/config/Paths.h"
+#include "common/omc/ServiceSession.h"
+#include "common/ui/console/GetStarted.h"
+#include "common/ui/console/ModelPicker.h"
+#include "common/ui/transcript/TranscriptModel.h"
+#include "common/util/Files.h"
 
 using namespace rk::ui;
 
@@ -293,6 +301,105 @@ private Q_SLOTS:
         QCOMPARE(shown(&panel)->chat()->chatId(), parent);
         reg.update(id, [](rk::SubagentInfo& i) { i.status = rk::SubagentStatus::Completed; });
         reg.removeFinished();
+    }
+
+    // Connect a model → Paste an API key: once the key is saved, that provider's models are offered.
+    void setupKeyShowsItsModels() {
+        QWidget area;
+        area.resize(600, 600);
+        auto* setup = new rk::ui::GetStarted(&area);
+        setup->resize(600, 600);
+        rk::ui::ModelPicker picker(&area);
+        QObject::connect(setup, &rk::ui::GetStarted::refreshModels, &picker, [&picker] { picker.refresh(); });
+        QObject::connect(&picker, &rk::ui::ModelPicker::refreshed, setup, [&] { setup->setModels(picker.models()); });
+        area.show();
+        setup->start();
+        picker.refresh();  // the panel's first refresh, still in flight when the key is saved
+        QPushButton* connectBtn = nullptr;
+        for (QPushButton* b : setup->findChildren<QPushButton*>())
+            if (b->text() == QLatin1String("Connect")) connectBtn = b;
+        QComboBox* providers = nullptr;
+        for (QComboBox* c : setup->findChildren<QComboBox*>())
+            if (c->findData(QStringLiteral("anthropic")) >= 0) providers = c;
+        QLineEdit* key = nullptr;
+        for (QLineEdit* e : setup->findChildren<QLineEdit*>())
+            if (e->echoMode() == QLineEdit::Password) key = e;
+        QVERIFY(connectBtn && providers && key);
+        providers->setCurrentIndex(providers->findData(QStringLiteral("anthropic")));
+        QVERIFY(providers->currentIndex() >= 0);
+        key->setText(QStringLiteral("sk-test-setup"));
+        connectBtn->click();
+        auto modelRows = [&] {
+            int n = 0;
+            for (rk::ui::SuggestionRow* r : setup->findChildren<rk::ui::SuggestionRow*>())
+                if (r->isVisible()) ++n;
+            return n;
+        };
+        const bool shown = rktest::waitFor([&] { return modelRows() > 0; }, 15000);
+        rk::writeFileAtomic(rk::paths::omcAgentDir() + "/auth.json", "{}");
+        rk::ServiceSession::reloadCredentials();
+        QVERIFY2(shown, "no model rows after saving an Anthropic key");
+    }
+
+    // A finished thought folds and unfolds when its header line is clicked.
+    void thinkingHeaderToggles() {
+        rk::ui::TranscriptModel m;
+        m.applyTranscript(QJsonArray{
+            QJsonObject{{"role", "user"}, {"content", "hi"}},
+            QJsonObject{{"role", "assistant"},
+                        {"content", QJsonArray{QJsonObject{{"type", "thinking"}, {"thinking", "line one\n\nline two\n\nline three"}},
+                                               QJsonObject{{"type", "text"}, {"text", "Done."}}}}}});
+        int row = -1;
+        for (int i = 0; i < m.rowCount(); ++i)
+            if (m.at(i).kind == rk::ui::ItemKind::Thinking) row = i;
+        QVERIFY(row >= 0);
+        TranscriptView v;
+        v.resize(600, 500);
+        v.setTranscriptModel(&m);
+        v.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&v));
+        const QModelIndex idx = m.index(row, 0);
+        auto clickHeader = [&] {
+            const QRect r = v.visualRect(idx);
+            QTest::mouseClick(v.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(r.left() + 40, r.top() + 6));
+            QCoreApplication::processEvents();
+        };
+        const int closedH = v.visualRect(idx).height();
+        QVERIFY(!m.at(row).expanded);
+        clickHeader();
+        QVERIFY(m.at(row).expanded);
+        QVERIFY(rktest::waitFor([&] { return v.visualRect(idx).height() > closedH; }, 2000));
+        clickHeader();
+        QVERIFY(!m.at(row).expanded);
+        QVERIFY(rktest::waitFor([&] { return v.visualRect(idx).height() == closedH; }, 2000));
+    }
+
+    // The same in a live chat: the streamed thought is done when the turn ends, and its header folds it.
+    void liveThinkingToggles() {
+        rk::PanelCore panel;
+        panel.resize(900, 700);
+        panel.show();
+        panel.setDatabase(db);
+        clickTool(&panel, "New chat");
+        panel.submitToCurrentChat("think:weighing the options\\nat length|the answer");
+        QVERIFY(rktest::waitFor([&] { return texts(&panel, ItemKind::Text).join('\n').contains("the answer"); }, 30000));
+        QVERIFY(rktest::waitFor([&] { return idle(&panel); }, 30000));
+        TranscriptModel* m = shown(&panel);
+        int row = -1;
+        for (int i = 0; i < m->rowCount(); ++i)
+            if (m->at(i).kind == ItemKind::Thinking) row = i;
+        QVERIFY(row >= 0);
+        QVERIFY2(!m->at(row).streaming, "the thought still streams after the turn");
+        TranscriptView* v = transcript(&panel);
+        const QModelIndex idx = m->index(row, 0);
+        const bool was = m->at(row).expanded;
+        const QRect r = v->visualRect(idx);
+        QTest::mouseClick(v->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(r.left() + 40, r.top() + 6));
+        QCOMPARE(m->at(row).expanded, !was);
+        const int h = v->visualRect(idx).height();
+        QTest::mouseClick(v->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(r.left() + 40, r.top() + 6));
+        QCOMPARE(m->at(row).expanded, was);
+        QVERIFY(rktest::waitFor([&] { return v->visualRect(idx).height() != h; }, 2000));
     }
 };
 RK_TEST(UiTest)

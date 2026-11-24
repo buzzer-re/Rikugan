@@ -94,6 +94,9 @@ private Q_SLOTS:
             save->click();
             QVERIFY(key->text().isEmpty());
             QCOMPARE(account->text(), QStringLiteral("API key saved"));
+            // the provider's models are offered once omc has the key
+            auto* model = dlg.findChild<QComboBox*>(QStringLiteral("modelCombo"));
+            QVERIFY(rktest::waitFor([&] { return model->count() > 0; }, 15000));
         }
         bool ok = false;
         const QJsonObject auth = rk::readJsonObject(path, &ok);
