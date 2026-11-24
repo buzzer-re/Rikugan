@@ -154,6 +154,22 @@ QString planningGap(const ModeState& kb) {
     return gaps.join(QStringLiteral("; "));
 }
 
+const QStringList kModeTools{QStringLiteral("exploration_report"), QStringLiteral("research_note")};
+
+// Mode-only chat tools change only between prompts, while the session is idle.
+void setChatTools(OmcSession& s, ChatContext& ctx, const QStringList& show, const QStringList& hide) {
+    bool changed = false;
+    for (const QString& t : show) {
+        changed |= !ctx.toolShown(t);
+        ctx.setToolShown(t, true);
+    }
+    for (const QString& t : hide) {
+        changed |= ctx.toolShown(t);
+        ctx.setToolShown(t, false);
+    }
+    if (changed && s.isOpen()) s.request(QJsonObject{{"type", "set_host_tools"}, {"tools", chatHostTools(ctx)}});
+}
+
 // What a mode needs from the UI thread, read once in start().
 struct Setup {
     Mode mode = Mode::Plan;
@@ -181,6 +197,11 @@ public:
           token_(std::move(token)) {}
 
     void run() {
+        // what a cancelled mode left behind (keepCancelledTools) ends when another mode starts; its frame hook is
+        // replaced below
+        setTools({}, kModeTools);
+        ctx_->mode.reset();
+
         watch_->session = s_.weak_from_this();
         std::shared_ptr<TurnWatch> w = watch_;
         ctx_->setFrameHook([w](std::string_view type) {
@@ -196,11 +217,17 @@ public:
         case Mode::Modify: runModify(); break;
         case Mode::Research: runResearch(); break;
         }
-        // the mode ends here whatever happened: no read-only phase, no mode-only tools, no mode state
+        // the mode ends here whatever happened: no read-only phase, no mode-only tools, no mode state (a cancelled
+        // mode keeps the tools it offered a little longer)
         ctx_->setFrameHook({});
         ctx_->setPhase({}, false);
-        setTools({}, {QStringLiteral("exploration_report"), QStringLiteral("research_note")});
-        ctx_->mode.reset();
+        const bool offered = std::any_of(kModeTools.cbegin(), kModeTools.cend(), [this](const QString& t) { return ctx_->toolShown(t); });
+        if ((cancelled_ || token_->cancelled()) && offered) {
+            keepCancelledTools();
+        } else {
+            setTools({}, kModeTools);
+            ctx_->mode.reset();
+        }
         phaseEvent(QStringLiteral("done"), endText_);
     }
 
@@ -236,19 +263,36 @@ private:
         endText_ = text;
     }
 
-    // Mode-only chat tools change only between prompts, while the session is idle.
-    void setTools(const QStringList& show, const QStringList& hide) {
-        bool changed = false;
-        for (const QString& t : show) {
-            changed |= !ctx_->toolShown(t);
-            ctx_->setToolShown(t, true);
-        }
-        for (const QString& t : hide) {
-            changed |= ctx_->toolShown(t);
-            ctx_->setToolShown(t, false);
-        }
-        if (changed && s_.isOpen())
-            s_.request(QJsonObject{{"type", "set_host_tools"}, {"tools", chatHostTools(*ctx_)}});
+    void setTools(const QStringList& show, const QStringList& hide) { setChatTools(s_, *ctx_, show, hide); }
+
+    void markCancelled() {
+        endText_ = QStringLiteral("Cancelled.");
+        cancelled_ = true;
+    }
+
+    // After a cancel the user often says "continue" and the model calls the mode's tools again: they stay offered
+    // until the next prompt ends and answer that nothing was recorded (ChatTools reads cancelledNotice).
+    void keepCancelledTools() {
+        auto left = std::make_shared<ModeState>();
+        left->cancelledNotice = QStringLiteral("The /%1 run was cancelled; nothing recorded. Ask the user to run /%1 again to "
+                                               "continue.")
+                                    .arg(mode_);
+        ctx_->mode = left;
+        std::weak_ptr<ChatContext> wctx = ctx_;
+        std::weak_ptr<OmcSession> ws = s_.weak_from_this();
+        auto fired = std::make_shared<std::atomic<bool>>(false);
+        ctx_->setFrameHook([wctx, ws, left, fired](std::string_view type) {
+            if (type != "agent_start" || fired->exchange(true)) return;
+            // the next prompt started: a job behind it on the worker runs once it ends
+            if (auto session = ws.lock())
+                session->post([wctx, left](OmcSession& s) {
+                    const std::shared_ptr<ChatContext> ctx = wctx.lock();
+                    if (!ctx || ctx->mode != left) return;  // another mode took over
+                    ctx->setFrameHook({});
+                    ctx->mode.reset();
+                    setChatTools(s, *ctx, {}, kModeTools);
+                });
+        });
     }
 
     // One prompt on the chat's session, run to completion or aborted after `cap` turns.
@@ -279,7 +323,7 @@ private:
     // A prompt that did not finish: the mode ends.
     bool stopped(const Reply& r) {
         if (r.end == End::Cancelled) {
-            endText_ = QStringLiteral("Cancelled.");
+            markCancelled();
             return true;
         }
         if (r.end == End::Error) {
@@ -310,7 +354,7 @@ private:
             const UserAnswer a = decide(QStringLiteral("plan"),
                                         QJsonObject{{"text", r.text}, {"steps", QJsonArray::fromStringList(steps)}});
             if (token_->cancelled()) {
-                endText_ = QStringLiteral("Cancelled.");
+                markCancelled();
                 return std::nullopt;
             }
             if (a.cancelled || a.text == QLatin1String("cancel")) {
@@ -445,7 +489,7 @@ private:
         spec.silent = false;
         const SubagentOutcome sub = runSubagent(*ctx_, spec, token_);
         if (sub.status == QLatin1String("aborted") || token_->cancelled()) {
-            endText_ = QStringLiteral("Cancelled.");
+            markCancelled();
             return;
         }
         if (sub.status == QLatin1String("error")) {
@@ -511,7 +555,7 @@ private:
                                       {"description", p.description}});
         const UserAnswer a = decide(QStringLiteral("save"), QJsonObject{{"patches", detail}});
         if (a.cancelled || token_->cancelled()) {
-            endText_ = QStringLiteral("Cancelled.");
+            markCancelled();
             return;
         }
         if (a.text == QLatin1String("save")) {
@@ -569,7 +613,7 @@ private:
         enterPhase(QStringLiteral("document"), false, QStringLiteral("Exploration complete. Writing research notes..."));
         const Reply doc = send(fill(promptFile("research/document.md"), {{"knowledge_summary", kb->summary()}}), kDocumentTurns);
         if (doc.end == End::Cancelled) {
-            endText_ = QStringLiteral("Cancelled.");
+            markCancelled();
             return;
         }
 
@@ -620,6 +664,7 @@ private:
     std::shared_ptr<TurnWatch> watch_ = std::make_shared<TurnWatch>();
     std::shared_ptr<CancelToken> token_;
     bool first_ = true;
+    bool cancelled_ = false;
     QString endText_;
 };
 

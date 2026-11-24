@@ -1,7 +1,8 @@
 #pragma once
 // /plan, /explore, /modify and /research: one busy job on the chat's session
 // worker that sends prompts in sequence, gates tools by phase (ChatContext::setPhase), adds the mode-only tools
-// between prompts (set_host_tools) and asks the user through ChatUi::askDecision.
+// between prompts (set_host_tools) and asks the user through ChatUi::askDecision. A cancelled mode leaves the tools
+// it offered until the next prompt ends; they answer that nothing was recorded.
 #include <QString>
 
 namespace rk {

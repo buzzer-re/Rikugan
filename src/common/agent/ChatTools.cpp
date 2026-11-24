@@ -171,6 +171,7 @@ ToolResult closeDatabase(ToolCall& call) {
 ToolResult explorationReport(ToolCall& call) {
     ChatContext& chat = chatOf(call);
     if (!chat.mode) return ToolResult::error(QStringLiteral("Error: exploration_report is only available during /explore, /modify and /research."));
+    if (!chat.mode->cancelledNotice.isEmpty()) return ToolResult::ok(chat.mode->cancelledNotice);
     Finding f;
     f.category = call.has("category") ? call.str("category") : QStringLiteral("general");
     if (call.has("address")) {
@@ -211,6 +212,7 @@ ToolResult explorationReport(ToolCall& call) {
 
 ToolResult researchNote(ToolCall& call) {
     ChatContext& chat = chatOf(call);
+    if (chat.mode && !chat.mode->cancelledNotice.isEmpty()) return ToolResult::ok(chat.mode->cancelledNotice);
     if (!chat.mode || chat.mode->notesDir.isEmpty())
         return ToolResult::error(QStringLiteral("Error: research_note is only available during /research."));
     const QString content = call.str("content");

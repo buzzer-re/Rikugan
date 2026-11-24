@@ -58,6 +58,9 @@ public:
 
     QString notesDir;  // research: <binary dir>/notes
     QString userGoal;  // set before the mode starts
+    // A cancelled mode: its tools stay callable until the next prompt ends and answer this instead (set before the
+    // state is shared).
+    QString cancelledNotice;
 
 private:
     mutable std::mutex mu_;

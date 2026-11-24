@@ -273,6 +273,48 @@ private Q_SLOTS:
         QCOMPARE(o.ofType(QStringLiteral("rikugan_mode_phase")).last().value(QStringLiteral("text")).toString(),
                  QStringLiteral("0 patch(es) saved."));
     }
+
+    // Stop at /modify's plan card (exploration_report is offered then), then "continue": the model's call is answered
+    // harmlessly, nothing is recorded, and the tool goes away once that prompt ends
+    void cancelledModeToolsAnswerHarmlessly() {
+        QList<QJsonObject> frames;
+        bool finished = false;
+        auto chat = std::make_unique<rk::ChatSession>(db, db->chats->create());
+        rk::ChatSession* c = chat.get();
+        const std::shared_ptr<rk::ChatContext> ctx = c->context();
+        QObject::connect(c, &rk::ChatSession::frame, [&frames](const QJsonObject& f) { frames << f; });
+        QObject::connect(c, &rk::ChatSession::decisionRequested, [c](int, const QString&, const QJsonObject&) { c->stop(); });
+        QObject::connect(c, &rk::ChatSession::promptFinished, [&finished](const QString&, const QString&, const QString&) { finished = true; });
+        rk::ModeDriver::start(
+            *c, rk::Mode::Modify,
+            QStringLiteral(R"(calls:[["exploration_report",{"category":"function_purpose","address":4198400,)"
+                           R"("function_name":"check_key","summary":"pl\u0061n:1. nop the check","relevance":"high"}],)"
+                           R"(["exploration_report",{"category":"hypothesis","summary":"the jz decides","relevance":"high"}]])"));
+        QVERIFY(c->busy());
+        QVERIFY(rktest::waitFor([c] { return !c->busy(); }, 60000));
+        const QString notice =
+            QStringLiteral("The /modify run was cancelled; nothing recorded. Ask the user to run /modify again to continue.");
+        QVERIFY(ctx->toolShown(QStringLiteral("exploration_report")));
+        QVERIFY(ctx->mode);
+        QCOMPARE(ctx->mode->cancelledNotice, notice);
+
+        frames.clear();
+        c->sendPrompt(QStringLiteral(R"(continue calls:[["exploration_report",{"category":"general","summary":"after the cancel"}]])"));
+        QVERIFY(rktest::waitFor([&finished] { return finished; }, 60000));
+        int ends = 0;
+        for (const QJsonObject& f : frames) {
+            const QString type = f.value(QStringLiteral("type")).toString();
+            QVERIFY(type != QLatin1String("rikugan_finding"));
+            if (type != QLatin1String("tool_execution_end")) continue;
+            ++ends;
+            QVERIFY(!f.value(QStringLiteral("isError")).toBool());
+            const QString text = f.value(QStringLiteral("result")).toObject().value(QStringLiteral("content")).toArray()
+                                     .at(0).toObject().value(QStringLiteral("text")).toString();
+            QVERIFY2(text.contains(notice), qPrintable(text));
+        }
+        QCOMPARE(ends, 1);
+        QVERIFY(rktest::waitFor([&ctx] { return !ctx->toolShown(QStringLiteral("exploration_report")) && !ctx->mode; }, 10000));
+    }
 };
 RK_TEST(ModesTest)
 
