@@ -291,6 +291,7 @@ void TranscriptModel::flushPending() {
 void TranscriptModel::toggleExpanded(int row) {
     if (row < 0 || row >= items_.size()) return;
     items_[row].expanded = !items_[row].expanded;
+    items_[row].userToggled = true;
     touch(row);
 }
 
@@ -335,6 +336,7 @@ quint64 TranscriptModel::textItem(ItemKind kind, qint64 now) {
     t.kind = kind;
     t.depth = 1;
     t.streaming = true;
+    t.expanded = kind == ItemKind::Thinking;  // open while it streams
     t.timeMs = now;
     const int row = append(std::move(t));
     cur = items_[row].id;
@@ -378,12 +380,17 @@ void TranscriptModel::revealAll(quint64 id) {
     if (backlog_.isEmpty()) reveal_.stop();
 }
 
+void TranscriptModel::foldThought(TranscriptItem& t) {
+    if (!t.endMs) t.endMs = nowMs();
+    if (!t.userToggled) t.expanded = false;
+}
+
 void TranscriptModel::finishStreaming() {
     revealAll();
     for (quint64* cur : {&text_, &thinking_}) {
         if (TranscriptItem* t = itemById(*cur)) {
             t->streaming = false;
-            if (t->kind == ItemKind::Thinking && !t->endMs) t->endMs = nowMs();
+            if (t->kind == ItemKind::Thinking) foldThought(*t);
             computeChips(*t);
             touch(rowOfId(*cur));
         }
@@ -763,7 +770,7 @@ void TranscriptModel::onMessageUpdate(const QJsonObject& f) {
         revealAll(thinking_);
         if (TranscriptItem* it = itemById(thinking_)) {
             it->streaming = false;
-            if (!it->endMs) it->endMs = nowMs();
+            foldThought(*it);
             touch(rowOfId(thinking_));
         }
         thinking_ = 0;

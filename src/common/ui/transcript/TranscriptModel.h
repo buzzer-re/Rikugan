@@ -54,7 +54,9 @@ struct TranscriptItem {
     QString result, diff, code;
     QJsonArray webSources;  // [{title, url, snippet}]
     qint64 startMs = 0, endMs = 0;
+    // a thought is open while it streams and folds when it ends, unless the user opened or closed it meanwhile
     bool expanded = false;
+    bool userToggled = false;
     // consecutive calls of one tool: the first carries the count and whether the group is open, the others its id
     int groupCount = 0;
     quint64 groupHead = 0;
@@ -142,6 +144,8 @@ private:
     void onSubagentEvent(const QJsonObject& f);
     void refreshAgents();
     void finishStreaming();
+    // a thought that stopped streaming: its end time, and folded unless the user toggled it
+    void foldThought(TranscriptItem& t);
     void ensureStep(qint64 now);
     quint64 textItem(ItemKind kind, qint64 now);
     void addNotice(const QString& text, bool error = false);

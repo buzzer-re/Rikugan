@@ -674,7 +674,7 @@ private:
             break;
         case ItemKind::Thinking: {
             l.header = QRect(L, 0, W, rowH);
-            if (it.expanded || it.streaming) {
+            if (it.expanded) {
                 l.doc = withDoc(L + 12, rowH + 2, W - 12);
                 l.height = l.doc.bottom() + 6;
             } else {
@@ -931,7 +931,7 @@ private:
             return;
         }
         case ItemKind::Thinking: {
-            const bool open = it.expanded || it.streaming;
+            const bool open = it.expanded;
             p->setFont(t.uiSmall);
             p->setPen(t.accent);
             const QString caret = open ? QStringLiteral("\u25BE") : QStringLiteral("\u25B8");

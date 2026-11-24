@@ -267,6 +267,38 @@ private Q_SLOTS:
         m.applyFrame(QJsonObject{{"type", "notice"}, {"message", "hello"}});
         QCOMPARE(after.count(), 1);
     }
+
+    // A thought is open while it streams and folds when it ends; one the user folded or opened while it streamed keeps
+    // the user's choice.
+    void streamingThoughtFoldsUnlessToggled() {
+        TranscriptModel m;
+        m.applyFrame(message("message_start", "assistant"));
+        m.applyFrame(delta("thinking_delta", "first"));
+        auto thought = [&](int nth) -> const TranscriptItem& {
+            int seen = 0;
+            for (int i = 0; i < m.rowCount(); ++i)
+                if (m.at(i).kind == ItemKind::Thinking && seen++ == nth) return m.at(i);
+            return m.at(0);
+        };
+        QCOMPARE(thought(0).kind, ItemKind::Thinking);
+        QVERIFY(thought(0).expanded);
+        m.applyFrame(QJsonObject{{"type", "message_update"}, {"assistantMessageEvent", QJsonObject{{"type", "thinking_end"}}}});
+        QVERIFY(!thought(0).streaming);
+        QVERIFY(!thought(0).expanded);
+
+        m.applyFrame(message("message_start", "assistant"));
+        m.applyFrame(delta("thinking_delta", "second"));
+        int row = -1;
+        for (int i = 0; i < m.rowCount(); ++i)
+            if (m.at(i).kind == ItemKind::Thinking) row = i;
+        QVERIFY(m.at(row).streaming && m.at(row).expanded);
+        m.toggleExpanded(row);  // folded while it streams
+        QVERIFY(!m.at(row).expanded);
+        m.applyFrame(QJsonObject{{"type", "turn_end"}});
+        QVERIFY(!m.at(row).expanded);
+        m.toggleExpanded(row);
+        QVERIFY(m.at(row).expanded);
+    }
 };
 
 RK_TEST(TranscriptModelTest)
