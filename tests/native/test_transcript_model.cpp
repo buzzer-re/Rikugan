@@ -248,14 +248,23 @@ private Q_SLOTS:
                         {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "Renamed sub_401000 to main"}}}},
                         {"details", QJsonObject{{"rikugan", QJsonObject{{"mutation", QJsonObject{{"description", "rename sub_401000 → main"},
                                                                                                  {"reversible", true}}}}}}}},
-            QJsonObject{{"role", "assistant"}, {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "Done."}}}}}};
+            QJsonObject{{"role", "assistant"}, {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "Done."}}}}},
+            // omc's own injections replay as user turns: none is a line the user typed
+            QJsonObject{{"role", "user"}, {"sourceRole", "custom"}, {"customType", "goal-mode-context"}, {"content", "<goal_context>x</goal_context>"}},
+            QJsonObject{{"role", "user"}, {"sourceRole", "custom"}, {"synthetic", true}, {"content", "<system-notice>job done</system-notice>"}},
+            QJsonObject{{"role", "user"}, {"sourceRole", "bashExecution"}, {"content", "frame= 27 fps=0.0"}},
+            QJsonObject{{"role", "developer"}, {"content", "image notice"}},
+            // a /skill invocation shows what was typed, not the expanded skill
+            QJsonObject{{"role", "user"}, {"sourceRole", "custom"}, {"customType", "skill-prompt"},
+                        {"details", QJsonObject{{"prompt", "/skill:vuln-audit main"}}}, {"content", "<skill>long body</skill>"}}};
         QSignalSpy reset(&m, &QAbstractItemModel::modelReset);
         QSignalSpy inserted(&m, &QAbstractItemModel::rowsInserted);
         m.applyTranscript(messages);
         QCOMPARE(reset.count(), 1);
         QCOMPARE(inserted.count(), 0);
         QCOMPARE(kinds(m), (QList<ItemKind>{ItemKind::User, ItemKind::Step, ItemKind::Thinking, ItemKind::Tool, ItemKind::Step,
-                                            ItemKind::Text}));
+                                            ItemKind::Text, ItemKind::User}));
+        QCOMPARE(m.at(6).text, QString("/skill:vuln-audit main"));
         const TranscriptItem& tool = m.at(3);
         QCOMPARE(tool.status, ToolStatus::Done);
         QCOMPARE(tool.label, QString("0x401000 \u2192 main"));

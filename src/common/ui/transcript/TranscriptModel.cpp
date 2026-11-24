@@ -43,6 +43,28 @@ QString contentText(const QJsonValue& content) {
 
 QString userText(const QJsonObject& m) { return stripContextPrefix(contentText(m.value(QLatin1String("content")))); }
 
+// What a user-role message shows as the user's line, or an empty string when the user never typed it. omc replays
+// its own injections as user turns: custom messages (goal and todo context, background job results, reminders),
+// shell and hook output, file mentions (sourceRole), turns marked synthetic or written by the agent. A /skill
+// invocation replays as its expanded prompt: the line is what the user typed (details.prompt).
+QString typedUserText(const QJsonObject& m) {
+    if (str(m, "customType") == QLatin1String("skill-prompt"))
+        return m.value(QLatin1String("details")).toObject().value(QLatin1String("prompt")).toString();
+    if (!str(m, "sourceRole").isEmpty() || m.value(QLatin1String("synthetic")).toBool() ||
+        str(m, "attribution") == QLatin1String("agent"))
+        return {};
+    QString text = userText(m);
+    if (hiddenUserText(text)) return {};
+    int images = 0;
+    for (const QJsonValue& v : m.value(QLatin1String("content")).toArray())
+        if (str(v.toObject(), "type") == QLatin1String("image")) ++images;
+    if (images > 0) {
+        const QString note = images == 1 ? QStringLiteral("[1 image]") : QStringLiteral("[%1 images]").arg(images);
+        text = text.trimmed().isEmpty() ? note : text + QLatin1Char('\n') + note;
+    }
+    return text;
+}
+
 // The argument a tool row shows next to its name.
 QString mainArg(const QJsonObject& a) {
     for (const char* k : {"path", "command", "pattern", "query", "address", "function_name", "name", "type_name", "url",
@@ -721,9 +743,9 @@ void TranscriptModel::applyFrame(const QJsonObject& f) {
 void TranscriptModel::onMessageStart(const QJsonObject& m) {
     const QString role = str(m, "role");
     if (role == QLatin1String("user")) {
-        const QString text = userText(m);
+        const QString text = typedUserText(m);
         // commands are shown when typed (addLocalUser); internal prompts never
-        if (text.trimmed().isEmpty() || hiddenUserText(text) || text.trimmed().startsWith(QLatin1Char('/'))) return;
+        if (text.trimmed().isEmpty() || text.trimmed().startsWith(QLatin1Char('/'))) return;
         finishStreaming();
         step_ = 0;
         TranscriptItem u;
@@ -1175,8 +1197,8 @@ void TranscriptModel::applyTranscript(const QJsonArray& messages) {
         const QJsonObject m = v.toObject();
         const QString role = str(m, "role");
         if (role == QLatin1String("user")) {
-            const QString text = userText(m);
-            if (text.trimmed().isEmpty() || hiddenUserText(text)) continue;
+            const QString text = typedUserText(m);
+            if (text.trimmed().isEmpty()) continue;
             step_ = 0;
             TranscriptItem u;
             u.kind = ItemKind::User;
