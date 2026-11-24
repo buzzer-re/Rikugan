@@ -2,6 +2,7 @@
 
 #include <QCheckBox>
 #include <QEvent>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QLabel>
@@ -10,6 +11,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QStyle>
+#include <QStyleOptionButton>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -24,6 +26,33 @@ namespace {
 QString str(const QJsonObject& o, const char* k) { return o.value(QLatin1String(k)).toString(); }
 
 QString css(const QColor& c) { return c.name(QColor::HexArgb); }
+
+// A choice the model wrote: a row of its own, as wide as the card and elided to it (the full text in the tooltip),
+// so a long option in the narrow sidebar is neither cut off nor widens the card.
+class OptionButton : public QPushButton {
+public:
+    OptionButton(const QString& text, QWidget* parent) : QPushButton(parent), full_(text.simplified()) {
+        setToolTip(text);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        setText(escaped(full_));
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* e) override {
+        QPushButton::resizeEvent(e);
+        QStyleOptionButton opt;
+        initStyleOption(&opt);
+        const int room = style()->subElementRect(QStyle::SE_PushButtonContents, &opt, this).width();
+        const QString shown = escaped(fontMetrics().elidedText(full_, Qt::ElideRight, room));
+        if (shown != text()) setText(shown);
+    }
+
+private:
+    // a lone '&' would be taken as a mnemonic and vanish
+    static QString escaped(QString s) { return s.replace(QLatin1Char('&'), QStringLiteral("&&")); }
+
+    QString full_;
+};
 
 // ---- disk / shell permission -------------------------------------------------------------------------------
 
@@ -103,7 +132,7 @@ public:
         if (!options.isEmpty()) {
             for (const QJsonValue& v : options) {
                 const QString o = v.toString();
-                connect(addButton(o, false), &QPushButton::clicked, this, [answer, o] { answer(o); });
+                connect(addOption(o), &QPushButton::clicked, this, [answer, o] { answer(o); });
             }
             return;
         }
@@ -139,7 +168,7 @@ public:
             for (const QJsonValue& v : f.value(QLatin1String("options")).toArray()) {
                 const QString o = v.isString() ? v.toString() : str(v.toObject(), "label");
                 const QString value = v.isString() ? v.toString() : str(v.toObject(), "value").isEmpty() ? o : str(v.toObject(), "value");
-                connect(addButton(o), &QPushButton::clicked, this, [send, value, o] { send(QJsonObject{{"value", value}}, o); });
+                connect(addOption(o), &QPushButton::clicked, this, [send, value, o] { send(QJsonObject{{"value", value}}, o); });
             }
         } else if (method == QLatin1String("confirm")) {
             connect(addButton(tr("Yes"), true), &QPushButton::clicked, this, [send] { send(QJsonObject{{"confirmed", true}}, tr("Yes")); });
@@ -392,7 +421,11 @@ void TranscriptCard::focusFirst() {
         q->first_->setFocus();
         return;
     }
-    if (buttons_ && buttons_->count() && buttons_->itemAt(0)->widget()) buttons_->itemAt(0)->widget()->setFocus();
+    for (QBoxLayout* l : {static_cast<QBoxLayout*>(options_), static_cast<QBoxLayout*>(buttons_)})
+        if (l && l->count() && l->itemAt(0)->widget()) {
+            l->itemAt(0)->widget()->setFocus();
+            return;
+        }
 }
 
 bool TranscriptCard::event(QEvent* e) {
@@ -419,6 +452,19 @@ QPushButton* TranscriptCard::addButton(const QString& text, bool primary, bool d
     if (danger) b->setProperty("rkDanger", true);
     if (!primary) b->setProperty("rkOutline", true);
     row->insertWidget(row->count() - 1, b);
+    return b;
+}
+
+QPushButton* TranscriptCard::addOption(const QString& text) {
+    if (!options_) {
+        options_ = new QVBoxLayout;
+        options_->setSpacing(4);
+        body_->addLayout(options_);
+    }
+    auto* b = new OptionButton(text, this);
+    b->setCursor(Qt::PointingHandCursor);
+    b->setProperty("rkOutline", true);
+    options_->addWidget(b);
     return b;
 }
 

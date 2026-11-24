@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QLineEdit>
 #include <QLabel>
+#include <QLayout>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -465,6 +466,49 @@ private Q_SLOTS:
     }
 };
 RK_TEST(PlanCardTest)
+
+// The model's options on a question card: one per row, as wide as the card, elided to it with the full text as the
+// tooltip; the answer is the full text.
+class QuestionCardTest : public QObject {
+    Q_OBJECT
+private Q_SLOTS:
+    void longOptionsStackOnePerRow() {
+        const QString longOption =
+            QStringLiteral("Rename every function in the networking module after its role, then comment each handler");
+        TranscriptItem item;
+        item.kind = ItemKind::Question;
+        item.requestId = 1;
+        item.payload = QJsonObject{{"question", "Which one?"}, {"options", QJsonArray{"Short", longOption, "Third"}}};
+        std::unique_ptr<TranscriptCard> card(TranscriptCard::create(item, nullptr, nullptr));
+        QVERIFY(card);
+        card->resize(240, card->heightFor(240));
+        card->show();
+        card->layout()->activate();
+        QCoreApplication::processEvents();
+        QCOMPARE(card->width(), 240);
+
+        const QList<QPushButton*> buttons = card->findChildren<QPushButton*>();
+        QCOMPARE(buttons.size(), 3);
+        QVERIFY2(buttons[0]->width() >= card->width() - 30, qPrintable(QString::number(buttons[0]->width())));
+        for (int i = 1; i < buttons.size(); ++i) {
+            QCOMPARE(buttons[i]->x(), buttons[0]->x());
+            QCOMPARE(buttons[i]->width(), buttons[0]->width());
+            QVERIFY(buttons[i]->y() > buttons[i - 1]->geometry().bottom());
+        }
+        QVERIFY(buttons[2]->geometry().bottom() < card->height());
+        QCOMPARE(buttons[0]->text(), QStringLiteral("Short"));
+        QPushButton* option = buttons[1];
+        QCOMPARE(option->toolTip(), longOption);
+        QVERIFY2(option->text().endsWith(QChar(0x2026)), qPrintable(option->text()));
+        QVERIFY(option->fontMetrics().horizontalAdvance(option->text()) < option->width());
+
+        QString answer;
+        QObject::connect(card.get(), &TranscriptCard::answered, [&](const QString& a) { answer = a; });
+        option->click();
+        QCOMPARE(answer, longOption);
+    }
+};
+RK_TEST(QuestionCardTest)
 
 QJsonArray todoPhases(const char* first, const char* second) {
     return QJsonArray{QJsonObject{{"name", "Work"},

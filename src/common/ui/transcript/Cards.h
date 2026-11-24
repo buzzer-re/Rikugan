@@ -42,6 +42,8 @@ protected:
     QVBoxLayout* body() const { return body_; }
     QHBoxLayout* buttonRow();
     QPushButton* addButton(const QString& text, bool primary = false, bool danger = false);
+    // A model-supplied choice: one per row, full width, elided (confirm-style buttons stay in buttonRow()).
+    QPushButton* addOption(const QString& text);
     void addText(const QString& text, bool markdown = false, bool muted = false);
     void addCode(const QString& code, const QString& language, int maxLines = 14);
     void finish(const QString& resolution);  // disables the card and emits answered once
@@ -52,6 +54,7 @@ private:
     void restyle();
     QVBoxLayout* body_ = nullptr;
     QHBoxLayout* buttons_ = nullptr;
+    QVBoxLayout* options_ = nullptr;
     bool done_ = false;
 };
 
