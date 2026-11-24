@@ -1,6 +1,6 @@
 #pragma once
 // The panel's top line: the chat title (opens the chat switcher), the host's MCP server switch (Binary Ninja), the
-// command palette, a new chat and the overflow menu (fork, rename, export, delete, undo, bulk renamer, agents,
+// full-window button (Binary Ninja's sidebar), the command palette, a new chat and the overflow menu (fork, rename, export, delete, undo, bulk renamer, agents,
 // settings).
 #include <QWidget>
 
@@ -21,6 +21,8 @@ public:
     void setUndoAvailable(bool available);
     // The host MCP switch: shown only on a host with an MCP server.
     void setHostMcp(bool shown, bool on, bool busy, const QString& tooltip);
+    // The button that opens the panel in a window-sized tab: shown only where the host offers one.
+    void setFullWindowShown(bool shown);
     QWidget* titleButton() const;
 
 Q_SIGNALS:
@@ -37,6 +39,7 @@ Q_SIGNALS:
     void renamerRequested();
     void settingsRequested();
     void hostMcpClicked();
+    void fullWindowRequested();
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -50,6 +53,7 @@ private:
     QToolButton* mcp_ = nullptr;
     bool mcpOn_ = false;
     bool mcpBusy_ = false;
+    QToolButton* full_ = nullptr;
     QToolButton* palette_ = nullptr;
     QToolButton* add_ = nullptr;
     QToolButton* more_ = nullptr;

@@ -33,6 +33,12 @@ ConsoleHeader::ConsoleHeader(QWidget* parent) : QWidget(parent) {
     mcp_->setCursor(Qt::PointingHandCursor);
     mcp_->hide();
     row->addWidget(mcp_);
+    full_ = new QToolButton(this);
+    full_->setIconSize(QSize(12, 12));
+    full_->setToolTip(tr("Open in full window"));
+    full_->setCursor(Qt::PointingHandCursor);
+    full_->hide();
+    row->addWidget(full_);
     palette_ = new QToolButton(this);
     palette_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     palette_->setIconSize(QSize(12, 12));
@@ -69,6 +75,7 @@ ConsoleHeader::ConsoleHeader(QWidget* parent) : QWidget(parent) {
     connect(palette_, &QToolButton::clicked, this, &ConsoleHeader::paletteRequested);
     connect(add_, &QToolButton::clicked, this, &ConsoleHeader::newChatRequested);
     connect(mcp_, &QToolButton::clicked, this, &ConsoleHeader::hostMcpClicked);
+    connect(full_, &QToolButton::clicked, this, &ConsoleHeader::fullWindowRequested);
     connect(&ThemeNotifier::instance(), &ThemeNotifier::changed, this, &ConsoleHeader::restyle);
     restyle();
     setTitle(tr("New chat"));
@@ -94,7 +101,7 @@ void ConsoleHeader::fit() {
     auto needed = [this] {
         const QMargins m = layout()->contentsMargins();
         int w = m.left() + m.right() + title_->sizeHint().width();
-        for (QToolButton* b : {mcp_, palette_, add_, more_})
+        for (QToolButton* b : {mcp_, full_, palette_, add_, more_})
             if (!b->isHidden()) w += b->sizeHint().width() + layout()->spacing();
         return w;
     };
@@ -120,6 +127,11 @@ void ConsoleHeader::setHostMcp(bool shown, bool on, bool busy, const QString& to
     fit();
 }
 
+void ConsoleHeader::setFullWindowShown(bool shown) {
+    full_->setVisible(shown);
+    fit();
+}
+
 QWidget* ConsoleHeader::titleButton() const { return title_; }
 
 void ConsoleHeader::restyle() {
@@ -130,6 +142,7 @@ void ConsoleHeader::restyle() {
     title_->setIcon(kindIcon(titleIcon_, t.fg));
     palette_->setFont(t.uiSmall);
     palette_->setIcon(kindIcon(QStringLiteral("search"), t.fg2));
+    full_->setIcon(kindIcon(QStringLiteral("expand"), t.fg2));
     mcp_->setFont(t.uiSmall);
     setStyleSheet(QStringLiteral("#rk_header { background: %1; border-bottom: 1px solid %2; }"
                                  "#rk_header QToolButton { color: %3; border: none; border-radius: 5px; padding: 3px 7px; }"

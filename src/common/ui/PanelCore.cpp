@@ -1140,6 +1140,12 @@ void PanelCore::addToBulkRenamer(const QList<quint64>& functionAddresses) {
 
 void PanelCore::showTools() { d->pages->setCurrentIndex(1); }
 
+void PanelCore::setFullWindowOpener(std::function<void()> open) {
+    QObject::disconnect(d->header, &ConsoleHeader::fullWindowRequested, this, nullptr);
+    d->header->setFullWindowShown(bool(open));
+    if (open) QObject::connect(d->header, &ConsoleHeader::fullWindowRequested, this, std::move(open));
+}
+
 void PanelCore::openSettings() {
     SettingsDialog dlg(this);
     QObject::connect(&dlg, &SettingsDialog::settingsChanged, this, [this] {

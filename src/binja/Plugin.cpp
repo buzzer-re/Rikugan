@@ -121,8 +121,11 @@ bool openInBinja(QWidget* anchor, const QString& file, const QString& dbId) {
     return ui->openFilename(file);
 }
 
-// A panel for `bv`'s database inside `parent` (the sidebar, a full-window tab, a pane).
-rk::PanelCore* newPanel(QWidget* parent, const BinaryViewRef& bv) {
+void openFullWindow(QWidget* from, const std::shared_ptr<rk::DbContext>& db);
+
+// A panel for `bv`'s database inside `parent` (the sidebar, a full-window tab, a pane). `fullWindowButton`: its
+// header offers the full-window tab (not in that tab itself).
+rk::PanelCore* newPanel(QWidget* parent, const BinaryViewRef& bv, bool fullWindowButton = true) {
     auto* layout = new QVBoxLayout(parent);
     layout->setContentsMargins(0, 0, 0, 0);
     auto* panel = new rk::PanelCore(parent);
@@ -130,6 +133,12 @@ rk::PanelCore* newPanel(QWidget* parent, const BinaryViewRef& bv) {
     panel->setFileOpener(QStringLiteral("binja"),
                          [parent](const QString& file, const QString& dbId) { return openInBinja(parent, file, dbId); });
     if (auto db = dbFor(bv)) panel->setDatabase(db);
+    if (fullWindowButton) {
+        QPointer<rk::PanelCore> keep = panel;
+        panel->setFullWindowOpener([keep] {
+            if (keep) openFullWindow(keep, keep->database());
+        });
+    }
     g_panels.emplace_back(panel);
     return panel;
 }
@@ -226,12 +235,26 @@ void runAction(const rk::ActionDef& def, BinaryView* bv, uint64_t addr) {
     });
 }
 
-// The panel in a tab of its own, as large as Binary Ninja's window, for the database shown now.
-void openFullWindow(BinaryViewRef bv) {
-    UIContext* ui = UIContext::activeContext();
+constexpr const char* kFullWindowTab = "rikugan_full_window";
+
+// The panel in a tab of its own, as large as Binary Ninja's window, for `db` (the one `from`'s window shows). A tab
+// already showing that database comes to the front.
+void openFullWindow(QWidget* from, const std::shared_ptr<rk::DbContext>& db) {
+    UIContext* ui = from ? UIContext::contextForWidget(from) : nullptr;
+    if (!ui) ui = UIContext::activeContext();
     if (!ui) return;
+    for (QWidget* tab : ui->getTabs()) {
+        if (tab->objectName() != QLatin1String(kFullWindowTab)) continue;
+        auto* panel = tab->findChild<rk::PanelCore*>();
+        if (panel && panel->database() == db) {
+            ui->activateTab(tab);
+            return;
+        }
+    }
     auto* host = new QWidget;
-    newPanel(host, bv);
+    host->setObjectName(QLatin1String(kFullWindowTab));
+    rk::PanelCore* panel = newPanel(host, nullptr, false);
+    if (db) panel->setDatabase(db);
     ui->createTabForWidget(QString::fromLatin1(kSidebarName), host);
 }
 
@@ -241,7 +264,7 @@ void registerCommands() {
     PluginCommand::Register("Rikugan\\Open in Full Window", "Open Rikugan in a tab of its own, as large as the window",
                             [](BinaryView* bv) {
                                 BinaryViewRef keep = bv;
-                                ExecuteOnMainThread([keep] { openFullWindow(keep); });
+                                ExecuteOnMainThread([keep] { openFullWindow(nullptr, dbFor(keep)); });
                             });
     PluginCommand::Register("Rikugan\\Bulk Renamer", "Open Rikugan's bulk renamer", [](BinaryView*) {
         ExecuteOnMainThread([] {

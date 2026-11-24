@@ -36,6 +36,8 @@ public:
     void addToBulkRenamer(const QList<quint64>& functionAddresses);
     void showTools();
     void openSettings();
+    // The header's full-window button runs `open` (Binary Ninja's sidebar and panes); unset: no button.
+    void setFullWindowOpener(std::function<void()> open);
 
 protected:
     void showEvent(QShowEvent* event) override;

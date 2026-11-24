@@ -154,6 +154,13 @@ void paintKind(QPainter& p, const QString& kind, const QColor& c, int s) {
         p.drawLine(QPointF(4.5, m - 2), QPointF(7, m));
         p.drawLine(QPointF(7, m), QPointF(4.5, m + 2));
         p.drawLine(QPointF(8.5, m + 2.5), QPointF(s - 4.5, m + 2.5));
+    } else if (kind == QLatin1String("expand")) {  // two arrows out to the corners: a larger view
+        p.drawLine(QPointF(m + 1, m - 1), QPointF(s - 2.5, 2.5));
+        p.drawLine(QPointF(s - 6.5, 2.5), QPointF(s - 2.5, 2.5));
+        p.drawLine(QPointF(s - 2.5, 2.5), QPointF(s - 2.5, 6.5));
+        p.drawLine(QPointF(m - 1, m + 1), QPointF(2.5, s - 2.5));
+        p.drawLine(QPointF(2.5, s - 6.5), QPointF(2.5, s - 2.5));
+        p.drawLine(QPointF(2.5, s - 2.5), QPointF(6.5, s - 2.5));
     } else if (kind == QLatin1String("search")) {  // a magnifier
         p.drawEllipse(QPointF(m - 1.2, m - 1.2), m - 4, m - 4);
         p.drawLine(QPointF(m + 2, m + 2), QPointF(s - 2.5, s - 2.5));
