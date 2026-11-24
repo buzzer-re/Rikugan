@@ -1,6 +1,8 @@
 // Binary Ninja entry points: the Rikugan sidebar, view/address tracking, context-menu commands.
+#include <functional>
 #include <map>
 #include <memory>
+#include <vector>
 
 #include <QImage>
 #include <QPointer>
@@ -8,6 +10,7 @@
 
 #include <binaryninjaapi.h>
 #include <filecontext.h>
+#include <pane.h>
 #include <sidebar.h>
 #include <sidebarwidget.h>
 #include <theme.h>
@@ -70,7 +73,14 @@ void installCrashGuard() {
 
 // One DbContext per open file, created when the panel first shows it (UI thread only).
 std::map<BNFileMetadata*, std::shared_ptr<rk::DbContext>> g_dbs;
-QPointer<rk::PanelCore> g_panel;
+QPointer<rk::PanelCore> g_panel;  // the sidebar's panel: context-menu actions go there
+// every panel: the sidebar's, and the ones opened as a full-window tab or as a pane
+std::vector<QPointer<rk::PanelCore>> g_panels;
+
+void forEachPanel(const std::function<void(rk::PanelCore&)>& fn) {
+    std::erase_if(g_panels, [](const QPointer<rk::PanelCore>& p) { return p.isNull(); });
+    for (const QPointer<rk::PanelCore>& p : g_panels) fn(*p);
+}
 
 std::shared_ptr<rk::DbContext> dbFor(const BinaryViewRef& bv) {
     if (!bv) return nullptr;
@@ -89,7 +99,9 @@ rk::binja::BnHost* bnHost(const std::shared_ptr<rk::DbContext>& db) {
 void showLocation(const std::shared_ptr<rk::DbContext>& db, uint64_t offset) {
     if (!db) return;
     bnHost(db)->setCurrentLocation(offset);
-    if (g_panel && g_panel->database() == db) g_panel->setLocation(offset, db->host->currentFunctionLabel());
+    forEachPanel([&](rk::PanelCore& p) {
+        if (p.database() == db) p.setLocation(offset, db->host->currentFunctionLabel());
+    });
 }
 
 // The panel's "Open a binary…" and recent chats: a tab already showing that database comes to the front.
@@ -109,17 +121,24 @@ bool openInBinja(QWidget* anchor, const QString& file, const QString& dbId) {
     return ui->openFilename(file);
 }
 
+// A panel for `bv`'s database inside `parent` (the sidebar, a full-window tab, a pane).
+rk::PanelCore* newPanel(QWidget* parent, const BinaryViewRef& bv) {
+    auto* layout = new QVBoxLayout(parent);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* panel = new rk::PanelCore(parent);
+    layout->addWidget(panel);
+    panel->setFileOpener(QStringLiteral("binja"),
+                         [parent](const QString& file, const QString& dbId) { return openInBinja(parent, file, dbId); });
+    if (auto db = dbFor(bv)) panel->setDatabase(db);
+    g_panels.emplace_back(panel);
+    return panel;
+}
+
 class RikuganSidebarWidget : public SidebarWidget {
 public:
     RikuganSidebarWidget(ViewFrame* frame) : SidebarWidget(kSidebarName) {
-        auto* layout = new QVBoxLayout(this);
-        layout->setContentsMargins(0, 0, 0, 0);
-        panel_ = new rk::PanelCore(this);
-        layout->addWidget(panel_);
+        panel_ = newPanel(this, frame ? frame->getCurrentBinaryView() : nullptr);
         g_panel = panel_;
-        panel_->setFileOpener(QStringLiteral("binja"),
-                              [this](const QString& file, const QString& dbId) { return openInBinja(this, file, dbId); });
-        notifyViewChanged(frame);
     }
 
     void notifyViewChanged(ViewFrame* frame) override {
@@ -141,6 +160,13 @@ public:
     RikuganSidebarType()
         : SidebarWidgetType(QImage(QStringLiteral(":/rikugan/rikugan_icon_light.png")), QString::fromLatin1(kSidebarName)) {}
     SidebarWidget* createWidget(ViewFrame* frame, BinaryViewRef) override { return new RikuganSidebarWidget(frame); }
+    // "Open in pane": the panel beside the disassembly, as large as the user makes it
+    bool canUseAsPane(SplitPaneWidget*, BinaryViewRef) const override { return true; }
+    Pane* createPane(SplitPaneWidget*, BinaryViewRef data) override {
+        auto* host = new QWidget;
+        newPanel(host, data);
+        return new WidgetPane(host, QString::fromLatin1(kSidebarName));
+    }
     SidebarWidgetLocation defaultLocation() const override { return LeftContent; }
     SidebarContextSensitivity contextSensitivity() const override { return GlobalSidebarContext; }
 };
@@ -151,7 +177,9 @@ public:
         BNFileMetadata* key = file->getMetadata()->GetObject();
         auto it = g_dbs.find(key);
         if (it != g_dbs.end()) {
-            if (g_panel && g_panel->database() == it->second) g_panel->setDatabase(nullptr);
+            forEachPanel([&](rk::PanelCore& p) {
+                if (p.database() == it->second) p.setDatabase(nullptr);
+            });
             rk::ui::ChatHub::instance().closeDatabase(it->second->dbId);  // its chats end with the file
             g_dbs.erase(it);
         }
@@ -198,9 +226,23 @@ void runAction(const rk::ActionDef& def, BinaryView* bv, uint64_t addr) {
     });
 }
 
+// The panel in a tab of its own, as large as Binary Ninja's window, for the database shown now.
+void openFullWindow(BinaryViewRef bv) {
+    UIContext* ui = UIContext::activeContext();
+    if (!ui) return;
+    auto* host = new QWidget;
+    newPanel(host, bv);
+    ui->createTabForWidget(QString::fromLatin1(kSidebarName), host);
+}
+
 void registerCommands() {
     PluginCommand::Register("Rikugan\\Open Panel", "Open the Rikugan panel",
                             [](BinaryView*) { ExecuteOnMainThread([] { openPanel(); }); });
+    PluginCommand::Register("Rikugan\\Open in Full Window", "Open Rikugan in a tab of its own, as large as the window",
+                            [](BinaryView* bv) {
+                                BinaryViewRef keep = bv;
+                                ExecuteOnMainThread([keep] { openFullWindow(keep); });
+                            });
     PluginCommand::Register("Rikugan\\Bulk Renamer", "Open Rikugan's bulk renamer", [](BinaryView*) {
         ExecuteOnMainThread([] {
             if (rk::PanelCore* p = openPanel()) p->showTools();
