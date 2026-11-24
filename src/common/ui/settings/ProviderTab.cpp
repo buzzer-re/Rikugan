@@ -22,6 +22,7 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -149,6 +150,22 @@ ProviderTab::ProviderTab(const RikuganConfig& cfg, QWidget* parent)
     connModels_->setObjectName(QStringLiteral("connectionModelsEdit"));
     connModels_->setPlaceholderText(tr("Model ids the endpoint serves, comma separated"));
     form_->addRow(tr("Models:"), connModels_);
+    auto tokenSpin = [](const char* name, int max, const QString& unset, const QString& tip) {
+        auto* s = new QSpinBox;
+        s->setObjectName(QLatin1String(name));
+        s->setRange(0, max);
+        s->setSingleStep(1024);
+        s->setSpecialValueText(unset);  // shown at 0
+        s->setSuffix(tr(" tokens"));
+        s->setToolTip(tip);
+        return s;
+    };
+    connContext_ = tokenSpin("connectionContextSpin", 100'000'000, tr("Default (128000)"),
+                             tr("The context window of this endpoint's models."));
+    form_->addRow(tr("Context window:"), connContext_);
+    connMaxTokens_ = tokenSpin("connectionMaxTokensSpin", 10'000'000, tr("Default"),
+                               tr("The most tokens a reply may have. Default: 32000, or the context window when smaller."));
+    form_->addRow(tr("Max output:"), connMaxTokens_);
 
     auto* modelRow = new QHBoxLayout;
     model_ = new QComboBox;
@@ -279,6 +296,14 @@ ProviderTab::ProviderTab(const RikuganConfig& cfg, QWidget* parent)
         for (const QString& m : t.split(QLatin1Char(','), Qt::SkipEmptyParts))
             if (!m.trimmed().isEmpty()) customs_[i].models << m.trimmed();
         fillModelCombo();
+    });
+    connect(connContext_, &QSpinBox::valueChanged, this, [this](int v) {
+        if (filling_) return;
+        if (const int i = customIndex(currentProvider()); i >= 0) customs_[i].contextWindow = v;
+    });
+    connect(connMaxTokens_, &QSpinBox::valueChanged, this, [this](int v) {
+        if (filling_) return;
+        if (const int i = customIndex(currentProvider()); i >= 0) customs_[i].maxTokens = v;
     });
     connect(model_, &QComboBox::currentTextChanged, this, [this] {
         if (filling_) return;
@@ -500,6 +525,8 @@ void ProviderTab::updateConnectionRows() {
     form_->setRowVisible(apiBase_, custom);
     form_->setRowVisible(apiType_, custom);
     form_->setRowVisible(connModels_, custom);
+    form_->setRowVisible(connContext_, custom);
+    form_->setRowVisible(connMaxTokens_, custom);
     restartHint_->setVisible(custom);
     removeConn_->setEnabled(custom);
     saveKey_->setVisible(!custom);
@@ -510,6 +537,8 @@ void ProviderTab::updateConnectionRows() {
         if (apiType_->findText(e.api) < 0 && !e.api.isEmpty()) apiType_->addItem(e.api);
         apiType_->setCurrentText(e.api.isEmpty() ? connectionApis().first() : e.api);
         connModels_->setText(e.models.join(QStringLiteral(", ")));
+        connContext_->setValue(e.contextWindow);
+        connMaxTokens_->setValue(e.maxTokens);
         key_->setText(e.apiKey);
         key_->setPlaceholderText(tr("API key for this endpoint (leave empty for local servers)"));
     } else {

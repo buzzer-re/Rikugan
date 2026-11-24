@@ -18,7 +18,9 @@
 #include <QScrollArea>
 #include <QVBoxLayout>
 
+#include "common/agent/HostMcp.h"
 #include "common/config/Paths.h"
+#include "common/mcp/McpClient.h"
 #include "common/ui/settings/ServiceRpc.h"
 #include "common/util/Files.h"
 
@@ -209,7 +211,8 @@ private:
 
 }  // namespace
 
-McpTab::McpTab(QWidget* parent) : QWidget(parent), path_(paths::omcAgentDir() + QStringLiteral("/mcp.json")) {
+McpTab::McpTab(const RikuganConfig& cfg, QWidget* parent)
+    : QWidget(parent), path_(paths::omcAgentDir() + QStringLiteral("/mcp.json")) {
     auto* outer = new QVBoxLayout(this);
     auto* note = new QLabel(tr("Servers start with new chats."));
     note->setStyleSheet(QString::fromLatin1(settings::kHintStyle));
@@ -247,6 +250,22 @@ McpTab::McpTab(QWidget* parent) : QWidget(parent), path_(paths::omcAgentDir() + 
     where->setTextInteractionFlags(Qt::TextSelectableByMouse);
     gl->addWidget(where);
     layout->addWidget(group);
+
+    // the host's own server (Binary Ninja's), which HostMcpBar looks for: kept in config.json, not mcp.json
+    hostGroup_ = new QGroupBox(tr("%1's MCP Server").arg(HostMcp::instance().serverName()));
+    auto* hl = new QFormLayout(hostGroup_);
+    hostUrl_ = new QLineEdit(cfg.hostMcpUrl);
+    hostUrl_->setObjectName(QStringLiteral("hostMcpUrlEdit"));
+    hostUrl_->setPlaceholderText(QStringLiteral("http://127.0.0.1:24642/mcp"));
+    hl->addRow(tr("Address:"), hostUrl_);
+    auto* hostHint = new QLabel(tr("Empty: the address in %1's settings (ui.mcp.port, ui.mcp.endpoint). Set it when "
+                                   "the server listens somewhere else, such as on a port the system picks.")
+                                    .arg(HostMcp::instance().serverName()));
+    hostHint->setStyleSheet(QString::fromLatin1(settings::kHintStyle));
+    hostHint->setWordWrap(true);
+    hl->addRow(hostHint);
+    hostGroup_->setVisible(HostMcp::instance().supported());
+    layout->addWidget(hostGroup_);
     layout->addStretch();
     scroll->setWidget(container);
     outer->addWidget(scroll);
@@ -354,5 +373,15 @@ QString McpTab::save() {
     dirty_ = false;
     return {};
 }
+
+QString McpTab::validate() const {
+    const QString url = hostUrl_->text().trimmed();
+    QString err;
+    if (!url.isEmpty() && !McpEndpoint::parse(url, QString(), &err))
+        return tr("%1's MCP server address: %2").arg(HostMcp::instance().serverName(), err);
+    return {};
+}
+
+void McpTab::apply(RikuganConfig& c) const { c.hostMcpUrl = hostUrl_->text().trimmed(); }
 
 }  // namespace rk

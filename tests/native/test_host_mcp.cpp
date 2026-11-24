@@ -1,14 +1,15 @@
-// The host's own MCP server (Binary Ninja's): the client survives a server restart and reads streamed replies, the
-// server's tools replace Rikugan's analysis tools only while the user has them on, a tool that may change the
-// database is gated and recorded like a mutation, every call first selects the chat's database, and the panel
-// remembers the user's answer per database.
+// The host's own MCP server (Binary Ninja's): the client survives a server restart, reads streamed replies and
+// finishes a notification the server accepts without a length, the server's tools replace Rikugan's analysis tools
+// only while the user has them on (their manuals clipped), a tool that may change the database is gated and recorded
+// like a mutation, every call first selects the chat's database, and the panel remembers the user's answer per
+// database.
 #include <atomic>
 #include <thread>
 
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest>
-
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -33,6 +34,7 @@ inline void closeSocket(TestSocket s) { ::close(s); }
 #include "common/agent/DbContext.h"
 #include "common/agent/HostMcp.h"
 #include "common/agent/RecentSessions.h"
+#include "common/config/RikuganConfig.h"
 #include "common/mcp/McpClient.h"
 #include "common/tools/ToolDispatcher.h"
 #include "common/ui/console/HostMcpBar.h"
@@ -70,6 +72,7 @@ public:
         ::shutdown(fd_, SHUT_RDWR);
         closeSocket(fd_);
         thread_.join();
+        for (const TestSocket c : held_) closeSocket(c);
     }
 
     rk::McpEndpoint endpoint() const {
@@ -85,6 +88,8 @@ public:
         sessions_.clear();
     }
     void setStreamed(bool on) { streamed_ = on; }
+    // notifications get a bare "202 Accepted" (no length, not chunked) and the connection stays open
+    void setBareAccepted(bool on) { bareAccepted_ = on; }
     QList<Call> calls() {
         std::lock_guard<std::mutex> g(mu_);
         return calls_;
@@ -96,18 +101,19 @@ private:
         while (!stop_) {
             const TestSocket c = ::accept(fd_, nullptr, nullptr);
             if (c == kNoSocket) return;
-            handle(c);
-            closeSocket(c);
+            if (handle(c)) held_ << c;  // only this thread touches held_ until the destructor joined it
+            else closeSocket(c);
         }
     }
 
-    void handle(TestSocket c) {
+    // True when the connection is to stay open.
+    bool handle(TestSocket c) {
         QByteArray in;
         char buf[4096];
         qsizetype end = -1, length = 0;
         while (end < 0 || in.size() < end + 4 + length) {
             const auto n = ::recv(c, buf, int(sizeof buf), 0);
-            if (n <= 0) return;
+            if (n <= 0) return false;
             in.append(buf, n);
             if (end < 0 && (end = in.indexOf("\r\n\r\n")) >= 0) {
                 for (const QByteArray& line : in.left(end).split('\n'))
@@ -129,7 +135,7 @@ private:
                 sessions_ << sid;
             }
             reply(c, 200, {{"jsonrpc", "2.0"}, {"id", id}, {"result", QJsonObject{{"protocolVersion", "2025-11-25"}}}}, sid);
-            return;
+            return false;
         }
         {
             std::lock_guard<std::mutex> g(mu_);
@@ -137,20 +143,34 @@ private:
                 const QByteArray body = "Missing or invalid MCP-Session-Id";
                 writeAll(c, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: " + QByteArray::number(body.size()) +
                                 "\r\n\r\n" + body);
-                return;
+                return false;
             }
         }
         if (method.startsWith(QLatin1String("notifications/"))) {
+            if (bareAccepted_) {
+                writeAll(c, "HTTP/1.1 202 Accepted\r\n\r\n");
+                return true;
+            }
             writeAll(c, "HTTP/1.1 202 Accepted\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-            return;
+            return false;
         }
         QJsonObject result;
         if (method == QLatin1String("tools/list")) {
             auto tool = [](const char* name) {
+                QString description = QStringLiteral("%1 from the host").arg(QLatin1String(name));
+                QJsonObject address{{"type", "string"}};
+                if (qstrcmp(name, "bn_symbol_rename") == 0) {
+                    // a manual, as Binary Ninja's tools carry
+                    description = QStringLiteral("Rename a symbol at an address. ") +
+                                  QStringLiteral("Explains every option and its history at length. ").repeated(40);
+                    address.insert(QStringLiteral("description"),
+                                   QStringLiteral("The address of the symbol, as a hex string or a symbol name, "
+                                                  "resolved against the active view"));
+                }
                 return QJsonObject{{"name", name},
-                                   {"description", QStringLiteral("%1 from the host").arg(QLatin1String(name))},
+                                   {"description", description},
                                    {"inputSchema", QJsonObject{{"type", "object"},
-                                                               {"properties", QJsonObject{{"address", QJsonObject{{"type", "string"}}}}}}}};
+                                                               {"properties", QJsonObject{{"address", address}}}}}};
             };
             result = QJsonObject{{"tools", QJsonArray{tool("bn_function_list"), tool("bn_symbol_rename"),
                                                       tool("bn_binary_view_set_active")}}};
@@ -179,9 +199,10 @@ private:
             chunked += "0\r\n\r\n";
             writeAll(c, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
                             chunked);
-            return;
+            return false;
         }
         reply(c, 200, msg, {});
+        return false;
     }
 
     static void writeAll(TestSocket c, const QByteArray& data) {
@@ -204,6 +225,8 @@ private:
     std::thread thread_;
     std::atomic<bool> stop_{false};
     std::atomic<bool> streamed_{false};
+    std::atomic<bool> bareAccepted_{false};
+    QList<TestSocket> held_;
     std::atomic<int> inits_{0};
     std::mutex mu_;
     QList<QByteArray> sessions_;
@@ -296,6 +319,85 @@ private Q_SLOTS:
         rk::McpClient client(server.endpoint());
         const QJsonObject r = client.callTool(QStringLiteral("bn_function_list"), QJsonObject{{"address", "0x20"}}, nullptr, 3000);
         QCOMPARE(rk::McpClient::resultText(r), QStringLiteral("called bn_function_list {\"address\":\"0x20\"}"));
+    }
+
+    // Binary Ninja's server may answer notifications/initialized with a bare 202 and keep the connection open: the
+    // handshake must not wait for the socket to close or the deadline to pass.
+    void acceptedNotificationWithoutLengthCompletes() {
+        FakeMcpServer server;
+        server.setBareAccepted(true);
+        rk::McpClient client(server.endpoint());
+        QElapsedTimer t;
+        t.start();
+        try {
+            client.initialize(nullptr, 3000);
+        } catch (const rk::ToolError& e) {
+            QFAIL(qPrintable(e.message()));
+        }
+        QVERIFY2(t.elapsed() < 1500, qPrintable(QStringLiteral("initialize took %1 ms").arg(t.elapsed())));
+        const QJsonObject r = client.callTool(QStringLiteral("bn_function_list"), QJsonObject{{"address", "0x30"}}, nullptr, 3000);
+        QCOMPARE(rk::McpClient::resultText(r), QStringLiteral("called bn_function_list {\"address\":\"0x30\"}"));
+        QCOMPARE(server.initializations(), 1);
+    }
+
+    void longDescriptionsAreClipped() {
+        const QString ellipsis(QChar(0x2026));
+        QCOMPARE(rk::HostMcp::clipDescription(QStringLiteral("List functions.\nArgs: none"), 140),
+                 QStringLiteral("List functions.\nArgs: none"));
+        const QString clipped = rk::HostMcp::clipDescription(
+            QStringLiteral("Rename a symbol.\n\n") + QStringLiteral("Explains every option at length. ").repeated(20), 60);
+        // cut after a whole word, whitespace collapsed, trailing punctuation dropped
+        QCOMPARE(clipped, QStringLiteral("Rename a symbol. Explains every option at length. Explains") + ellipsis);
+        QCOMPARE(rk::HostMcp::clipDescription(QString(200, QLatin1Char('x')), 60), QString(60, QLatin1Char('x')) + ellipsis);
+
+        Fixture f;
+        QVERIFY(f.probe().ok);
+        const auto db = makeDb(QStringLiteral("mcp-clip"), dir.filePath(QStringLiteral("clip.bndb")));
+        rk::HostMcp::instance().install(db->registry);
+        const rk::ToolSpec* rename = db->registry.find(QStringLiteral("bn_symbol_rename"));
+        QVERIFY(rename);
+        QVERIFY2(rename->description.size() <= 141 && rename->description.endsWith(ellipsis), qPrintable(rename->description));
+        QVERIFY(rename->description.startsWith(QStringLiteral("Rename a symbol at an address. Explains every option")));
+        const QString param = rename->inputSchema.value(QStringLiteral("properties")).toObject().value(QStringLiteral("address")).toObject().value(QStringLiteral("description")).toString();
+        QVERIFY2(param.size() <= 61 && param.endsWith(ellipsis), qPrintable(param));
+        QVERIFY(param.startsWith(QStringLiteral("The address of the symbol")));
+        // a short description is left alone
+        const rk::ToolSpec* list = db->registry.find(QStringLiteral("bn_function_list"));
+        QVERIFY(list);
+        QCOMPARE(list->description, QStringLiteral("bn_function_list from the host"));
+    }
+
+    // The address in Rikugan's settings wins over the host's, including one the host cannot give (port 0).
+    void urlOverrideWins() {
+        FakeMcpServer server;
+        rk::HostMcp::Hooks h;
+        h.serverName = QStringLiteral("Binary Ninja");
+        h.locate = [] {
+            rk::HostMcp::Location loc;
+            loc.endpoint.host = QStringLiteral("127.0.0.1");
+            loc.endpoint.path = QStringLiteral("/mcp");
+            loc.endpoint.token = QStringLiteral("tok");
+            loc.problem = QStringLiteral("port 0");
+            return loc;
+        };
+        rk::HostMcp::instance().setHooks(std::move(h));
+        auto probe = [] {
+            std::optional<rk::HostMcp::Probe> got;
+            rk::HostMcp::instance().probe([&](const rk::HostMcp::Probe& p) { got = p; });
+            if (!QTest::qWaitFor([&] { return got.has_value(); }, 10000)) qFatal("probe did not finish");
+            return *got;
+        };
+        rk::RikuganConfig& cfg = rk::RikuganConfig::instance();
+        const QString before = cfg.hostMcpUrl;
+        QCOMPARE(probe().error, QStringLiteral("port 0"));
+        cfg.hostMcpUrl = server.endpoint().url();
+        const rk::HostMcp::Probe p = probe();
+        cfg.hostMcpUrl = before;
+        rk::HostMcp::instance().setUrlOverride(before);
+        rk::HostMcp::instance().setHooks({});
+        QVERIFY2(p.ok, qPrintable(p.error));
+        QCOMPARE(p.url, server.endpoint().url());
+        QCOMPARE(p.tools, 3);  // no hidden hook here
     }
 
     void hostToolsReplaceAnalysisToolsOnlyWhileOn() {

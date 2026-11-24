@@ -9,6 +9,7 @@
 #include <QTabWidget>
 #include <QVBoxLayout>
 
+#include "common/agent/HostMcp.h"
 #include "common/config/RikuganConfig.h"
 #include "common/omc/AgentHome.h"
 #include "common/omc/AuthSync.h"
@@ -53,7 +54,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent), d(std::make_u
     tabs->addTab(d->behavior, tr("Behavior"));
     d->skills = new SkillsTab(cfg);
     tabs->addTab(d->skills, tr("Skills"));
-    d->mcp = new McpTab;
+    d->mcp = new McpTab(cfg);
     tabs->addTab(d->mcp, tr("MCP"));
     d->profiles = new ProfilesTab(cfg);
     tabs->addTab(d->profiles, tr("Profiles"));
@@ -68,7 +69,8 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent), d(std::make_u
 SettingsDialog::~SettingsDialog() = default;
 
 void SettingsDialog::Impl::accept() {
-    if (const QString e = models->validate(); !e.isEmpty()) {
+    for (const QString& e : {models->validate(), mcp->validate()}) {
+        if (e.isEmpty()) continue;
         QMessageBox::warning(q, tr("Rikugan Settings"), e);
         return;
     }
@@ -78,6 +80,7 @@ void SettingsDialog::Impl::accept() {
     behavior->apply(c);
     skills->apply(c);
     profiles->apply(c);
+    mcp->apply(c);
     c.clamp();
 
     if (const QString e = mcp->save(); !e.isEmpty()) {
@@ -89,6 +92,7 @@ void SettingsDialog::Impl::accept() {
         return;
     }
     RikuganConfig::instance() = c;
+    HostMcp::instance().setUrlOverride(c.hostMcpUrl);
     AgentHome::writeModelsYaml();
     AgentHome::syncSkills();
     if (c.useOmcLogins && !hadOmcLogins)

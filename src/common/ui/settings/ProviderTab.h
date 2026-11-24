@@ -16,6 +16,7 @@ QT_FORWARD_DECLARE_CLASS(QFormLayout)
 QT_FORWARD_DECLARE_CLASS(QLabel)
 QT_FORWARD_DECLARE_CLASS(QLineEdit)
 QT_FORWARD_DECLARE_CLASS(QPushButton)
+QT_FORWARD_DECLARE_CLASS(QSpinBox)
 
 namespace rk {
 
@@ -80,6 +81,8 @@ private:
     QLineEdit* apiBase_ = nullptr;
     QComboBox* apiType_ = nullptr;
     QLineEdit* connModels_ = nullptr;
+    QSpinBox* connContext_ = nullptr;
+    QSpinBox* connMaxTokens_ = nullptr;
     QComboBox* model_ = nullptr;
     QComboBox* thinking_ = nullptr;
     QLabel* status_ = nullptr;

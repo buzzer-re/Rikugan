@@ -111,7 +111,8 @@ void installHostMcp() {
     h.serverName = QStringLiteral("Binary Ninja");
     h.locate = [] {
         // The server is probed whatever "ui.mcp.enabled" says: it can be started from Plugins → MCP without the
-        // setting, and a setting turned on takes effect only after a restart. The settings give its address.
+        // setting, and a setting turned on takes effect only after a restart. The settings give its address, unless
+        // Rikugan's settings name one (RikuganConfig::hostMcpUrl, applied by HostMcp over this answer).
         HostMcp::Location loc;
         Ref<Settings> s = Settings::Instance();
         uint64_t port = kDefaultPort;
@@ -128,7 +129,7 @@ void installHostMcp() {
         loc.endpoint.path = path;
         if (port == 0 || port > 65535)
             loc.problem = QStringLiteral("Binary Ninja's MCP server listens on a port the system picks (ui.mcp.port is 0). "
-                                         "Set a fixed port so Rikugan can find it.");
+                                         "Set a fixed port, or give the server's address in Rikugan's Settings \u2192 MCP.");
         return loc;
     };
     h.start = [] {

@@ -54,12 +54,16 @@ public:
     bool supported() const;
     QString serverName() const;
 
-    // Connects and lists the server's tools on a thread of its own. `done` runs on the UI thread.
+    // Connects and lists the server's tools on a thread of its own. UI thread (reads the address override from
+    // RikuganConfig); `done` runs on the UI thread.
     void probe(std::function<void(const Probe&)> done);
     // Hooks::start. UI thread.
     bool startServer();
+    // The server's address from Rikugan's settings (RikuganConfig::hostMcpUrl): when set it replaces the address the
+    // host's settings give; the host's token stays. Any thread.
+    void setUrlOverride(const QString& url);
 
-    // Adds the tools the last probe found to a database's registry. UI thread.
+    // Adds the tools the last probe found to a database's registry, their descriptions clipped. UI thread.
     void install(ToolRegistry& registry);
     // One of the server's tools (installed in some registry); one the model may see now.
     bool owns(const QString& name) const;
@@ -69,13 +73,18 @@ public:
     // tools/call on `host`'s database. Tool workers.
     ToolResult call(Host& host, const QString& name, const QJsonObject& args, const CancelToken* cancel);
 
+    // `text` cut to about `max` characters at a word boundary, with "…" when cut (whitespace collapsed then).
+    static QString clipDescription(const QString& text, qsizetype max);
+
 private:
     HostMcp() = default;
-    McpClient& client();  // callMu_ held; throws ToolError when the server has no address
+    Location locate() const;                  // the hook's answer with the override applied
+    McpClient& client(const Location& loc);  // callMu_ held; throws ToolError when there is no usable address
 
-    mutable std::mutex mu_;  // hooks_, tools_, owned_
+    mutable std::mutex mu_;  // hooks_, urlOverride_, tools_, owned_
     std::mutex callMu_;      // one exchange with the server at a time; client_
     Hooks hooks_;
+    QString urlOverride_;
     std::unique_ptr<McpClient> client_;
     QHash<QString, QJsonObject> tools_;  // offered: name -> tools/list entry
     QSet<QString> owned_;

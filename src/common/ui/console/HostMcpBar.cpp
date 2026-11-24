@@ -1,5 +1,8 @@
 #include "common/ui/console/HostMcpBar.h"
 
+#include <algorithm>
+#include <iterator>
+
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPointer>
@@ -13,6 +16,14 @@
 #include "common/ui/Theme.h"
 
 namespace rk::ui {
+
+namespace {
+
+// between silent looks for a server that did not answer: soon after the database shows (the server may be starting),
+// then rarely
+constexpr int kRetryDelaysMs[] = {2000, 5000, 10000, 30000, 60000};
+
+}  // namespace
 
 HostMcpBar::HostMcpBar(QWidget* parent) : QFrame(parent) {
     setObjectName(QStringLiteral("rk_mcpbar"));
@@ -40,6 +51,9 @@ HostMcpBar::HostMcpBar(QWidget* parent) : QFrame(parent) {
         hide();
         if (auto f = std::move(onNo_)) f();
     });
+    retry_ = new QTimer(this);
+    retry_->setSingleShot(true);
+    connect(retry_, &QTimer::timeout, this, &HostMcpBar::recheck);
     connect(&ThemeNotifier::instance(), &ThemeNotifier::changed, this, &HostMcpBar::restyle);
     restyle();
     hide();
@@ -73,6 +87,8 @@ QString HostMcpBar::tooltip() const {
 void HostMcpBar::setDatabase(const std::shared_ptr<DbContext>& db) {
     if (db_.lock() == db) return;
     db_ = db;
+    retry_->stop();
+    retries_ = 0;
     hide();
     Q_EMIT stateChanged();
     recheck();
@@ -143,8 +159,10 @@ void HostMcpBar::probed(const std::weak_ptr<DbContext>& target, bool asked, cons
             // a server that does not answer: whatever the setting says (it may have been started from the menu, or
             // the setting turned on without a restart), starting it is the next step
             const QString why = p.enabled ? tr("%1's MCP server does not answer at %2.").arg(server, p.url)
-                                          : tr("%1's MCP server is not running (\u201cui.mcp.enabled\u201d is off).").arg(server);
-            notify(why + QLatin1Char(' ') + tr("Start it now?"), tr("Start it"),
+                                          : tr("%1's MCP server is not running at %2 (\u201cui.mcp.enabled\u201d is off).")
+                                                .arg(server, p.url);
+            const QString where = tr("Its address can be changed in Rikugan's Settings \u2192 MCP.");
+            notify(why + QLatin1Char(' ') + where + QLatin1Char(' ') + tr("Start it now?"), tr("Start it"),
                  [this] {
                      if (!HostMcp::instance().startServer()) {
                          notify(tr("%1 could not start its MCP server. Start it from Plugins \u2192 MCP \u2192 Start Server, "
@@ -153,14 +171,29 @@ void HostMcpBar::probed(const std::weak_ptr<DbContext>& target, bool asked, cons
                               QString(), {}, tr("Dismiss"));
                          return;
                      }
-                     // the server listens a moment after the command
+                     // the server listens a moment after the command; this look is the user's, not a silent one
+                     retry_->stop();
                      QTimer::singleShot(600, this, [this] { probe(true); });
                  },
                  tr("Dismiss"));
             text_->setToolTip(p.error);
         }
     }
+    // the database changed while this probe ran: look for the one showing now
+    if (!current) recheck();
+    else scheduleRetry();
     Q_EMIT stateChanged();
+}
+
+void HostMcpBar::scheduleRetry() {
+    const auto db = db_.lock();
+    if (!db || db->hostMcp.load() || found_.contains(db->dbId) || !HostMcp::instance().supported() ||
+        hostMcpConsent(db->sessionsDir()) == false) {
+        retry_->stop();
+        return;
+    }
+    retry_->start(kRetryDelaysMs[retries_]);
+    retries_ = std::min(retries_ + 1, int(std::size(kRetryDelaysMs)) - 1);
 }
 
 void HostMcpBar::notify(const QString& text, const QString& yes, std::function<void()> onYes, const QString& no,

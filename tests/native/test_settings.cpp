@@ -1,5 +1,6 @@
 // Settings dialog against the mock environment: provider → model choice, API keys in auth.json, custom
-// connections, mcp.json, and Settings on a fresh install with no credentials at all.
+// connections (with their context window in models.yml), mcp.json and the host MCP server's address, and Settings
+// on a fresh install with no credentials at all.
 #ifndef _WIN32
 #include <sys/stat.h>
 #endif
@@ -14,6 +15,7 @@
 #include <QListWidget>
 #include <QProcess>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QtTest>
 
@@ -131,6 +133,12 @@ private Q_SLOTS:
             QCOMPARE(providers->currentData().toString(), QStringLiteral("mylocal"));
             QTest::keyClicks(dlg.findChild<QLineEdit*>(QStringLiteral("connectionModelsEdit")), QStringLiteral("small, big"));
             QTest::keyClicks(dlg.findChild<QLineEdit*>(QStringLiteral("apiKeyEdit")), QStringLiteral("LOCAL_KEY"));
+            auto* context = dlg.findChild<QSpinBox*>(QStringLiteral("connectionContextSpin"));
+            auto* maxTokens = dlg.findChild<QSpinBox*>(QStringLiteral("connectionMaxTokensSpin"));
+            QVERIFY(context && maxTokens);
+            QCOMPARE(context->value(), 0);  // omc's default until set
+            context->setValue(200000);
+            maxTokens->setValue(16000);
             auto* model = dlg.findChild<QComboBox*>(QStringLiteral("modelCombo"));
             QCOMPARE(model->count(), 2);
             model->setCurrentIndex(model->findText(QStringLiteral("small")));
@@ -148,6 +156,8 @@ private Q_SLOTS:
         QCOMPARE(e.api, QStringLiteral("anthropic-messages"));
         QCOMPARE(e.apiKey, QStringLiteral("LOCAL_KEY"));
         QCOMPARE(e.models, (QStringList{"small", "big"}));
+        QCOMPARE(e.contextWindow, 200000);
+        QCOMPARE(e.maxTokens, 16000);
         QCOMPARE(loaded.customEndpoints[0].id, QStringLiteral("mock"));
         QCOMPARE(loaded.model, QStringLiteral("mylocal/small"));
 
@@ -155,6 +165,10 @@ private Q_SLOTS:
         QVERIFY2(yml.contains("mylocal:") && yml.contains("http://127.0.0.1:9/v1") && yml.contains("anthropic-messages") &&
                      yml.contains("LOCAL_KEY") && yml.contains("small") && yml.contains("big") && yml.contains("mock:"),
                  qPrintable(yml));
+        // on each of the connection's models, and only there
+        QCOMPARE(yml.count(QStringLiteral("contextWindow: 200000")), 2);
+        QCOMPARE(yml.count(QStringLiteral("maxTokens: 16000")), 2);
+        QCOMPARE(yml.count(QStringLiteral("contextWindow:")), 2);
 
         // reopening shows what was saved
         {
@@ -162,11 +176,37 @@ private Q_SLOTS:
             auto* providers = dlg.findChild<QComboBox*>(QStringLiteral("providerCombo"));
             QCOMPARE(providers->currentData().toString(), QStringLiteral("mylocal"));
             QCOMPARE(dlg.findChild<QLineEdit*>(QStringLiteral("connectionModelsEdit"))->text(), QStringLiteral("small, big"));
+            QCOMPARE(dlg.findChild<QSpinBox*>(QStringLiteral("connectionContextSpin"))->value(), 200000);
+            QCOMPARE(dlg.findChild<QSpinBox*>(QStringLiteral("connectionMaxTokensSpin"))->value(), 16000);
         }
 
         rk::RikuganConfig::instance() = original;
         QVERIFY(original.save());
         rk::AgentHome::writeModelsYaml();
+    }
+
+    // Binary Ninja's MCP server address ("binja_mcp_url"): empty means Binary Ninja's own settings decide.
+    void hostMcpUrlRoundTrip() {
+        const rk::RikuganConfig original = rk::RikuganConfig::instance();
+        QVERIFY(original.hostMcpUrl.isEmpty());
+        {
+            rk::SettingsDialog dlg;
+            auto* url = dlg.findChild<QLineEdit*>(QStringLiteral("hostMcpUrlEdit"));
+            QVERIFY(url);
+            QVERIFY(url->text().isEmpty());
+            url->setText(QStringLiteral(" http://127.0.0.1:5555/mcp "));
+            clickOk(dlg);
+            QCOMPARE(dlg.result(), int(QDialog::Accepted));
+        }
+        QCOMPARE(rk::RikuganConfig::load().hostMcpUrl, QStringLiteral("http://127.0.0.1:5555/mcp"));
+        QVERIFY(QString::fromUtf8(rk::readFile(rk::paths::configFile())).contains(QStringLiteral("\"binja_mcp_url\"")));
+        {
+            rk::SettingsDialog dlg;
+            QCOMPARE(dlg.findChild<QLineEdit*>(QStringLiteral("hostMcpUrlEdit"))->text(), QStringLiteral("http://127.0.0.1:5555/mcp"));
+        }
+        rk::RikuganConfig::instance() = original;
+        QVERIFY(original.save());
+        QCOMPARE(rk::RikuganConfig::load().hostMcpUrl, QString());
     }
 
     void mcpUnknownKeysSurvive() {

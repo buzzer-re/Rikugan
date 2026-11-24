@@ -13,6 +13,10 @@ struct CustomEndpoint {
     QString api;       // openai-completions | openai-responses | anthropic-messages | ollama-chat
     QString apiKey;
     QStringList models;
+    // Applied to each of its models in models.yml; 0 leaves omc's defaults (a 128000-token window, output up to
+    // 32000 or the window).
+    int contextWindow = 0;
+    int maxTokens = 0;
 };
 
 struct RikuganConfig {
@@ -39,6 +43,8 @@ struct RikuganConfig {
     QList<CustomEndpoint> customEndpoints;
     int bulkRenamerBatchSize = 10;
     int bulkRenamerMaxConcurrent = 3;
+    // Binary Ninja's MCP server (HostMcp), e.g. "http://127.0.0.1:24642/mcp"; empty: from Binary Ninja's settings.
+    QString hostMcpUrl;
 
     // Loads from disk (defaults for anything missing or invalid).
     static RikuganConfig load();

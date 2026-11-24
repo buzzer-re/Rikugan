@@ -326,6 +326,9 @@ McpClient::Reply McpClient::post(const QByteArray& json, qint64 id, const Cancel
                     r.body.truncate(contentLength);
                     break;
                 }
+                // 204 has no body, and a notification's 202 carries none: a server that neither sends a length nor
+                // closes the connection must not hold the call until its deadline
+                if (contentLength < 0 && (r.status == 204 || (r.status == 202 && id < 0))) break;
                 if (stream && id >= 0 && findReply(sseMessages(r.body), id)) break;
             }
         }

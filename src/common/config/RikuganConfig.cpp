@@ -33,6 +33,10 @@ void RikuganConfig::clamp() {
     explorationTurnLimit = std::clamp(explorationTurnLimit, 5, 200);
     bulkRenamerBatchSize = std::clamp(bulkRenamerBatchSize, 1, 100);
     bulkRenamerMaxConcurrent = std::clamp(bulkRenamerMaxConcurrent, 1, 16);
+    for (CustomEndpoint& e : customEndpoints) {
+        e.contextWindow = std::max(e.contextWindow, 0);
+        e.maxTokens = std::max(e.maxTokens, 0);
+    }
 }
 
 RikuganConfig RikuganConfig::load() {
@@ -69,10 +73,13 @@ RikuganConfig RikuganConfig::load() {
         CustomEndpoint ep{e.value(QStringLiteral("id")).toString(), e.value(QStringLiteral("base_url")).toString(),
                           e.value(QStringLiteral("api")).toString(), e.value(QStringLiteral("api_key")).toString(),
                           toStrings(e.value(QStringLiteral("models")))};
+        ep.contextWindow = e.value(QStringLiteral("context_window")).toInt();
+        ep.maxTokens = e.value(QStringLiteral("max_tokens")).toInt();
         if (!ep.id.isEmpty() && !ep.baseUrl.isEmpty()) c.customEndpoints << ep;
     }
     integer("bulk_renamer_batch_size", c.bulkRenamerBatchSize);
     integer("bulk_renamer_max_concurrent", c.bulkRenamerMaxConcurrent);
+    str("binja_mcp_url", c.hostMcpUrl);
     c.clamp();
     return c;
 }
@@ -83,7 +90,8 @@ bool RikuganConfig::save() const {
     QJsonArray eps;
     for (const CustomEndpoint& e : c.customEndpoints)
         eps.append(QJsonObject{{"id", e.id}, {"base_url", e.baseUrl}, {"api", e.api}, {"api_key", e.apiKey},
-                               {"models", fromStrings(e.models)}});
+                               {"models", fromStrings(e.models)}, {"context_window", e.contextWindow},
+                               {"max_tokens", e.maxTokens}});
     const QJsonObject o{
         {"schema_version", kSchemaVersion},
         {"model", c.model},
@@ -106,6 +114,7 @@ bool RikuganConfig::save() const {
         {"custom_endpoints", eps},
         {"bulk_renamer_batch_size", c.bulkRenamerBatchSize},
         {"bulk_renamer_max_concurrent", c.bulkRenamerMaxConcurrent},
+        {"binja_mcp_url", c.hostMcpUrl},
     };
     // the file holds API keys of custom endpoints
     return writeFileAtomic(paths::configFile(), QJsonDocument(o).toJson(QJsonDocument::Indented), 0600);

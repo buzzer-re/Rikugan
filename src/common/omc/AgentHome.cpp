@@ -102,7 +102,13 @@ void AgentHome::writeModelsYaml() {
                                                           {"models", QJsonArray{QJsonObject{{"id", "settings"}}}}}}};
     for (const CustomEndpoint& e : c.customEndpoints) {
         QJsonArray models;
-        for (const QString& m : e.models) models.append(QJsonObject{{"id", m}});
+        for (const QString& m : e.models) {
+            // catalog.c fill_model: contextWindow defaults to 128000, maxTokens to min(window, 32000)
+            QJsonObject model{{"id", m}};
+            if (e.contextWindow > 0) model.insert(QStringLiteral("contextWindow"), e.contextWindow);
+            if (e.maxTokens > 0) model.insert(QStringLiteral("maxTokens"), e.maxTokens);
+            models.append(model);
+        }
         QJsonObject p{{"baseUrl", e.baseUrl},
                       {"api", e.api.isEmpty() ? QStringLiteral("openai-completions") : e.api},
                       {"apiKey", e.apiKey.isEmpty() ? QStringLiteral("rikugan-no-key") : e.apiKey},
