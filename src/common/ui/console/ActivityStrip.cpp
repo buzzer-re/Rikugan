@@ -270,11 +270,18 @@ void ActivityStrip::setActivity(const ChatActivity& a) {
     if (a.running && !wasRunning_) lastTurnMs_ = 0;
     wasRunning_ = a.running;
     if (a.goal != a_.goal) goalSeenMs_ = now;
+    // a finished list folds by itself; one that gets open items again (new tasks, another chat) unfolds
+    const auto [doneBefore, totalBefore] = a_.todoProgress();
+    const auto [doneNow, totalNow] = a.todoProgress();
+    const bool finishedBefore = totalBefore > 0 && doneBefore == totalBefore;
+    const bool finishedNow = totalNow > 0 && doneNow == totalNow;
+    if (finishedNow != finishedBefore || (totalBefore == 0 && totalNow > 0)) todoOpen_ = !finishedNow;
     a_ = a;
     if (a.running && !clock_.isActive()) clock_.start();
     else if (!a.running && clock_.isActive()) clock_.stop();
     refreshState();
     if (a_.todoPhases != shownTodo_) rebuildTodo();
+    else todoBox_->setVisible(todoOpen_ && todoGrid_->count() > 0);
 }
 
 void ActivityStrip::setTodoExpanded(bool open) {
