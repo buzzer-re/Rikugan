@@ -14,13 +14,15 @@ Rikugan is a native C++ plugin. Its agent — turn loop, model providers and log
 
 - **Hosts**: IDA Pro 9.3 (Hex-Rays for the decompiler tools) and Binary Ninja (UI mode). Linux, macOS and Windows 10/11 x64.
 - **Models**: every provider and login libomc supports (Claude, ChatGPT/Codex, Gemini, Copilot, API keys …), any OpenAI-compatible endpoint, local servers (Ollama, LM Studio, llama.cpp).
-- **Tools**: 50 shared analysis tools, plus 12 Binary Ninja IL tools or 8 IDA microcode/pseudocode tools; 5 chat tools (ask_user, save_memory, spawn_subagent, exploration_report, research_note); read/write/edit/grep/glob/bash/web_search/todo, each disk or shell kind asking once per chat.
-- **Binary Ninja MCP**: with `ui.mcp.enabled`, the panel offers Binary Ninja's own MCP tools (`bn_*`) per database. The header's MCP button switches a database between them and Rikugan's analysis tools. Their changes are not in `/undo`.
+- **Tools**: 50 shared analysis tools, plus 12 Binary Ninja IL tools or 8 IDA microcode/pseudocode tools; chat tools (ask_user, save_memory, spawn_subagent, exploration_report, research_note; in Binary Ninja list_databases, open_database (opens a new tab) and ask_database); read/write/edit/grep/glob/bash/web_search/todo, each disk or shell kind asking once per chat.
+- **Full window**: the header's expand button moves the chat into a window-sized tab with a list of every open database's chats; one click switches between them (IDA and Binary Ninja).
+- **Binary Ninja MCP**: once Binary Ninja's own MCP server answers (Rikugan keeps probing; Settings → MCP → Address overrides where), the panel offers its tools (`bn_*`) per database. The header's MCP button switches a database between them and Rikugan's analysis tools. Their changes are not in `/undo`.
 - **Skills**: 12 built-in; custom skills in `~/.rikugan/omc/agent/skills/<slug>/SKILL.md`.
 - **Modes**: `/plan`, `/explore`, `/modify` (explore → plan → execute → save), `/research` (notes next to the database).
 - **Undo**: `/undo [N]` reverses renames, comments and prototypes.
 - **Script approval**: `execute_python` always asks; it runs in the host's own Python behind a guard.
 - **Memory**: `RIKUGAN.md` next to the database, first 200 lines in the system prompt.
+- **Profiles**: IOC redaction and denied tools apply to every tool result, omc's file, shell, web and MCP tools included.
 - **Files**: settings in `~/.rikugan/config.json`; logins, MCP servers and skills in `~/.rikugan/omc/agent/`; chats in `~/.rikugan/sessions/`.
 
 ## Installation

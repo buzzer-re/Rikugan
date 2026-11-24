@@ -28,19 +28,23 @@ prompts/                  every model-facing text (MANIFEST.md lists files and p
 skills/                   built-in skills (synced into Rikugan's omc agent dir at start)
 src/common/
   omc/                    OmcSession (one libomc session + its worker), EventQueue, AgentHome, ServiceSession, AuthSync,
-                          LoginFlow (provider logins), UserErrors, YamlWriter, OmcLibrary (loads libomc.dll on Windows)
+                          ExternalLogins (Claude Code / Codex), LoginFlow (provider logins), UserErrors, YamlWriter,
+                          OmcLibrary (loads libomc.dll on Windows)
   tools/                  Tool.h (ToolSpec/ToolCall), ToolRegistry, ToolDispatcher, MutationLog, ResultCache, Artifacts
   host/                   Host interface (one open database), MainThreadCall, onMain()
   agent/                  DbContext, ChatIndex, ChatSession, ChatContext, ChatTools, Permissions, Subagents, ModeDriver,
-                          ModeState, SystemPrompt, CommandRouter, Skills, Actions, BulkRenamer, ChatExport, HostMcp
+                          ModeState, SystemPrompt, CommandRouter, Skills, Actions, BulkRenamer, ChatExport, HostMcp,
+                          Databases (every open database; Binary Ninja's tab opener), SessionListener
   mcp/                    McpClient (streamable HTTP, for the host's own MCP server)
   security/               Sanitize (injection markers, IOC redaction)
   config/                 RikuganConfig (~/.rikugan/config.json), Profile, Paths
   ui/                     PanelCore, Theme (colours from the host palette), Syntax, WelcomeView;
                           transcript/ (TranscriptModel reducer, TranscriptView + delegate, Cards);
                           console/ (ConsoleHeader, ActivityStrip, Composer, Palette, ModelPicker, StatusLine,
-                          AgentsPanel, LoginSheet, GetStarted, HostMcpBar); tools/ (bulk renamer page); settings/
-  util/                   Files, Env (environment shared with libomc, home folder), Log, Embedded
+                          AgentsPanel, LoginSheet, GetStarted, HostMcpBar, ChatManager); tools/ (bulk renamer page);
+                          settings/; ChatHub (every live chat, outside the panels)
+  util/                   Files, Env (environment shared with libomc, home folder), Log, Embedded, CrashGuard,
+                          ModuleLifetime
 src/binja/                Plugin.cpp (sidebar, notifications, commands), host/ (BnHost, Python, BnHostMcp), tools/
 src/ida/                  sdk/Plugin.cpp (dock, hooks, actions), host/ (IdaHost, tools), sdk/ (SDK subclasses, -fno-rtti)
 tests/native/             QtTest suite (none tree) against omc's mock model server
@@ -69,6 +73,8 @@ cmake -S . -B build/ida   -G Ninja -DRIKUGAN_HOST=ida   -DCMAKE_PREFIX_PATH=~/Qt
   loads every top-level DLL in `plugins\` as a plugin). The DLL has its own C runtime (msvcrt.dll): memory omc returns
   is freed with `omc_free`, and environment variables omc reads are set with `rk::setEnv` (`util/Env.h`), which updates
   that runtime's copy too.
+- Rikugan needs libomc's C API version 2 (`OMC_API_VERSION`, for `omc_set_result_filter`); `rk::loadOmcLibrary`
+  refuses another version. A release must ship a libomc built from an omc that has it.
 - Each host links its own Qt at runtime. The official Qt headers only provide declarations and moc; IDA's Qt is
   namespaced, Binary Ninja's is not, so the UI code is compiled once per host tree. On Windows the IDA tree links the
   SDK's import libraries for IDA and its Qt, so no IDA install is needed to build it.
@@ -98,7 +104,9 @@ omc events -> EventQueue -> one coalesced QEvent -> ChatSession::frame -> Transc
    `ChatSession` adopts it unless the user renamed the chat. Every other session that prompts (subagents, renamer
    workers) is named when it opens, so omc spends no model call titling it.
 4. omc's event callback only peeks at `"type"`, answers request waiters and queues the raw frame. `message_update`
-   comes as deltas (`set_event_filter` with `messageUpdates:"delta"`); `agent_end` is filtered out.
+   comes as deltas (`set_event_filter` with `messageUpdates:"delta"`); `agent_end` is filtered out. A prompt ends at
+   its `prompt_result`, or at a response with `agentInvoked:false` (an omc command that ran without the agent, such
+   as `/compact`, sends no `prompt_result`).
 5. Tool calls run through `ToolDispatcher::execute`: profile denial → mode phase gate → decompiler requirement →
    script approval → `approve_mutations` → undo pre-state → run (on the host main thread for `MainThread` tools) →
    mutation record → result cache → injection-marker strip → IOC filter → artifact cap (oversized results keep head
@@ -107,7 +115,8 @@ omc events -> EventQueue -> one coalesced QEvent -> ChatSession::frame -> Transc
    thread. They are live widgets in their transcript rows.
 
 The panel: `TranscriptModel` turns frames, the replayed transcript and cards into flat rows (timeline nodes, tool
-rows, subagent task cards); streaming changes only the tail row, repainted at most every 16 ms. `TranscriptView` is a
+rows, subagent task cards); which user messages show is decided by `typedUserText` (`agent/ChatExport.h`), shared
+with the Markdown export, so omc's injected messages stay out of all three; streaming changes only the tail row, repainted at most every 16 ms. `TranscriptView` is a
 virtualized `QListView`; its delegate paints rows from cached `QTextDocument`s. Pickers (slash, Ctrl+K, Ctrl+M,
 chat switcher) are child widgets built once and only filtered. Timers run only while a chat works.
 
@@ -140,6 +149,10 @@ which waits for Binary Ninja's asynchronous `OnAfterOpenFile`).
   omc's host-unfriendly behaviours off (cache warming, sleep prevention, skill-description compression, project MCP).
 - "Use my omc logins" (`AuthSync`) copies standalone omc's logins (`~/.omc/agent/auth.json`) into Rikugan's and keeps
   refreshed OAuth tokens in step; it never copies Rikugan-only entries back and never deletes.
+- "Use my Claude Code / Codex login" (`ExternalLogins`, config `use_external_logins`, asked once with the providers'
+  policy links) shares those tools' subscription logins the same way, writing refreshed tokens back to them.
+- Custom connections may set `context_window` / `max_tokens` (written to `models.yml` as `contextWindow` /
+  `maxTokens` per model); 0 keeps omc's default.
 - `~/.rikugan/sessions/<db id>/` — omc session files, `chats.json` and `database.json` (host and file, so the panel
   can reopen the database's chats while nothing is open); `~/.rikugan/scratch/<db id>/` — the session's working
   directory (artifacts, files the agent writes).

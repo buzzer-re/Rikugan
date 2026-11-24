@@ -69,6 +69,10 @@ IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
   every variable omc reads (`OMC_CONFIG_DIR` …) is set through `rk::setEnv`, which also calls msvcrt's `_putenv_s`.
   In library mode omc installs no crash handler; it adds a console control handler (inert in a GUI host), starts
   Winsock and sets a 1 ms timer resolution.
+- The C API Rikugan calls (`OMC_API_VERSION` 2): `omc_session_new/free`, `omc_send`, `omc_abort`, `omc_free`,
+  `omc_version`, `omc_api_version`, and `omc_set_result_filter`, which hands Rikugan the text of every tool result
+  (omc's built-ins and MCP tools included) before the model, the session file and the events see it. A libomc of
+  another API version is refused at load.
 - The whole conversation with omc is its RPC protocol: JSON frames sent with `omc_send` and received through one event
   callback per session. Rikugan uses `prompt`, `get_state`, `get_messages`, `get_last_assistant_text`, `set_model`,
   `fork`, `set_event_filter`, `set_host_tools`, login/account commands, and the control frames `host_tool_result`,
@@ -128,7 +132,7 @@ IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
   (Windows: a first-chance vectored handler; Linux/macOS: SIGSEGV/SIGBUS/SIGILL/SIGFPE checked with `dladdr`) or a
   `std::terminate` on a Rikugan thread (every thread calls `crash::guardThread()`) writes
   `~/.rikugan/logs/crash-log-<YYYYMMDD-HHMMSS>-<pid>.log` (reason, address as module + offset, thread, versions,
-  the faulting thread's stack), then saves a recovery copy of each open database next to it
+  the faulting thread's stack), then saves a recovery copy of each open database beside that database
   (`<db>.rikugan-recovered.i64` / `.bndb`; the database file itself keeps its last save) on the host main thread,
   which never waits on Rikugan's threads (30 s deadline), and passes the crash on to the previous handler. Faults in
   host code are left alone. The next start reports logs not seen yet in the host's log. IDA removes the handlers at
@@ -139,6 +143,7 @@ IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
 ```
 composer -> CommandRouter::submit -> ChatSession::sendPrompt -> worker: OmcSession::prompt
   prompt -> (omc agent loop: model, host_tool_call ...) -> prompt_result -> get_last_assistant_text
+  prompt -> (an omc command that runs without the agent: /compact ...) -> response agentInvoked:false (no prompt_result)
 omc frames -> SessionListener -> EventQueue -> ChatSession::frame -> TranscriptModel -> TranscriptView
 ```
 
@@ -192,7 +197,22 @@ omc frames -> SessionListener -> EventQueue -> ChatSession::frame -> TranscriptM
 - Fork asks omc to `fork` and creates a new `ChatEntry` pointing at the copy. Changing the model sends `set_model`,
   the thinking level `set_thinking_level`.
 - Compaction, retries and context limits are omc's (`/compact`, `/retry`, automatic compaction and retry frames are
-  shown in the chat).
+  shown in the chat). A command omc runs itself without the agent (`/compact`) answers the prompt with
+  `agentInvoked:false` and sends no `prompt_result`; that answer ends the prompt.
+- **What the user typed.** omc records more user messages than the user typed (goal context, async results, agent
+  steering, `[SYSTEM]` notes). `typedUserText` (`agent/ChatExport.h`) decides which ones are the user's and how they
+  read (a skill as `/<slug> args`); the live transcript, the replayed one and the Markdown export all use it.
+- **Settings changes** reach open chats (`ChatHub::settingsChanged` → `ChatSession::settingsChanged`): an idle chat
+  takes the active profile at once and closes its session, so the next prompt reopens it with the new system prompt,
+  tools and MCP servers; a busy one does the same when its run ends (tool workers read the profile while it runs).
+- **Panels and the full window.** A panel shows one database at a time. Binary Ninja: the sidebar widget, a pane
+  ("Open in pane") or the full-window tab; IDA: the dock. The header's expand button (`PanelCore::setWindowToggle`)
+  moves the chat into a window-sized tab (Binary Ninja: its own tab, one per window, and the Rikugan sidebar closes;
+  IDA: the dock tabbed beside the disassembly) and back. The full-window panel shows `ChatManager` at its right: the
+  chats of every database in `databases::all()`, with what each is doing, a "+ New chat" link per database and "Open
+  a binary…". Choosing a chat turns the panel to its database (`setDatabase`, then that chat). It refreshes once per
+  burst of `ChatHub::chatsChanged` / `databasesChanged`, only while shown. Binary Ninja registers the database of
+  every open tab when the full-window tab opens and of each file opened while it exists.
 
 ### Commands
 
@@ -237,14 +257,20 @@ Skills are listed to the model by omc itself. Mode instructions (`modes/*/explor
   `src/ida/host/tools/`, SDK-subclassing ones in `src/ida/sdk/`). Name, description and parameters are the
   model-facing contract, kept 1:1 with the 1.x tools.
 - **Chat tools** (`agent/ChatTools.cpp`) — `ask_user`, `save_memory`, `spawn_subagent` (depth 0 only),
-  `exploration_report` and `research_note` (only while a mode shows them).
+  `exploration_report` and `research_note` (only while a mode shows them), and on Binary Ninja `list_databases`,
+  `open_database`, `ask_database` (depth 0 only).
 - **omc built-ins** — `read`, `write`, `edit`, `ast_edit`, `grep`, `glob`, `bash`, `web_search` and `todo` (not for
   subagents). MCP tools come from omc too. omc asks before each disk or shell call (`tools.approval: prompt` in the
   managed `config.yml`); `Permissions` (`agent/Permissions.h`) intercepts that question: a kind the chat (or a global
   setting) already allows is answered at once, otherwise the transcript shows a permission card (Allow once / Allow
   for this chat / Deny). A chat's subagents share its permissions.
 - **Binary Ninja's MCP tools** (`agent/HostMcp.cpp`, `binja/host/BnHostMcp.cpp`) — the `bn_*` tools of Binary
-  Ninja's own MCP server (`ui.mcp.enabled`), offered per database once the user agrees (the panel's offer line or
+  Ninja's own MCP server. Rikugan probes it with an MCP handshake whatever `ui.mcp.enabled` says, at the address in
+  Settings → MCP → Address (`binja_mcp_url`) or else Binary Ninja's `ui.mcp.port` / `ui.mcp.endpoint` (default
+  `127.0.0.1:24642/mcp`). `HostMcpBar` probes when a database or the panel shows, then after 2, 5, 10 and 30 s and
+  every 60 s until the server answers once for that database (not after an explicit no; one probe at a time, off the
+  UI thread). Server tool descriptions are clipped to 140 characters (60 per parameter). The tools are offered per
+  database once the user agrees (the panel's offer line or
   the header's MCP button, remembered as `hostMcp` in the database's `database.json`). They are host tools with
   the server's own schema (`ToolSpec::inputSchema`, flag `External`). One whose name does not end in a reading
   verb (`_list`, `_get`, `_info`, `_decompile` ...) is `Mutating`, because the server sends no `readOnlyHint`.
@@ -274,7 +300,8 @@ Flags (`tools/Tool.h`): `Mutating`, `MainThread` (IDA: every tool; BN: UI and mu
 9. Run — on the host main thread for `MainThread` tools. `ToolError` becomes `Error: <message>`; other exceptions
    become `Unexpected error: ...` and are logged.
 10. Mutation record pushed to the chat's `MutationLog`.
-11. `stripInjectionMarkers`, then the profile's IOC filter.
+11. `stripInjectionMarkers`, then the profile's IOC filter. omc's own tools (files, shell, web, MCP servers) get the
+    same through `omc_set_result_filter` (`SessionListener::filterToolResult`).
 12. Artifact cap (`capResult`): over the tool's limit, the model gets the head (60%) and tail (40%) plus the path of
     a file in `<scratch>/artifacts/` with the whole text, which omc's `read` can page.
 
@@ -311,6 +338,10 @@ Partial output goes out as `host_tool_update`. The queue is bounded; overflow an
 Moving from explore to plan in `/modify` needs a `function_purpose` finding with an address and a high-relevance
 hypothesis. `ModeState` holds findings, functions, patches and notes; it is shared with the mode's subagents.
 
+A cancelled mode leaves `exploration_report` / `research_note` shown until the next prompt finishes, with a
+`ModeState` whose `cancelledNotice` they answer with ("the run was cancelled; nothing recorded"), so a "continue"
+after Stop does not end in an unknown-tool error. The next mode run clears it.
+
 ## 9. Subagents
 
 omc's own `task` subagents cannot see host tools, so Rikugan runs its own (`agent/Subagents.cpp`): `runSubagent` opens
@@ -333,6 +364,8 @@ action:
 - **Deep:** one subagent per function (10 turns), answered with `RENAME: 0x<addr> <name>`.
 - Pause, resume, cancel (aborts in-flight sessions) and Undo All (restores the original names). Each batch or function
   is a subagent of category `bulk_rename`.
+- A rename the host answers with failure text ("No function at …", "Failed to rename") counts as failed
+  (`MutationLog::mutationSucceeded`), not done, and Undo All skips it.
 
 ## 11. Settings and files
 
@@ -343,16 +376,19 @@ dialog has five tabs:
   custom connections; its account status, Log in (the same login sheet as the panel's "Connect a provider") / Log
   out and API key (written to `auth.json`); then its models
   (from `get_available_models`, which lists credentialed models only) and thinking level. Custom connections (+/−)
-  hold base URL, API type, key and model ids, written to `models.yml`. Below: "Also use the logins of the omc
+  hold base URL, API type, key, model ids and optionally the context window and maximum output (0: omc's default),
+  written to `models.yml` (`contextWindow` / `maxTokens` per model). Below: "Also use the logins of the omc
   command-line agent" (AuthSync) and local model discovery. omc's setup errors are reworded for Rikugan
   (`omc/UserErrors.h`) here and in the chat.
 - **Behavior** — auto context, restore chats on start, don't auto-load chats, session storage dir, exploration turn
   limit, quiet retries, allow file access / shell commands without asking, approve mutations, bulk renamer batch
   size and concurrency.
 - **Skills** — enable/disable built-ins (removed from omc's skill dir when disabled), list user skills.
-- **MCP** — servers in omc's `mcp.json`.
-- **Profiles** — built-in `default` and `private`, custom profiles: denied tools and functions, hide binary metadata,
-  IOC filter categories, custom regex rules, custom instructions, singular analysis.
+- **MCP** — servers in omc's `mcp.json`; on Binary Ninja, the address of its own MCP server (`binja_mcp_url`).
+- **Profiles** — built-in `default` and `private`, custom profiles: denied tools (Rikugan's and omc's built-ins) and
+  functions, hide binary metadata, IOC filter categories, custom regex rules, custom instructions, singular analysis.
+
+Saving the dialog applies to open chats (see Chat lifecycle → Settings changes).
 
 | Path | Content |
 |---|---|
@@ -384,7 +420,8 @@ turned on.
 
 Rikugan processes adversarial binaries; strings, names and code from the sample reach the model and the UI.
 
-- **Injection.** Every host tool result passes `stripInjectionMarkers` (zero-width characters, role markers, chat
+- **Injection.** Every tool result (host tools in `ToolDispatcher`; omc's file, shell, web and MCP tools through
+  `omc_set_result_filter`) passes `stripInjectionMarkers` (zero-width characters, role markers, chat
   template delimiters, the Anthropic magic string, instruction-override phrases, homoglyph-normalised), then the
   profile's IOC filter. Memory and binary context in the system prompt are sanitised and capped; the cursor function
   name in the context block is stripped too. The system prompt's data-integrity section tells the model that tool
@@ -411,8 +448,11 @@ chat.
 ## 13. Tests
 
 - `tests/native/` (QtTest, `build/none`): omc's mock model (`../ohmyc/tests/e2e/mock_openai.py`) in a temporary home;
-  the omc bridge and managed config, AuthSync merge, the chat core with `FakeHost` (host tool round trip,
-  exclusivity and order, cancellation, undo, artifacts, transcript replay), sanitisation and IOC filters, modes, the
-  bulk renamer, settings and widgets offscreen.
+  the omc bridge and managed config, AuthSync merge and Claude Code / Codex login sharing, the chat core with
+  `FakeHost` (host tool round trip, exclusivity and order, cancellation, undo, artifacts, transcript replay, local
+  commands such as `/compact`), disk/shell permissions and the profile's filtering of omc's tools, other databases,
+  Binary Ninja's MCP client (handshake, retries, description clipping, address override), the crash guard (in a child
+  process), sanitisation and IOC filters, modes (cancelled-mode tools included), the bulk renamer, settings, the
+  transcript reducer and widgets offscreen (cards, chat manager, image paste).
 - `tests/ida/` (`build/ida/rikugan_ida_tooltest`): every model-visible IDA tool against a fresh idalib database of
   `/bin/ls` (Windows: `notepad.exe`) with the cases in `tool_cases.json`, then `/undo` of a rename.

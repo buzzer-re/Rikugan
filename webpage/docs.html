@@ -254,6 +254,7 @@ td code{font-size:.82rem}
     <div class="sidebar-group-title">Usage</div>
     <ul>
       <li><a href="#opening">Opening the Panel</a></li>
+      <li><a href="#full-window">Full Window</a></li>
       <li><a href="#chat">Chats</a></li>
       <li><a href="#quick-actions">Quick Actions</a></li>
       <li><a href="#skills">Skills</a></li>
@@ -334,7 +335,7 @@ cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1
 
   <div class="step">
     <h4>Pick a model</h4>
-    <p>Open the panel (<code>Ctrl+Shift+I</code> in IDA, the Rikugan sidebar icon in Binary Ninja) and follow <strong>Connect a model</strong>: sign in with a subscription, paste an API key, use a local server, or reuse the logins of an omc agent already on this machine, then pick the model. No restart is needed. <code>Ctrl+M</code> switches models later, and <strong>Settings &rarr; Provider</strong> holds the same choices plus custom connections.</p>
+    <p>Open the panel (<code>Ctrl+Shift+I</code> in IDA, the Rikugan sidebar icon in Binary Ninja) and follow <strong>Connect a model</strong>: sign in with a subscription, paste an API key, use a local server, reuse the logins of an omc agent already on this machine, or share your Claude Code / Codex CLI login, then pick the model. No restart is needed. <code>Ctrl+M</code> switches models later, and <strong>Settings &rarr; Provider</strong> holds the same choices plus custom connections.</p>
     <img src="assets/rikugan_settings.png" alt="Rikugan Settings" class="doc-img" loading="lazy">
   </div>
 </div>
@@ -351,8 +352,9 @@ cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1
   <li><strong>Account</strong> &mdash; <strong>Log in</strong> opens the browser for OAuth (the login sheet shows the link too, with a device code when the provider uses one). <strong>Log out</strong> removes the stored login or key.</li>
   <li><strong>API Key</strong> &mdash; paste a key and press <strong>Save key</strong> instead of logging in.</li>
   <li><strong>Model</strong> and <strong>Thinking</strong> &mdash; the selected provider's models, listed once it is connected (<strong>Refresh</strong> reloads them). Leave the model empty to use the first one you have access to. The model pill in the composer switches the model of the current chat.</li>
-  <li><strong>+ / &minus;</strong> &mdash; add or remove a custom connection: any OpenAI-compatible (completions or responses), Anthropic-messages or Ollama endpoint, with its base URL, key and model ids. New or changed connections take effect after restarting the host.</li>
+  <li><strong>+ / &minus;</strong> &mdash; add or remove a custom connection: any OpenAI-compatible (completions or responses), Anthropic-messages or Ollama endpoint, with its base URL, key and model ids, and optionally its <strong>Context window</strong> and <strong>Max output</strong> (Default keeps omc's 128k; set them for a local server with a larger or smaller window). New or changed connections take effect after restarting the host.</li>
   <li><strong>Also use the logins of the omc command-line agent</strong> &mdash; if you use omc outside Rikugan (<code>~/.omc/agent</code>), the providers you logged into there are copied to Rikugan and refreshed OAuth tokens stay in step. Keys added in Rikugan are never copied back and nothing is deleted.</li>
+  <li><strong>Use my Claude Code / Codex login</strong> &mdash; shares the subscription you are signed in to in Claude Code (<code>~/.claude/.credentials.json</code>, or the macOS keychain) or the Codex CLI (<code>~/.codex/auth.json</code>). Rikugan asks you to confirm first, with links to each provider's terms: using a subscription outside its own tool may be against them. Refreshed tokens are written back so both tools keep working; an API key or another account's login in Rikugan is left alone.</li>
   <li><strong>Discover local model servers</strong> &mdash; find Ollama, LM Studio or llama.cpp on this machine (takes effect after a restart).</li>
 </ul>
 <p>Logins and keys are stored in <code>~/.rikugan/omc/agent/auth.json</code> (mode 0600).</p>
@@ -364,11 +366,11 @@ cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1
     <tr><td><strong>Provider</strong></td><td>Provider, login or API key, model and thinking level, custom connections, shared omc logins, local discovery</td></tr>
     <tr><td><strong>Behavior</strong></td><td>Auto-inject binary context, restore chats on startup, don't auto-load chats, session storage directory, exploration turn limit, quiet retries, allow file access / shell commands without asking, approval for mutating tools, bulk renamer batch size and concurrency</td></tr>
     <tr><td><strong>Skills</strong></td><td>Enable or disable built-in skills, list your own skills</td></tr>
-    <tr><td><strong>MCP</strong></td><td>Add, edit, enable/disable MCP servers (stdio command or URL)</td></tr>
+    <tr><td><strong>MCP</strong></td><td>Add, edit, enable/disable MCP servers (stdio command or URL); in Binary Ninja, the <strong>Address</strong> of its own MCP server</td></tr>
     <tr><td><strong>Profiles</strong></td><td>Active analysis profile and its rules (see <a href="#profiles">Profiles</a>)</td></tr>
   </table>
 </div>
-<p>Settings live in <code>~/.rikugan/config.json</code>, shared by both hosts. Changes that need a new agent session (model defaults, skills, MCP) apply to the next chat session.</p>
+<p>Settings live in <code>~/.rikugan/config.json</code>, shared by both hosts. Saving applies them to open chats: an idle chat takes the new profile, MCP servers and other session settings at once (its agent session reopens on the next message), a working one when its run ends.</p>
 
 <!-- ═══════════════════════════════════════════════
      USAGE
@@ -379,9 +381,16 @@ cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1
   <table>
     <tr><th>Host</th><th>How to open</th></tr>
     <tr><td>IDA Pro</td><td><code>Ctrl+Shift+I</code>, or <strong>Edit &rarr; Plugins &rarr; Rikugan</strong>. <strong>Edit &rarr; Plugins &rarr; Rikugan &rarr; Bulk Renamer</strong> opens the bulk renamer.</td></tr>
-    <tr><td>Binary Ninja</td><td>The Rikugan sidebar icon, or the <strong>Rikugan &rarr; Open Panel</strong> / <strong>Bulk Renamer</strong> plugin commands</td></tr>
+    <tr><td>Binary Ninja</td><td>The Rikugan sidebar icon, or the <strong>Rikugan &rarr; Open Panel</strong> / <strong>Open in Full Window</strong> / <strong>Bulk Renamer</strong> plugin commands. Right-click the sidebar icon and pick <strong>Open in pane</strong> to put the panel beside the disassembly.</td></tr>
   </table>
 </div>
+
+<h3 id="full-window">Full window</h3>
+<p>The expand button in the panel's header (between <strong>MCP</strong> and <code>Ctrl+K</code>) turns Rikugan into a full-window view: the chat takes a tab as large as the main area, and a <strong>Chats</strong> list on its right shows the chats of every open database, with what each one is doing (running, waiting for you). Click a chat to switch to it, whatever database it belongs to; <strong>+ New chat</strong> beside a database starts one there, and <strong>Open a binary&hellip;</strong> opens another file. The same button (now pointing inwards) takes the chat back.</p>
+<ul>
+  <li><strong>Binary Ninja</strong>: the chat opens in a tab of its own and the Rikugan sidebar closes, so one panel shows the chat; there is one full-window tab per window. Every open tab is listed, and so is every file opened while the tab exists. Going back closes the tab, returns to the database's tab and reopens the sidebar.</li>
+  <li><strong>IDA</strong>: the Rikugan dock moves into a tab beside IDA View, and back to the right of it. IDA has one database open, so the list shows its chats.</li>
+</ul>
 
 <h2 id="chat">Chats</h2>
 <p>Chats belong to the open database, and reopening a database restores them. A chat keeps working while you look at another file or close the panel, and it ends when you close its database. A chat is named after its first exchange (the way omc names its sessions) unless you rename it. In Binary Ninja, when no file is open, the panel offers <strong>Open a binary…</strong> and your recent chats. Picking a chat opens its file and continues that chat.</p>
@@ -389,10 +398,11 @@ cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1
   <li><strong>Switch chat</strong> with the title in the header (searchable) and start a <strong>New chat</strong> with <code>+</code>. <strong>Fork</strong>, <strong>Rename</strong>, <strong>Export</strong> (Markdown, or HTML with <code>/export</code>) and <strong>Delete</strong> are in the header menu.</li>
   <li>The transcript is a timeline: your messages, each step of the agent with its thinking, every tool call (click an address or symbol to jump there, a tool row to see its arguments and result, <strong>Undo</strong> on a database change), subagents with their live progress, and the cards that wait for you (permissions, approvals, questions, plans).</li>
   <li>The strip under the header shows what the agent is doing, its todo list, its agents, the <code>/goal</code> it works toward (Pause, Clear) and the running mode. The status line shows the model, context use, tokens, cost and the cursor.</li>
+  <li>Paste or drop images into the message box; they go with the message (also when it waits in the queue).</li>
   <li><code>/</code> opens the command list, <code>Ctrl+K</code> every command and action, <code>Ctrl+M</code> the model and thinking level (with "Connect a provider&hellip;" for logins), <code>Ctrl+J</code> the agents panel, <code>Ctrl+N</code> a new chat.</li>
   <li>A subagent's whole conversation opens like a chat: double click it in the agents panel, press <strong>Open chat</strong>, or pick it in the chat list, where each chat lists its agents under it (those working on other databases too). Typing there steers that agent. <strong>Back to chat</strong> returns.</li>
   <li>A message sent while the agent works reaches it at its next step, so you can steer a running task. <strong>Stop</strong> (or <code>Escape</code>) aborts the turn and drops what waits. A message you type while a subagent works ends that subagent early (the agent gets what it found so far) so your message is read at the next step. <strong>Send now</strong> on a waiting message stops the current step and sends it at once. <code>/btw</code> asks a side question without stopping it.</li>
-  <li>In Binary Ninja the agent can open another file from disk in the background (you approve it first), list the databases open in Binary Ninja, and hand a task to a subagent that reads another database with its own tools. Your current view does not change.</li>
+  <li>In Binary Ninja the agent can work with more than one file. Ask it to open one and it opens it in a new tab once you agree (<code>open_database</code>; the call returns as soon as the tab shows, while Binary Ninja keeps analysing). It lists the open tabs (<code>list_databases</code>) and hands a task to a subagent that reads another database with that database's tools (<code>ask_database</code>), to compare versions or look something up in a library. The new tab is a view like any other: you can open the panel there and chat with it, or switch to its chats from the full-window list.</li>
   <li>Each message carries the cursor address and function unless auto context is off. Context compaction and retries are automatic (<code>/compact</code> and <code>/retry</code> by hand).</li>
   <li>Colours follow the host's theme, light or dark, also when you switch it.</li>
   <li>Many chats can stay open. Idle ones beyond four close their agent session and resume it when you return.</li>
@@ -535,8 +545,8 @@ cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1
 }</code></pre>
 <p>Project-level MCP files are ignored, so a sample's directory cannot add servers.</p>
 <h3>Binary Ninja's own MCP server</h3>
-<p>Binary Ninja can run an MCP server of its own (turn on <code>ui.mcp.enabled</code> in Binary Ninja's settings and restart). When it is running, Rikugan offers its tools the first time a database shows. <strong>Use them</strong> switches that database's chats to Binary Ninja's <code>bn_*</code> tools, and <strong>No</strong> leaves Rikugan's tools in place. The <strong>MCP</strong> button in the panel header switches between the two at any time. If the server was stopped, the button offers to start it. The answer is remembered for each database.</p>
-<p>While Binary Ninja's tools are on, Rikugan's own analysis tools are hidden for that database, so the model sees one tool set and not two. Every call acts on the chat's own database, even with other files open. Changes made with these tools go through the same approval and mode rules as Rikugan's, but <code>/undo</code> cannot revert them. Turn the button off to get Rikugan's tools and their undo back. The address, port and token come from Binary Ninja's <code>ui.mcp.port</code>, <code>ui.mcp.endpoint</code> and <code>ui.mcp.token</code> settings, and the port must not be 0.</p>
+<p>Binary Ninja can run an MCP server of its own (<strong>Plugins &rarr; MCP &rarr; Start Server</strong>, or turn on <code>ui.mcp.enabled</code> in Binary Ninja's settings and restart). Rikugan looks for it whenever a database or the panel shows, and keeps looking (after 2, 5, 10 and 30 seconds, then every minute) until it answers, so a server started later is found too. When it answers, Rikugan offers its tools for that database. <strong>Use them</strong> switches that database's chats to Binary Ninja's <code>bn_*</code> tools, and <strong>No</strong> leaves Rikugan's tools in place. The <strong>MCP</strong> button in the panel header switches between the two at any time. If the server was stopped, the button offers to start it. The answer is remembered for each database.</p>
+<p>While Binary Ninja's tools are on, Rikugan's own analysis tools are hidden for that database, so the model sees one tool set and not two. Every call acts on the chat's own database, even with other files open. Changes made with these tools go through the same approval and mode rules as Rikugan's, but <code>/undo</code> cannot revert them. Turn the button off to get Rikugan's tools and their undo back. The address, port and token come from Binary Ninja's <code>ui.mcp.port</code>, <code>ui.mcp.endpoint</code> and <code>ui.mcp.token</code> settings (default <code>http://127.0.0.1:24642/mcp</code>); <strong>Settings &rarr; MCP &rarr; Address</strong> overrides the address, for instance when the port is 0 (chosen by the system). The server's long tool descriptions are shortened before they reach the model, since they would otherwise go out with every request.</p>
 
 <h2 id="custom-skills">Custom Skills</h2>
 <p>Put your own skills in <code>~/.rikugan/omc/agent/skills/</code>:</p>
@@ -576,9 +586,9 @@ Task: &lt;instruction for the agent&gt;
 <p>Profiles control what data reaches the model and which tools it may use. <code>default</code> and <code>private</code> are built in, and you can create, clone or delete your own in Settings &rarr; Profiles.</p>
 <ul>
   <li><strong>Hide binary metadata</strong> &mdash; no binary summary, cursor or function name in prompts.</li>
-  <li><strong>IOC redaction</strong> &mdash; hashes, IPv4/IPv6, domains, URLs, registry keys, file paths, emails, crypto wallets, mutex names are replaced in every tool result.</li>
+  <li><strong>IOC redaction</strong> &mdash; hashes, IPv4/IPv6, domains, URLs, registry keys, file paths, emails, crypto wallets, mutex names are replaced in every tool result: the analysis tools, file reads, searches, shell output, web search and MCP servers alike.</li>
   <li><strong>Custom filter rules</strong> &mdash; your own regex or literal patterns with replacements.</li>
-  <li><strong>Denied tools</strong> and <strong>denied functions</strong> &mdash; tools the model never sees and functions it must not analyze.</li>
+  <li><strong>Denied tools</strong> and <strong>denied functions</strong> &mdash; tools the model never sees (Rikugan's analysis tools and the workspace tools such as <code>bash</code>, <code>read</code> or <code>web_search</code>) and functions it must not analyze.</li>
   <li><strong>Prompt filters</strong> and a <strong>description</strong> added to the system prompt, plus <strong>singular analysis</strong> to keep the agent on one binary.</li>
 </ul>
 
@@ -634,6 +644,9 @@ Task: &lt;instruction for the agent&gt;
     <tr><td><code>spawn_subagent</code></td><td>Delegate a subtask to an isolated subagent</td></tr>
     <tr><td><code>exploration_report</code></td><td>Record a finding (explore and modify modes)</td></tr>
     <tr><td><code>research_note</code></td><td>Write a research note (research mode)</td></tr>
+    <tr><td><code>list_databases</code></td><td>The databases open in Binary Ninja, each with an id (Binary Ninja)</td></tr>
+    <tr><td><code>open_database</code></td><td>Open a file in a new Binary Ninja tab, after you agree (Binary Ninja)</td></tr>
+    <tr><td><code>ask_database</code></td><td>A subagent that works on another open database with its tools and reports back (Binary Ninja)</td></tr>
   </table>
 </div>
 
@@ -653,6 +666,7 @@ Task: &lt;instruction for the agent&gt;
     <tr><td><code>~/.rikugan/scratch/&lt;db id&gt;/</code></td><td>Agent working directory, saved oversized tool results</td></tr>
     <tr><td><code>&lt;database dir&gt;/RIKUGAN.md</code></td><td>Persistent memory</td></tr>
     <tr><td><code>&lt;database dir&gt;/notes/</code></td><td>Research notes</td></tr>
+    <tr><td><code>~/.rikugan/logs/</code></td><td>Crash logs (<code>crash-log-&lt;date&gt;-&lt;time&gt;-&lt;pid&gt;.log</code>); a crash in Rikugan also saves <code>&lt;database&gt;.rikugan-recovered.&lt;ext&gt;</code> beside each open database, leaving the database itself untouched</td></tr>
   </table>
 </div>
 <p><code>RIKUGAN_HOME</code> moves <code>~/.rikugan</code> elsewhere. Messages from Rikugan appear in IDA's Output window or Binary Ninja's Log.</p>

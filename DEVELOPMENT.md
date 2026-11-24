@@ -9,6 +9,8 @@ plugin; it lives only in the git history.)
 ## Prerequisites
 
 - Linux, macOS or Windows 10/11 x64.
+- omc with libomc C API version 2 (`omc_set_result_filter`, `OMC_API_VERSION` in `include/omc.h`): the plugin refuses
+  an older libomc at load.
 - Linux/macOS: CMake ≥ 3.25, Ninja (or make), a C++20 compiler, OpenSSL 3 and zlib headers, `curl` and `7z` (p7zip)
   for `tools/fetch_qt.sh`. Debian/Ubuntu: `build-essential cmake ninja-build libssl-dev zlib1g-dev p7zip-full curl`.
 - Windows: Visual Studio 2022 or later with "Desktop development with C++" (MSVC, its CMake and Ninja), git, and
@@ -217,7 +219,9 @@ chore/deps     ─┘
 ## Releases
 
 1. Merge `dev` → `main`.
-2. Bump `project(rikugan VERSION x.y.z)` in `CMakeLists.txt` and `version` in `ida-plugin.json`.
+2. Bump `project(rikugan VERSION x.y.z)` in `CMakeLists.txt` and `version` in `ida-plugin.json`. Check that the omc
+   the packages build against (`-DOMC_DIR`, or `build.ps1 -OmcVersion`) has the libomc API version Rikugan expects
+   (`OMC_API_VERSION`).
 3. `git tag vx.y.z && git push origin vx.y.z` — the release workflow checks that the tag matches both and publishes the
    GitHub release.
 4. The release carries the packages `build.sh` / `build.ps1` write to `dist/` for every platform, each with its

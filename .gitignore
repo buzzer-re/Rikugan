@@ -11,3 +11,5 @@ dist/
 .claude/
 .desloppify/
 scorecard.png
+__pycache__/
+*.pyc
