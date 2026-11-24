@@ -179,10 +179,13 @@ to it through `McpClient` (`src/common/mcp/`, a blocking streamable-HTTP client 
 selecting the chat's view, since the server's active view is global. They also mark tools read-only by name
 (the server sends no `readOnlyHint`) and hide its file and view switching.
 
-- `HostMcpBar` (`ui/console/`) looks for the server whenever a database shows and when the panel shows again, until
-  it answers once for that database. With an earlier yes for that database (`hostMcp` in its `database.json`) the
-  tools turn on. With no answer yet it asks. The header's MCP button toggles, and a click counts as consent; a click
-  that finds no server offers to start it.
+- `HostMcpBar` (`ui/console/`) looks for the server whenever a database shows and when the panel shows again, then
+  again after 2, 5, 10 and 30 s and every 60 s until it answers once for that database (not after an explicit no).
+  With an earlier yes for that database (`hostMcp` in its `database.json`) the tools turn on. With no answer yet it
+  asks. The header's MCP button toggles, and a click counts as consent; a click that finds no server offers to start
+  it. Settings → MCP → Address (`binja_mcp_url`) overrides the address read from Binary Ninja's settings.
+- Server tool descriptions are clipped (140 characters, 60 per parameter): the server's long manuals would otherwise
+  go out with every request.
 - On: the server's tools join the database's registry (`category` `host_mcp`, flag `External`, `Mutating` unless
   read-only) and `chatToolVisible` hides every non-`chat` Rikugan tool for that database. The system prompt gets
   `prompts/system/host_mcp.md`. omc cannot change a live session's system prompt, so `ChatSession::hostToolsChanged`
@@ -221,7 +224,11 @@ selecting the chat's view, since the server's active view is global. They also m
 
 Rikugan processes adversarial binaries. Their strings, names and code reach the model and the UI.
 
-- Tool results pass `rk::sanitize::stripInjectionMarkers`, then the active profile's IOC filter. Memory and binary
+- Tool results pass `rk::sanitize::stripInjectionMarkers`, then the active profile's IOC filter: host tools in
+  `ToolDispatcher`, omc's own tools (files, shell, web, MCP servers) through `omc_set_result_filter`
+  (`SessionListener::filterToolResult`). A profile's denied tools may name omc built-ins too. Saved settings reach
+  open chats (`ChatSession::settingsChanged`): idle ones take the new profile at once and reopen on demand, busy
+  ones when their run ends. Memory and binary
   context in the system prompt go through `sanitizeMemory` / `sanitizeBinaryContext`. The system prompt's
   data-integrity section tells the model that tool results are data, not instructions.
 - `execute_python` and the other `Script` tools always ask the user first. Code runs in the host's own Python after
