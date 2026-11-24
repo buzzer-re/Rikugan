@@ -314,10 +314,10 @@ QList<CommandInfo> CommandRouter::catalog() {
     return c;
 }
 
-void CommandRouter::submit(ChatSession& chat, const QString& raw) {
+void CommandRouter::submit(ChatSession& chat, const QString& raw, const QJsonArray& images) {
     const QString text = raw.trimmed();
     if (!text.startsWith(QLatin1Char('/'))) {
-        chat.sendPrompt(raw);
+        chat.sendPrompt(raw, images);
         return;
     }
     const QString cmd = text.section(QRegularExpression(QStringLiteral("\\s")), 0, 0).mid(1);

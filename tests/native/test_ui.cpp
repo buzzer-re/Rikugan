@@ -3,6 +3,8 @@
 #include <atomic>
 
 #include <QCheckBox>
+#include <QClipboard>
+#include <QMimeData>
 #include <QComboBox>
 #include <QLineEdit>
 #include <QLabel>
@@ -25,6 +27,8 @@
 #include "common/ui/transcript/TranscriptView.h"
 #include "common/config/Paths.h"
 #include "common/omc/ServiceSession.h"
+#include "common/ui/console/ActivityStrip.h"
+#include "common/ui/console/Composer.h"
 #include "common/ui/console/GetStarted.h"
 #include "common/ui/console/ModelPicker.h"
 #include "common/ui/transcript/TranscriptModel.h"
@@ -374,6 +378,35 @@ private Q_SLOTS:
         QVERIFY(rktest::waitFor([&] { return v.visualRect(idx).height() == closedH; }, 2000));
     }
 
+    // An image pasted into the composer goes to omc with the next message: omc echoes the message with it.
+    void pastedImageGoesWithTheMessage() {
+        rk::PanelCore panel;
+        panel.resize(900, 700);
+        panel.show();
+        panel.setDatabase(db);
+        clickTool(&panel, "New chat");
+        QImage img(40, 30, QImage::Format_RGB32);
+        img.fill(Qt::red);
+        auto* mime = new QMimeData;
+        mime->setImageData(img);
+        QGuiApplication::clipboard()->setMimeData(mime);
+        auto* edit = panel.findChild<rk::ui::ComposerEdit*>();
+        auto* composer = panel.findChild<rk::ui::Composer*>();
+        QVERIFY(edit && composer);
+        edit->setFocus();
+        edit->paste();
+        QCOMPARE(composer->imageCount(), 1);
+        QVERIFY(edit->toPlainText().isEmpty());  // the image is not pasted as text
+        composer->setText("say:seen");
+        QToolButton* send = panel.findChild<QToolButton*>("rk_send");
+        QVERIFY(send && send->isEnabled());
+        send->click();
+        QCOMPARE(composer->imageCount(), 0);
+        QVERIFY2(rktest::waitFor([&] { return texts(&panel, ItemKind::User).contains("say:seen\n[1 image]"); }, 30000),
+                 qPrintable(texts(&panel, ItemKind::User).join(" | ")));
+        QVERIFY(rktest::waitFor([&] { return idle(&panel); }, 30000));
+    }
+
     // The same in a live chat: the streamed thought is done when the turn ends, and its header folds it.
     void liveThinkingToggles() {
         rk::PanelCore panel;
@@ -432,5 +465,34 @@ private Q_SLOTS:
     }
 };
 RK_TEST(PlanCardTest)
+
+QJsonArray todoPhases(const char* first, const char* second) {
+    return QJsonArray{QJsonObject{{"name", "Work"},
+                                  {"tasks", QJsonArray{QJsonObject{{"content", "one"}, {"status", first}},
+                                                       QJsonObject{{"content", "two"}, {"status", second}}}}}};
+}
+
+// The todo list folds by itself once every task is done, and unfolds when open tasks come back.
+class ActivityStripTest : public QObject {
+    Q_OBJECT
+private Q_SLOTS:
+    void finishedTodoFolds() {
+        const auto phases = &todoPhases;
+        rk::ui::ActivityStrip strip;
+        rk::ui::ChatActivity a;
+        a.todoPhases = phases("completed", "in_progress");
+        strip.setActivity(a);
+        QVERIFY(strip.todoExpanded());
+        a.todoPhases = phases("completed", "completed");
+        strip.setActivity(a);
+        QVERIFY(!strip.todoExpanded());
+        strip.setActivity(a);  // still finished: stays folded
+        QVERIFY(!strip.todoExpanded());
+        a.todoPhases = phases("completed", "pending");
+        strip.setActivity(a);
+        QVERIFY(strip.todoExpanded());
+    }
+};
+RK_TEST(ActivityStripTest)
 
 #include "test_ui.moc"

@@ -285,13 +285,25 @@ void ChatSession::hostToolsChanged() {
     reopenWhenIdle_ = true;
 }
 
-void ChatSession::sendPrompt(const QString& text) {
+void ChatSession::sendPrompt(const QString& text, const QJsonArray& givenImages) {
+    QJsonArray images = givenImages;
+    if (images.isEmpty()) {
+        // a queued message going out now: the images it was typed with
+        for (qsizetype i = 0; i < queuedImages_.size(); ++i)
+            if (queuedImages_[i].first == text) {
+                images = queuedImages_.takeAt(i).second;
+                break;
+            }
+    }
     if (busy_) {
+        if (!images.isEmpty()) queuedImages_.append({text, images});
         // a message typed while the agent works reaches it at its next turn (omc's steer); commands, and a chat
         // whose session never started, wait for the run to end
         if (!text.startsWith(QLatin1Char('/')) && session_ && session_->isOpen() && !session_->openFailed()) {
             steering_ << text;
-            session_->sendControl(QJsonObject{{"type", "steer"}, {"message", text}});
+            QJsonObject steer{{"type", "steer"}, {"message", text}};
+            if (!images.isEmpty()) steer.insert(QStringLiteral("images"), images);
+            session_->sendControl(steer);
         } else {
             queue_ << text;
         }
@@ -307,10 +319,10 @@ void ChatSession::sendPrompt(const QString& text) {
     std::weak_ptr<EventQueue> wq = events_;
     std::shared_ptr<DbContext> db = db_;
     std::shared_ptr<ChatContext> ctx = ctx_;
-    session_->post([wq, db, ctx, text](OmcSession& s) {
+    session_->post([wq, db, ctx, text, images](OmcSession& s) {
         // omc recognises its commands (/skill:x, /compact ...) only at the start of the text
         const QString prefix = text.startsWith(QLatin1Char('/')) ? QString() : contextPrefix(*db, *ctx);
-        const OmcSession::PromptOutcome out = s.prompt(prefix + text);
+        const OmcSession::PromptOutcome out = s.prompt(prefix + text, images);
         AuthSync::run();
         if (auto q = wq.lock())
             q->push(dump(QJsonObject{{"type", "rikugan_prompt_done"},
@@ -508,6 +520,8 @@ void ChatSession::startNext() {
         reopenWhenIdle_ = false;
         closeSession();
     }
+    // images of messages the agent took while it ran are in omc's hands: only the waiting ones keep theirs
+    queuedImages_.removeIf([this](const QPair<QString, QJsonArray>& e) { return !queue_.contains(e.first); });
     if (queue_.isEmpty()) return;
     const QString next = queue_.takeFirst();
     queueUpdated();

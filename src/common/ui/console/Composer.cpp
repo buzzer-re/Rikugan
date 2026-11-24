@@ -1,8 +1,12 @@
 #include "common/ui/console/Composer.h"
 
+#include <QBuffer>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMimeData>
+#include <QUrl>
 #include <QTextBlock>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -74,11 +78,43 @@ void ComposerEdit::focusOutEvent(QFocusEvent* e) {
 }
 
 namespace {
+// image files dropped or pasted as file URLs
+QList<QImage> imagesFromUrls(const QMimeData* m) {
+    QList<QImage> out;
+    if (!m->hasUrls()) return out;
+    for (const QUrl& u : m->urls()) {
+        if (!u.isLocalFile()) continue;
+        QImage img(u.toLocalFile());
+        if (!img.isNull()) out << img;
+    }
+    return out;
+}
+
 bool isPanelKey(const QKeyEvent* k) {
     if ((k->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier)) != Qt::ControlModifier) return false;
     return k->key() == Qt::Key_K || k->key() == Qt::Key_M || k->key() == Qt::Key_J || k->key() == Qt::Key_N;
 }
 }  // namespace
+
+bool ComposerEdit::canInsertFromMimeData(const QMimeData* source) const {
+    return source->hasImage() || !imagesFromUrls(source).isEmpty() || QPlainTextEdit::canInsertFromMimeData(source);
+}
+
+void ComposerEdit::insertFromMimeData(const QMimeData* source) {
+    if (source->hasImage()) {
+        const QImage img = qvariant_cast<QImage>(source->imageData());
+        if (!img.isNull()) {
+            Q_EMIT imagePasted(img);
+            return;
+        }
+    }
+    const QList<QImage> files = imagesFromUrls(source);
+    if (!files.isEmpty()) {
+        for (const QImage& img : files) Q_EMIT imagePasted(img);
+        return;
+    }
+    QPlainTextEdit::insertFromMimeData(source);
+}
 
 bool ComposerEdit::event(QEvent* e) {
     // claim the panel's keys before the host's application shortcuts see them
@@ -137,6 +173,9 @@ Composer::Composer(QWidget* parent) : QFrame(parent) {
     auto* boxLayout = new QVBoxLayout(box_);
     boxLayout->setContentsMargins(6, 4, 6, 4);
     boxLayout->setSpacing(2);
+    imageRow_ = new QHBoxLayout;
+    imageRow_->setSpacing(6);
+    boxLayout->addLayout(imageRow_);
     edit_ = new ComposerEdit(box_);
     boxLayout->addWidget(edit_);
 
@@ -177,6 +216,7 @@ Composer::Composer(QWidget* parent) : QFrame(parent) {
         }
     });
     connect(edit_, &ComposerEdit::panelKey, this, &Composer::panelKey);
+    connect(edit_, &ComposerEdit::imagePasted, this, &Composer::addImage);
     connect(edit_, &ComposerEdit::historyKey, this, [this](int delta, bool* handled) {
         if (history_.isEmpty()) return;
         if (delta < 0 && historyPos_ < 0 && !edit_->toPlainText().isEmpty()) return;  // never lose a draft
@@ -189,7 +229,7 @@ Composer::Composer(QWidget* parent) : QFrame(parent) {
         edit_->moveCursor(QTextCursor::End);
     });
     connect(send_, &QToolButton::clicked, this, [this] {
-        if (running_ && edit_->toPlainText().trimmed().isEmpty()) Q_EMIT stopRequested();
+        if (running_ && edit_->toPlainText().trimmed().isEmpty() && images_.isEmpty()) Q_EMIT stopRequested();
         else send();
     });
     connect(model_, &QToolButton::clicked, this, &Composer::modelPickerRequested);
@@ -253,7 +293,7 @@ void Composer::acceptCommand(const QString& key) {
         return;
     }
     edit_->clear();
-    Q_EMIT submitted(QStringLiteral("/") + key);
+    Q_EMIT submitted(QStringLiteral("/") + key, {});
 }
 
 bool Composer::slashOpen() const { return slash_ && slash_->isVisible(); }
@@ -261,13 +301,93 @@ bool Composer::slashOpen() const { return slash_ && slash_->isVisible(); }
 void Composer::send() {
     if (!enabled_) return;
     const QString text = edit_->toPlainText().trimmed();
-    if (text.isEmpty()) return;
-    if (history_.isEmpty() || history_.last() != text) history_ << text;
+    // images go with a message; a command leaves them for the next one
+    const bool command = text.startsWith(QLatin1Char('/'));
+    if (text.isEmpty() && (images_.isEmpty() || command)) return;
+    QJsonArray images;
+    if (!command) {
+        for (const QJsonObject& i : std::as_const(images_)) images.append(i);
+        images_.clear();
+        thumbs_.clear();
+        rebuildImages();
+    }
+    if (!text.isEmpty() && (history_.isEmpty() || history_.last() != text)) history_ << text;
     while (history_.size() > kHistory) history_.removeFirst();
     historyPos_ = -1;
     edit_->clear();
     if (slash_) slash_->dismiss();
-    Q_EMIT submitted(text);
+    Q_EMIT submitted(text, images);
+}
+
+void Composer::addImage(const QImage& source) {
+    if (source.isNull() || !enabled_) return;
+    constexpr int kMaxSide = 2048;
+    QImage img = source;
+    if (img.width() > kMaxSide || img.height() > kMaxSide)
+        img = img.scaled(kMaxSide, kMaxSide, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    QString mime = QStringLiteral("image/png");
+    if (!img.save(&buf, "PNG")) return;
+    // a large screenshot: JPEG when the host's Qt can write it (an image plugin), else the PNG
+    if (bytes.size() > 3 * 1024 * 1024) {
+        QByteArray jpeg;
+        QBuffer jb(&jpeg);
+        jb.open(QIODevice::WriteOnly);
+        if (img.convertToFormat(QImage::Format_RGB888).save(&jb, "JPEG", 85)) {
+            bytes = jpeg;
+            mime = QStringLiteral("image/jpeg");
+        }
+    }
+    images_ << QJsonObject{{"type", "image"}, {"data", QString::fromLatin1(bytes.toBase64())}, {"mimeType", mime}};
+    thumbs_ << QPixmap::fromImage(img.scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    rebuildImages();
+    syncButton();
+    edit_->setFocus();
+}
+
+// The thumbnails above the editor, each with a button that removes it.
+void Composer::rebuildImages() {
+    while (QLayoutItem* item = imageRow_->takeAt(0)) {
+        if (QWidget* w = item->widget()) {
+            w->hide();
+            w->deleteLater();
+        }
+        delete item;
+    }
+    const Theme& t = theme();
+    for (int i = 0; i < thumbs_.size(); ++i) {
+        auto* chip = new QFrame(box_);
+        chip->setObjectName(QStringLiteral("rk_image_chip"));
+        chip->setAttribute(Qt::WA_StyledBackground);
+        chip->setStyleSheet(QStringLiteral("#rk_image_chip { border: 1px solid %1; border-radius: 4px; }").arg(t.line2.name()));
+        auto* l = new QHBoxLayout(chip);
+        l->setContentsMargins(2, 2, 2, 2);
+        l->setSpacing(2);
+        auto* thumb = new QLabel(chip);
+        thumb->setPixmap(thumbs_[i].scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        thumb->setToolTip(tr("Sent with your next message"));
+        l->addWidget(thumb);
+        auto* remove = new QToolButton(chip);
+        remove->setAutoRaise(true);
+        remove->setText(QStringLiteral("×"));
+        remove->setToolTip(tr("Remove this image"));
+        remove->setCursor(Qt::PointingHandCursor);
+        l->addWidget(remove, 0, Qt::AlignTop);
+        connect(remove, &QToolButton::clicked, this, [this, i] {
+            if (i >= images_.size()) return;
+            images_.removeAt(i);
+            thumbs_.removeAt(i);
+            // after the click returns: this button is one of the chips being rebuilt
+            QMetaObject::invokeMethod(this, [this] {
+                rebuildImages();
+                syncButton();
+            }, Qt::QueuedConnection);
+        });
+        imageRow_->addWidget(chip);
+    }
+    if (!thumbs_.isEmpty()) imageRow_->addStretch(1);
 }
 
 void Composer::setRunning(bool running) {
@@ -355,16 +475,17 @@ void Composer::focusInput() { edit_->setFocus(); }
 QWidget* Composer::modelButton() const { return model_; }
 
 void Composer::syncButton() {
-    const bool stop = running_ && edit_->toPlainText().trimmed().isEmpty();
+    const bool empty = edit_->toPlainText().trimmed().isEmpty() && images_.isEmpty();
+    const bool stop = running_ && empty;
     send_->setText(stop ? QStringLiteral("\u25A0") : QStringLiteral("\u2191"));
     send_->setToolTip(stop ? tr("Stop (Esc)") : running_ ? tr("Queue this message") : tr("Send (Enter)"));
     send_->setProperty("rkStop", stop);
-    send_->setEnabled(stop || (enabled_ && !edit_->toPlainText().trimmed().isEmpty()));
+    send_->setEnabled(stop || (enabled_ && !empty));
     send_->style()->unpolish(send_);
     send_->style()->polish(send_);
     hint_->setText(!enabled_ ? QString()  // the placeholder says why
                    : running_ ? tr("typing queues a message")
-                              : tr("\u21B5 send \u00b7 \u21E7\u21B5 newline \u00b7 / commands"));
+                              : tr("\u21B5 send \u00b7 \u21E7\u21B5 newline \u00b7 / commands \u00b7 paste images"));
 }
 
 void Composer::restyle() {

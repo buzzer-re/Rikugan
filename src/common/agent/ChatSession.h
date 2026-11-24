@@ -49,7 +49,9 @@ public:
     void hostToolsChanged();
 
     // A prompt for the model (the per-prompt context block is added here). Queued while busy.
-    void sendPrompt(const QString& text);
+    // `images`: omc image blocks ({type: image, data, mimeType}) sent with the text. A message that waits in the queue
+    // keeps its images until it goes out.
+    void sendPrompt(const QString& text, const QJsonArray& images = {});
     // Runs `job` on the session worker as one busy unit (modes, /compact ...); `done` runs on the UI thread.
     void runJob(std::function<void(OmcSession&)> job, std::function<void()> done = {});
     // Same, with a token that stop() cancels (modes pass it to cards and subagents).
@@ -120,7 +122,8 @@ private:
     std::shared_ptr<SessionListener> listener_;
     std::shared_ptr<OmcSession> session_;
     QStringList queue_;
-    QStringList steering_;  // steered into omc, not taken by the agent yet (queue_update tells)
+    QStringList steering_;
+    QList<QPair<QString, QJsonArray>> queuedImages_;  // the images of queued / steered messages, by text  // steered into omc, not taken by the agent yet (queue_update tells)
     std::function<void(const QString&)> commandRunner_;
     bool busy_ = false;
     bool transcriptPending_ = false;

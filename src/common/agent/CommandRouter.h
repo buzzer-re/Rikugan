@@ -11,6 +11,7 @@
 //   omc commands unsafe in a host process  -> refused with the reason (never sent to the model)
 //   any other /command                     -> refused
 //   anything else                          -> a prompt
+#include <QJsonArray>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -29,7 +30,8 @@ struct CommandInfo {
 
 class CommandRouter {
 public:
-    static void submit(ChatSession& chat, const QString& text);
+    // `images`: omc image blocks sent with a message (a command ignores them)
+    static void submit(ChatSession& chat, const QString& text, const QJsonArray& images = {});
     // Every command the palettes offer, skills last.
     static QList<CommandInfo> catalog();
     // "/name" of every catalog entry (the composer's autocomplete).

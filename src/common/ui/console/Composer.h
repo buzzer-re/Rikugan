@@ -1,15 +1,22 @@
 #pragma once
 // The message box: a growing editor (Enter sends, Shift+Enter breaks the line, typing while the chat works
-// queues), the queued prompts above it, and a bottom row with the model pill, the running mode, key hints and
-// Send / Stop. "/" at the start opens the slash palette over the transcript. UI thread only.
+// queues), the queued prompts above it, images pasted or dropped into it (shown as thumbnails, sent with the next
+// message), and a bottom row with the model pill, the running mode, key hints and Send / Stop. "/" at the start opens
+// the slash palette over the transcript. UI thread only.
 #include <QFrame>
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QStringList>
 
 #include "common/agent/CommandRouter.h"
 
+QT_FORWARD_DECLARE_CLASS(QHBoxLayout)
 QT_FORWARD_DECLARE_CLASS(QLabel)
+QT_FORWARD_DECLARE_CLASS(QMimeData)
 QT_FORWARD_DECLARE_CLASS(QToolButton)
 QT_FORWARD_DECLARE_CLASS(QVBoxLayout)
 
@@ -30,8 +37,12 @@ Q_SIGNALS:
     void historyKey(int delta, bool* handled);
     // Ctrl+K / Ctrl+M / Ctrl+J / Ctrl+N typed here: the panel's own keys win over the host's shortcuts
     void panelKey(int key);
+    // an image pasted or dropped (clipboard image, or image files)
+    void imagePasted(const QImage& image);
 
 protected:
+    bool canInsertFromMimeData(const QMimeData* source) const override;
+    void insertFromMimeData(const QMimeData* source) override;
     bool event(QEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
     void resizeEvent(QResizeEvent* e) override;
@@ -57,12 +68,16 @@ public:
 
     QString text() const;
     void setText(const QString& text);
+    // Attaches an image to the next message (scaled to at most 2048 px, PNG or JPEG for large ones).
+    void addImage(const QImage& image);
+    int imageCount() const { return int(images_.size()); }
     void focusInput();
     QWidget* modelButton() const;
     bool slashOpen() const;
 
 Q_SIGNALS:
-    void submitted(const QString& text);
+    // `images`: omc image blocks ({type: image, data: base64, mimeType}) attached to a message (never to a command)
+    void submitted(const QString& text, const QJsonArray& images);
     void stopRequested();
     void modelPickerRequested();
     void removeQueued(int index);
@@ -75,8 +90,12 @@ private:
     void acceptCommand(const QString& key);
     void syncButton();
     void restyle();
+    void rebuildImages();
 
     QVBoxLayout* queueBox_ = nullptr;
+    QHBoxLayout* imageRow_ = nullptr;
+    QList<QJsonObject> images_;
+    QList<QPixmap> thumbs_;
     QFrame* box_ = nullptr;
     ComposerEdit* edit_ = nullptr;
     QToolButton* model_ = nullptr;
