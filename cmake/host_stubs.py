@@ -128,9 +128,10 @@ def demangle(cxxfilt, names, fmt):
 
 
 def strip_qt_namespace(s):
-    # C++ names carry the namespace (QT::); C names get it as a suffix (QT_MANGLE_NAMESPACE: qt_version_tag_QT)
-    if "::" not in s and "(" not in s and s.endswith("_QT"):
-        return s[: -len("_QT")]
+    # C++ names carry the namespace (QT::). C names get it from QT_MANGLE_NAMESPACE as a suffix, before the version
+    # Mach-O's version tag appends (no symbol versioning there): qt_version_tag_QT (ELF), qt_version_tag_QT_6_8.
+    if "::" not in s and "(" not in s:
+        return re.sub(r"_QT(?=$|_\d)", "", s)
     return s.replace("QT::", "")
 
 
