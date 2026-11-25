@@ -1,3 +1,3 @@
-# The omc (oh-my-c) commit Rikugan builds against in CI and the release: libomc API 2 (omc_set_result_filter), one
-# commit past omc v19.1.0. Point it at omc's release tag once one carries API 2. build-tools/ci.sh omc checks it out.
-2fb821a04dce7ae7c9231d31c1ebab4751a3824d
+# The omc (oh-my-c) commit Rikugan builds against in CI and the release: omc v19.1.1, the first release with libomc
+# API 2 (omc_set_result_filter). build-tools/ci.sh omc checks it out.
+3011e62ad363447f92c0d6447ab55b3d564cd324

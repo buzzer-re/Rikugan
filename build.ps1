@@ -14,7 +14,7 @@
 # tar.exe (to unpack Qt), Binary Ninja installed for its plugin (its import libraries), and libomc, one of:
 #   -OmcDir      omc's source (default ..\ohmyc), built through WSL (apt: mingw-w64 make gcc) or MSYS2 UCRT64 (gcc, make)
 #   -OmcLibDir   a folder with a prebuilt libomc.dll and libomc.def (omc.h in ..\include)
-#   -OmcVersion  an omc release (e.g. 19.1.0 or latest) whose Windows zip carries libomc; used when there is no source
+#   -OmcVersion  an omc release (e.g. 19.1.1 or latest) whose Windows zip carries libomc; used when there is no source
 # IDA needs no install to build: the SDK (third_party\ida-sdk) carries the import libraries for IDA and its Qt.
 # -Sdk links Binary Ninja's plugin against stand-ins for its core and UI DLLs (cmake\host_stubs.cmake): it binds to the
 # installed Binary Ninja's own when it loads, like a plugin built against an install.
