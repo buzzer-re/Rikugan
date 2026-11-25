@@ -131,12 +131,12 @@ Rikugan 2.0 is a native rewrite for IDA Pro and Binary Ninja on Linux, macOS and
 
 ## Conclusion
 
-If you'd asked me last year what I thought about AI doing reverse engineering, I'd probably have said something like "Nah, impossible — it hallucinates, and reverse engineering is not something as simple as writing code." But this year I completely changed my mind when I saw what was achievable. AI is not the ChatGPT from 2023 anymore; it's something entirely different.
+If you'd asked me last year what I thought about AI doing reverse engineering, I'd probably have said something like "Nah, impossible. It hallucinates, and reverse engineering is not something as simple as writing code." But this year I completely changed my mind when I saw what was achievable. Today's models are far ahead of the ChatGPT we had in 2023.
 
-For that reason, I decided to invest this year in researching this topic. It's amazing what we can build with agentic coding — it's surreal how quickly I'm learning topics that I simply "didn't have time" to study before.
+For that reason, I decided to invest this year in researching this topic. It's amazing what we can build with agentic coding, and it's surreal how quickly I'm learning topics that I simply "didn't have time" to study before.
 
-Rikugan is just one of many projects I've built in the last three months. The first version was built in a single night. Within two days it already supported both IDA and Binary Ninja. Within three days, it was essentially what you see here, with only minor tweaks since.
+Rikugan is just one of many projects I've built in the last three months. The first version was built in a single night. Within two days it already supported both IDA and Binary Ninja, and within three days it was essentially Rikugan 1.x. Version 2.0 rewrote it as a native plugin.
 
 This is a work in progress with many areas for improvement. I took care to ensure this wouldn't be another AI slop project, but I'm certain there is still room to grow. I hope you use it for good. If you find bugs, have suggestions, or want quality-of-life improvements, please open an issue.
 
-That's all — thanks.
+That's all, thanks.
