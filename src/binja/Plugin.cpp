@@ -84,6 +84,8 @@ std::map<BNFileMetadata*, std::shared_ptr<rk::DbContext>> g_dbs;
 QPointer<rk::PanelCore> g_panel;  // the sidebar's panel: context-menu actions go there
 // every panel: the sidebar's, and the ones opened as a full-window tab or as a pane
 std::vector<QPointer<rk::PanelCore>> g_panels;
+// UIPluginInit got through: the commands, registered before it, run only then
+bool g_started = false;
 
 void forEachPanel(const std::function<void(rk::PanelCore&)>& fn) {
     std::erase_if(g_panels, [](const QPointer<rk::PanelCore>& p) { return p.isNull(); });
@@ -362,31 +364,44 @@ void openFullWindow(QWidget* from, const std::shared_ptr<rk::DbContext>& db) {
     if (Sidebar* sb = ui->sidebar()) sb->deactivate(QString::fromLatin1(kSidebarName));
 }
 
+// Registered by CorePluginInit: Binary Ninja's UI builds the actions of the commands that exist when it starts, so a
+// command registered later in UIPluginInit is bound but not registered (and logged so). Each is valid once
+// UIPluginInit got through, so a failed start (libomc missing) leaves them disabled.
 void registerCommands() {
-    PluginCommand::Register("Rikugan\\Open Panel", "Open the Rikugan panel",
-                            [](BinaryView*) { ExecuteOnMainThread([] { openPanel(); }); });
-    PluginCommand::Register("Rikugan\\Open in Full Window", "Open Rikugan in a tab of its own, as large as the window",
-                            [](BinaryView* bv) {
-                                BinaryViewRef keep = bv;
-                                ExecuteOnMainThread([keep] { openFullWindow(nullptr, dbFor(keep)); });
-                            });
-    PluginCommand::Register("Rikugan\\Bulk Renamer", "Open Rikugan's bulk renamer", [](BinaryView*) {
-        ExecuteOnMainThread([] {
-            if (rk::PanelCore* p = openPanel()) p->showTools();
-        });
-    });
+    const auto started = [](BinaryView*) { return g_started; };
+    PluginCommand::Register(
+        "Rikugan\\Open Panel", "Open the Rikugan panel", [](BinaryView*) { ExecuteOnMainThread([] { openPanel(); }); },
+        started);
+    PluginCommand::Register(
+        "Rikugan\\Open in Full Window", "Open Rikugan in a tab of its own, as large as the window",
+        [](BinaryView* bv) {
+            BinaryViewRef keep = bv;
+            ExecuteOnMainThread([keep] { openFullWindow(nullptr, dbFor(keep)); });
+        },
+        started);
+    PluginCommand::Register(
+        "Rikugan\\Bulk Renamer", "Open Rikugan's bulk renamer",
+        [](BinaryView*) {
+            ExecuteOnMainThread([] {
+                if (rk::PanelCore* p = openPanel()) p->showTools();
+            });
+        },
+        started);
     for (const rk::ActionDef& def : rk::binjaActionDefs()) {
         const std::string name = "Rikugan\\" + def.label.toStdString();
-        PluginCommand::RegisterForAddress(name, def.tooltip.toStdString(),
-                                          [def](BinaryView* bv, uint64_t addr) { runAction(def, bv, addr); });
+        PluginCommand::RegisterForAddress(
+            name, def.tooltip.toStdString(), [def](BinaryView* bv, uint64_t addr) { runAction(def, bv, addr); },
+            [](BinaryView*, uint64_t) { return g_started; });
     }
-    PluginCommand::RegisterForFunction("Rikugan\\Send to Bulk Rename", "Send function to Rikugan Bulk Renamer",
-                                       [](BinaryView*, Function* func) {
-                                           const quint64 start = func->GetStart();
-                                           ExecuteOnMainThread([start] {
-                                               if (rk::PanelCore* p = openPanel()) p->addToBulkRenamer({start});
-                                           });
-                                       });
+    PluginCommand::RegisterForFunction(
+        "Rikugan\\Send to Bulk Rename", "Send function to Rikugan Bulk Renamer",
+        [](BinaryView*, Function* func) {
+            const quint64 start = func->GetStart();
+            ExecuteOnMainThread([start] {
+                if (rk::PanelCore* p = openPanel()) p->addToBulkRenamer({start});
+            });
+        },
+        [](BinaryView*, Function*) { return g_started; });
 }
 
 }  // namespace
@@ -395,7 +410,10 @@ extern "C" {
 BN_DECLARE_CORE_ABI_VERSION
 BN_DECLARE_UI_ABI_VERSION
 
-BINARYNINJAPLUGIN bool CorePluginInit() { return true; }
+BINARYNINJAPLUGIN bool CorePluginInit() {
+    registerCommands();
+    return true;
+}
 
 BINARYNINJAPLUGIN bool UIPluginInit() {
     rk::setLogSink([](const QString& m) { LogInfo("%s", m.toUtf8().constData()); });
@@ -466,7 +484,7 @@ BINARYNINJAPLUGIN bool UIPluginInit() {
     rk::binja::installHostMcp();
     Sidebar::addSidebarWidgetType(new RikuganSidebarType);
     UIContext::registerNotification(new Notifications);
-    registerCommands();
+    g_started = true;
     // a newer release, once a day (Settings > Behavior > Check for updates); release packages only
     rk::update::Updater::instance().start();
     LogInfo("Rikugan loaded (libomc %s)", omc_version());
