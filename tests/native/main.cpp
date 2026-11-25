@@ -114,11 +114,15 @@ int main(int argc, char** argv) {
     mock.start(rktest::python(), {"-I", qEnvironmentVariable("RK_OMC_DIR") + "/tests/e2e/mock_openai.py",
                            QString::number(rktest::g_env.port)});
     if (!mock.waitForStarted()) qFatal("cannot start the mock model server");
-    rktest::waitFor([&] {
-        QTcpSocket s;
-        s.connectToHost(QHostAddress::LocalHost, quint16(rktest::g_env.port));
-        return s.waitForConnected(100);
-    });
+    // a slow start must not pass for a model that never answers: the first prompts would time out instead
+    const bool listening = rktest::waitFor(
+        [&] {
+            QTcpSocket s;
+            s.connectToHost(QHostAddress::LocalHost, quint16(rktest::g_env.port));
+            return s.waitForConnected(100);
+        },
+        60000);
+    if (!listening) qFatal("the mock model server is not listening on port %d after 60 s", rktest::g_env.port);
 
     rk::RikuganConfig& cfg = rk::RikuganConfig::instance();
     cfg.customEndpoints = {{"mock", QStringLiteral("http://127.0.0.1:%1/v1").arg(rktest::g_env.port),

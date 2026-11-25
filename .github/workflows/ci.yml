@@ -57,8 +57,24 @@ jobs:
         run: build-tools/ci.sh deps
       - name: omc
         run: build-tools/ci.sh omc
+      - name: Debugger access (macOS)
+        if: runner.os == 'macOS'
+        run: sudo DevToolsSecurity -enable # lets QtTest's crash handler attach lldb and print every thread's stack
       - name: Tests (zero warnings)
-        run: build-tools/ci.sh test
+        env:
+          RK_KEEP_TMP: '1' # the test home stays in $TMPDIR: sessions, mock.jsonl, crash logs
+        run: |
+          export TMPDIR="$RUNNER_TEMP/rikugan-tests"
+          mkdir -p "$TMPDIR"
+          build-tools/ci.sh test
+      - name: Keep the test home (failed run)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.name }}
+          path: ${{ runner.temp }}/rikugan-tests/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Plugins without the hosts (zero warnings)
         run: build-tools/ci.sh plugins
       - name: Smoke (the packages as they ship)
