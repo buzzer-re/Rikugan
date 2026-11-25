@@ -39,7 +39,7 @@ turns that off.
 | Package | Host | Runs on |
 |---|---|---|
 | \`rikugan-$V-ida-linux-x86_64.tar.gz\`, \`rikugan-$V-binja-linux-x86_64.tar.gz\` | IDA Pro 9.3, Binary Ninja | Linux x86_64, glibc 2.35+ and OpenSSL 3 (Ubuntu 22.04+, Debian 12+, Fedora 36+) |
-| \`rikugan-$V-ida-linux-arm64.tar.gz\`, \`rikugan-$V-binja-linux-arm64.tar.gz\` | IDA Pro 9.3, Binary Ninja | Linux arm64, same |
+| \`rikugan-$V-ida-linux-arm64.tar.gz\`, \`rikugan-$V-binja-linux-arm64.tar.gz\` | IDA Pro 9.3, Binary Ninja | Linux arm64, glibc 2.39+ and OpenSSL 3 (Ubuntu 24.04+, Debian 13+, Fedora 40+) |
 | \`rikugan-$V-ida-macos-arm64.tar.gz\`, \`rikugan-$V-binja-macos-arm64.tar.gz\` | IDA Pro 9.3, Binary Ninja | macOS on Apple silicon (OpenSSL is built in) |
 | \`rikugan-$V-ida-macos-x86_64.tar.gz\`, \`rikugan-$V-binja-macos-x86_64.tar.gz\` | IDA Pro 9.3, Binary Ninja | macOS on Intel |
 | \`rikugan-$V-ida-windows-x86_64.zip\`, \`rikugan-$V-binja-windows-x86_64.zip\` | IDA Pro 9.3, Binary Ninja | Windows 10 and 11, x64 |

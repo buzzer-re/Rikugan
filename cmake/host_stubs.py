@@ -28,7 +28,13 @@ import sys
 
 def capture(log, command):
     os.makedirs(os.path.dirname(os.path.abspath(log)), exist_ok=True)
+    # MSVC with Ninja links through `cmake -E vs_link_dll ... -- link.exe ...`, which keeps the linker's output to
+    # itself when the link works: the linker after "--" runs directly (the probe needs no manifest or resources)
+    if len(command) > 3 and command[1] == "-E" and command[2] in ("vs_link_dll", "vs_link_exe") and "--" in command:
+        command = command[command.index("--") + 1:]
     with open(log, "wb") as out:
+        out.write(f"host_stubs: {' '.join(command)[:2000]}\n".encode())
+        out.flush()
         r = subprocess.run(command, stdout=out, stderr=subprocess.STDOUT)
     # The probe exists to collect unresolved symbols: a link that reports them is the expected outcome. A probe that
     # was not written at all is caught by `harvest`, which shows this log.

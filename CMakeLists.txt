@@ -32,6 +32,9 @@ option(RIKUGAN_BUILD_TESTS "Build the native test suite" ${_rk_tests_default})
 # CI and release packages: link stand-ins for the host's libraries instead of an installed IDA Pro or Binary Ninja
 # (cmake/host_stubs.cmake). The plugin binds to the host's own libraries when it loads, as with an install.
 option(RIKUGAN_SDK_ONLY "Build the host plugin without the host installed (stand-ins for its libraries)" OFF)
+# Release packages update themselves from Rikugan's GitHub releases (common/update/Updater.h); a developer's own build
+# never does. build.sh and build.ps1 turn it on for the packages they make.
+option(RIKUGAN_UPDATES "The plugin updates itself from Rikugan's GitHub releases" OFF)
 
 if(MSVC)
     # the hosts load release Qt and the release C++ runtime: every configuration links those (a Debug tree keeps its
@@ -116,6 +119,22 @@ add_library(rikugan_common OBJECT ${RK_COMMON_SOURCES} ${RK_EMBEDDED_CPP} assets
 target_include_directories(rikugan_common PUBLIC "${CMAKE_SOURCE_DIR}/src" "${OMC_INCLUDE_DIR}")
 target_compile_options(rikugan_common PRIVATE ${RK_WARNINGS})
 target_compile_definitions(rikugan_common PUBLIC RIKUGAN_VERSION="${PROJECT_VERSION}" QT_NO_KEYWORDS)
+if(RIKUGAN_UPDATES AND NOT RIKUGAN_HOST STREQUAL "none")
+    # which release package this build is: rikugan-<version>-<host>-<os>-<arch> (what the updater downloads)
+    if(WIN32)
+        set(_rk_os windows)
+    elseif(APPLE)
+        set(_rk_os macos)
+    else()
+        set(_rk_os linux)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        set(_rk_arch arm64)
+    else()
+        set(_rk_arch x86_64)
+    endif()
+    target_compile_definitions(rikugan_common PRIVATE RIKUGAN_PACKAGE="${RIKUGAN_HOST}-${_rk_os}-${_rk_arch}")
+endif()
 
 function(rk_link_qt target)
     # binds the target to Qt for compiling (headers, moc); the host tree decides which .so files it links

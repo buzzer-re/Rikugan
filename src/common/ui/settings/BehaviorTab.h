@@ -1,11 +1,12 @@
 #pragma once
 // "Behavior": context, chat restore, session storage, exploration, retries, filesystem/shell, approvals,
-// bulk renamer defaults.
+// bulk renamer defaults, updates.
 #include <QWidget>
 
 #include "common/config/RikuganConfig.h"
 
 QT_FORWARD_DECLARE_CLASS(QCheckBox)
+QT_FORWARD_DECLARE_CLASS(QLabel)
 QT_FORWARD_DECLARE_CLASS(QLineEdit)
 QT_FORWARD_DECLARE_CLASS(QSpinBox)
 
@@ -29,6 +30,8 @@ private:
     QCheckBox* approveMutations_ = nullptr;
     QSpinBox* renamerBatch_ = nullptr;
     QSpinBox* renamerConcurrent_ = nullptr;
+    QCheckBox* checkForUpdates_ = nullptr;
+    QLabel* updateStatus_ = nullptr;
 };
 
 }  // namespace rk

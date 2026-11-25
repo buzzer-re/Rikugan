@@ -110,7 +110,7 @@ function New-Stage([string]$HostName) {
 function Invoke-HostBuild([string]$HostName, [string]$Qt, [string[]]$Extra) {
     $dir = Join-Path $Root ("build\$HostName" + $(if ($Sdk) { '-sdk' } else { '' }))
     $a = @('-S', $Root, '-B', $dir, '-G', 'Ninja', "-DRIKUGAN_HOST=$HostName",
-           '-DCMAKE_BUILD_TYPE=RelWithDebInfo', "-DCMAKE_PREFIX_PATH=$Qt")
+           '-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DRIKUGAN_UPDATES=ON', "-DCMAKE_PREFIX_PATH=$Qt")
     if ($Sdk) { $a += '-DRIKUGAN_SDK_ONLY=ON' }
     # both, so a tree switches between a prebuilt libomc and the source build
     if ($script:OmcLibDir) { $a += @("-DOMC_DIR=$script:OmcDir", "-DOMC_LIB_DIR=$script:OmcLibDir") } else { $a += @("-DOMC_DIR=$script:OmcDir", '-DOMC_LIB_DIR=') }

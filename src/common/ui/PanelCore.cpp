@@ -52,10 +52,12 @@
 #include "common/ui/console/ModelPicker.h"
 #include "common/ui/console/Palette.h"
 #include "common/ui/console/StatusLine.h"
+#include "common/ui/console/UpdateBar.h"
 #include "common/ui/settings/SettingsDialog.h"
 #include "common/ui/tools/ToolsPanel.h"
 #include "common/ui/transcript/TranscriptModel.h"
 #include "common/ui/transcript/TranscriptView.h"
+#include "common/update/Updater.h"
 #include "common/util/Log.h"
 #include "common/util/ModuleLifetime.h"
 
@@ -813,6 +815,7 @@ struct PanelCore::Impl {
         }
         action(QStringLiteral("renamer"), QStringLiteral("\u2630"), QObject::tr("Bulk renamer"));
         action(QStringLiteral("settings"), QStringLiteral("\u2638"), QObject::tr("Settings"));
+        action(QStringLiteral("update"), QStringLiteral("\u21BB"), QObject::tr("Check for updates"));
         for (const CommandInfo& ci : CommandRouter::catalog()) {
             PaletteEntry e;
             e.key = QStringLiteral("c:") + ci.name;
@@ -857,6 +860,7 @@ struct PanelCore::Impl {
         else if (a == QLatin1String("undo")) submit(QStringLiteral("/undo 1"));
         else if (a == QLatin1String("renamer")) pages->setCurrentIndex(1);
         else if (a == QLatin1String("settings")) q->openSettings();
+        else if (a == QLatin1String("update")) update::Updater::instance().check(true);
     }
 
     // ---- theme ----
@@ -906,6 +910,8 @@ void PanelCore::Impl::build() {
     layout->addWidget(agentBar);
     mcpBar = new HostMcpBar(q);
     layout->addWidget(mcpBar);
+    // a newer Rikugan: offered, being installed, waiting for a restart
+    layout->addWidget(new UpdateBar(q));
     QObject::connect(mcpBar, &HostMcpBar::stateChanged, q, [this] {
         header->setHostMcp(mcpBar->available(), mcpBar->on(), mcpBar->busy(), mcpBar->tooltip());
     });

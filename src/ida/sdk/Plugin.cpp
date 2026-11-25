@@ -21,6 +21,7 @@
 #include "common/tools/ToolDispatcher.h"
 #include "common/ui/ChatHub.h"
 #include "common/ui/PanelCore.h"
+#include "common/update/Updater.h"
 #include "common/util/CrashGuard.h"
 #include "common/util/Log.h"
 #include "common/util/ModuleLifetime.h"
@@ -111,6 +112,8 @@ struct RikuganPlugmod : public plugmod_t, public event_listener_t {
         ::hook_event_listener(HT_IDB, &idbListener, this);
         const char* idb = get_path(PATH_TYPE_IDB);
         if (idb && *idb) openDatabase();
+        // a newer release, once a day (Settings > Behavior > Check for updates); release packages only
+        rk::update::Updater::instance().start();
         msg("Rikugan loaded (libomc %s)\n", omc_version());
     }
 

@@ -38,6 +38,7 @@
 #include "common/ui/ChatHub.h"
 #include "common/ui/PanelCore.h"
 #include "common/ui/Theme.h"
+#include "common/update/Updater.h"
 #include "common/util/ModuleLifetime.h"
 #include "common/util/CrashGuard.h"
 #include "common/util/Log.h"
@@ -466,6 +467,8 @@ BINARYNINJAPLUGIN bool UIPluginInit() {
     Sidebar::addSidebarWidgetType(new RikuganSidebarType);
     UIContext::registerNotification(new Notifications);
     registerCommands();
+    // a newer release, once a day (Settings > Behavior > Check for updates); release packages only
+    rk::update::Updater::instance().start();
     LogInfo("Rikugan loaded (libomc %s)", omc_version());
     return true;
 }

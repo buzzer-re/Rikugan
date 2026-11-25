@@ -100,7 +100,7 @@ if [ "$WANT_BN" = 1 ] && [ "$SDK" = 1 ]; then
     echo "== Binary Ninja (no install: stand-ins for its libraries)"
     QT_BN=$(qt 6.11.1)
     cmake -S . -B build/binja-sdk -G "$GEN" -DRIKUGAN_HOST=binja -DRIKUGAN_SDK_ONLY=ON -DOMC_DIR="$OMC_DIR" \
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$QT_BN"
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DRIKUGAN_UPDATES=ON -DCMAKE_PREFIX_PATH="$QT_BN"
     cmake --build build/binja-sdk --target rikugan_binja
     package binja "build/binja-sdk/librikugan.$EXT"
     built=1
@@ -111,7 +111,7 @@ elif [ "$WANT_BN" = 1 ]; then
         echo "== Binary Ninja at $BN"
         QT_BN=$(qt 6.11.1)
         cmake -S . -B build/binja -G "$GEN" -DRIKUGAN_HOST=binja -DOMC_DIR="$OMC_DIR" -DBN_INSTALL_DIR="$BN" \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$QT_BN"
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DRIKUGAN_UPDATES=ON -DCMAKE_PREFIX_PATH="$QT_BN"
         cmake --build build/binja --target rikugan_binja
         package binja "build/binja/librikugan.$EXT"
         built=1
@@ -124,7 +124,7 @@ if [ "$WANT_IDA" = 1 ] && [ "$SDK" = 1 ]; then
     echo "== IDA Pro (no install: the SDK and stand-ins for IDA's Qt)"
     QT_IDA=$(qt 6.8.2)
     cmake -S . -B build/ida-sdk -G "$GEN" -DRIKUGAN_HOST=ida -DRIKUGAN_SDK_ONLY=ON -DOMC_DIR="$OMC_DIR" \
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$QT_IDA"
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DRIKUGAN_UPDATES=ON -DCMAKE_PREFIX_PATH="$QT_IDA"
     cmake --build build/ida-sdk --target rikugan_ida
     package ida "build/ida-sdk/rikugan.$EXT"
     built=1
@@ -134,7 +134,7 @@ elif [ "$WANT_IDA" = 1 ]; then
         echo "== IDA Pro at $IDA"
         QT_IDA=$(qt 6.8.2)
         cmake -S . -B build/ida -G "$GEN" -DRIKUGAN_HOST=ida -DOMC_DIR="$OMC_DIR" -DIDA_DIR="$IDA" \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$QT_IDA"
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DRIKUGAN_UPDATES=ON -DCMAKE_PREFIX_PATH="$QT_IDA"
         cmake --build build/ida --target rikugan_ida
         package ida "build/ida/rikugan.$EXT"
         built=1

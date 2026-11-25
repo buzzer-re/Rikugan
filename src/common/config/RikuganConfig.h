@@ -45,6 +45,8 @@ struct RikuganConfig {
     int bulkRenamerMaxConcurrent = 3;
     // Binary Ninja's MCP server (HostMcp), e.g. "http://127.0.0.1:24642/mcp"; empty: from Binary Ninja's settings.
     QString hostMcpUrl;
+    // Look for a newer release once a day (update/Updater.h); an update is installed only when the user says so.
+    bool checkForUpdates = true;
 
     // Loads from disk (defaults for anything missing or invalid).
     static RikuganConfig load();

@@ -24,7 +24,11 @@
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <pthread.h>
+#ifdef __APPLE__
+#include <sys/ucontext.h>  // the context types only: <ucontext.h> wants _XOPEN_SOURCE for its deprecated routines
+#else
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 #endif
 

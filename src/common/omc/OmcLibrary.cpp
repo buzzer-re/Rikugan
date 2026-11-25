@@ -1,39 +1,25 @@
 #include "common/omc/OmcLibrary.h"
 
-#include <iterator>
-
 #include <omc.h>
 
 #ifdef _WIN32
+#include <QDir>
+#include <QFileInfo>
+
 #include <windows.h>
+
+#include "common/util/ModulePath.h"
 #endif
 
 namespace rk {
 
 #ifdef _WIN32
-namespace {
-
-// The folder of the module this code is linked into (the plugin DLL, or the test executable).
-QString moduleDir() {
-    HMODULE self = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(&loadOmcLibrary), &self))
-        return {};
-    wchar_t path[32768];
-    const DWORD n = GetModuleFileNameW(self, path, DWORD(std::size(path)));
-    if (n == 0 || n >= std::size(path)) return {};
-    const QString file = QString::fromWCharArray(path, int(n));
-    return file.left(file.lastIndexOf(QLatin1Char('\\')));
-}
-
-}  // namespace
-
 bool loadOmcLibrary(QString* error) {
     static bool loaded = false;
     if (!loaded) {
         // IDA: plugins\rikugan\{rikugan.dll, libomc.dll} (a plugin folder). Binary Ninja loads every DLL at the top of
         // its plugins folder as a plugin, so libomc.dll goes one level down: plugins\rikugan.dll + plugins\rikugan\.
-        const QString dir = moduleDir();
+        const QString dir = QDir::toNativeSeparators(QFileInfo(modulePath()).absolutePath());
         QString tried;
         for (const QString& dll : {dir + QStringLiteral("\\libomc.dll"), dir + QStringLiteral("\\rikugan\\libomc.dll")}) {
             if (GetFileAttributesW(reinterpret_cast<LPCWSTR>(dll.utf16())) == INVALID_FILE_ATTRIBUTES) {

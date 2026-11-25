@@ -65,6 +65,7 @@ RikuganConfig RikuganConfig::load() {
     str("session_storage_dir", c.sessionStorageDir);
     integer("exploration_turn_limit", c.explorationTurnLimit);
     boolean("silent_retry_mode", c.silentRetryMode);
+    boolean("check_for_updates", c.checkForUpdates);
     c.disabledSkills = toStrings(o.value(QStringLiteral("disabled_skills")));
     str("active_profile", c.activeProfile);
     c.customProfiles = o.value(QStringLiteral("custom_profiles")).toObject();
@@ -115,6 +116,7 @@ bool RikuganConfig::save() const {
         {"bulk_renamer_batch_size", c.bulkRenamerBatchSize},
         {"bulk_renamer_max_concurrent", c.bulkRenamerMaxConcurrent},
         {"binja_mcp_url", c.hostMcpUrl},
+        {"check_for_updates", c.checkForUpdates},
     };
     // the file holds API keys of custom endpoints
     return writeFileAtomic(paths::configFile(), QJsonDocument(o).toJson(QJsonDocument::Indented), 0600);

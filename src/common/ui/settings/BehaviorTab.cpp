@@ -5,6 +5,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -12,6 +13,7 @@
 #include <QVBoxLayout>
 
 #include "common/config/Paths.h"
+#include "common/update/Updater.h"
 
 namespace rk {
 
@@ -103,6 +105,51 @@ BehaviorTab::BehaviorTab(const RikuganConfig& cfg, QWidget* parent) : QWidget(pa
     form->addRow(tr("Bulk renamer max concurrent:"), renamerConcurrent_);
 
     layout->addWidget(group);
+
+    // updates: once a day, asking before anything is installed (update/Updater.h)
+    auto* updates = new QGroupBox(tr("Updates"));
+    auto* uform = new QFormLayout(updates);
+    using update::Updater;
+    Updater& updater = Updater::instance();
+    auto* urow = new QHBoxLayout;
+    checkForUpdates_ = new QCheckBox(tr("Check for updates once a day"));
+    checkForUpdates_->setChecked(cfg.checkForUpdates);
+    checkForUpdates_->setToolTip(tr("Rikugan looks for a newer release on GitHub once a day. It shows it in the panel and "
+                                    "installs it only when you say so. The host uses it after a restart."));
+    urow->addWidget(checkForUpdates_, 1);
+    auto* checkNow = new QPushButton(tr("Check now"));
+    urow->addWidget(checkNow);
+    uform->addRow(urow);
+    updateStatus_ = new QLabel;
+    updateStatus_->setWordWrap(true);
+    updateStatus_->setProperty("rkMuted", true);
+    uform->addRow(updateStatus_);
+    auto status = [this] {
+        const Updater& u = Updater::instance();
+        QString s = tr("Rikugan %1").arg(update::currentVersion());
+        switch (u.state()) {
+        case Updater::State::Checking: s += tr(" \u00B7 checking\u2026"); break;
+        case Updater::State::UpToDate: s += tr(" \u00B7 the latest release"); break;
+        case Updater::State::Available: s += tr(" \u00B7 %1 is available (the panel offers it)").arg(u.release().version); break;
+        case Updater::State::Installing: s += QStringLiteral(" \u00B7 ") + u.message(); break;
+        case Updater::State::Installed: s += tr(" \u00B7 %1 is installed: restart to use it").arg(u.release().version); break;
+        case Updater::State::Failed: s += QStringLiteral(" \u00B7 ") + u.message(); break;
+        case Updater::State::Idle: break;
+        }
+        updateStatus_->setText(s);
+    };
+    connect(&updater, &Updater::changed, this, status);
+    connect(checkNow, &QPushButton::clicked, &updater, [] { Updater::instance().check(true); });
+    if (!updater.supported()) {
+        // a developer's build: updating it is rebuilding it
+        checkForUpdates_->setEnabled(false);
+        checkNow->setEnabled(false);
+        updateStatus_->setText(tr("Rikugan %1 \u00B7 this build was not installed from a release package, so it does not "
+                                  "update itself").arg(update::currentVersion()));
+    } else {
+        status();
+    }
+    layout->addWidget(updates);
     layout->addStretch();
     scroll->setWidget(content);
     outer->addWidget(scroll);
@@ -120,6 +167,7 @@ void BehaviorTab::apply(RikuganConfig& c) const {
     c.approveMutations = approveMutations_->isChecked();
     c.bulkRenamerBatchSize = renamerBatch_->value();
     c.bulkRenamerMaxConcurrent = renamerConcurrent_->value();
+    c.checkForUpdates = checkForUpdates_->isChecked();
 }
 
 }  // namespace rk
