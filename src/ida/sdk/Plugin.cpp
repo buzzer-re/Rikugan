@@ -178,7 +178,7 @@ struct RikuganPlugmod : public plugmod_t, public event_listener_t {
         }
         panel->setManagerShown(full);
         // the click comes from the panel's own header: the move happens once it has returned
-        panel->setWindowToggle(full, [this, full] {
+        panel->setWindowToggle(full, [full] {
             QTimer::singleShot(0, rk::uiAnchor(), [full] {
                 if (g_mod) g_mod->setFullWindow(!full);
             });
