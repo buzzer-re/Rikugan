@@ -116,26 +116,32 @@ public:
         p->setRenderHint(QPainter::Antialiasing);
         const QRect rect = o.rect.adjusted(4, 0, -4, 0);
         if (r.heading) {
-            QFont f = t.uiSmall;
-            f.setWeight(QFont::DemiBold);
-            f.setCapitalization(QFont::AllUppercase);
-            f.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
-            p->setFont(f);
-            p->setPen(t.fg3);
+            // the action keeps its width at the right; the name, then the note, take what is left
             const QRect hr = rect.adjusted(8, 2, -8, 0);
-            p->drawText(hr, Qt::AlignLeft | Qt::AlignVCenter, e.section);
-            int x = hr.left() + QFontMetrics(f).horizontalAdvance(e.section) + 10;
-            if (!e.sectionNote.isEmpty()) {
-                p->setFont(t.uiSmall);
-                p->setPen(e.sectionNote.startsWith(QStringLiteral("\u25CF")) ? t.ok : t.fg3);
-                p->drawText(QRect(x, hr.top(), hr.right() - x, hr.height()), Qt::AlignLeft | Qt::AlignVCenter, e.sectionNote);
-            }
+            int right = hr.right();
             if (!e.sectionAction.isEmpty()) {
                 QFont af = t.uiSmall;
                 af.setWeight(QFont::DemiBold);
                 p->setFont(af);
                 p->setPen(t.accent);
                 p->drawText(hr, Qt::AlignRight | Qt::AlignVCenter, e.sectionAction);
+                right -= QFontMetrics(af).horizontalAdvance(e.sectionAction) + 10;
+            }
+            QFont f = t.uiSmall;
+            f.setWeight(QFont::DemiBold);
+            f.setCapitalization(QFont::AllUppercase);
+            f.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
+            const QFontMetrics fm(f);
+            const QString section = fm.elidedText(e.section, Qt::ElideRight, right - hr.left());
+            p->setFont(f);
+            p->setPen(t.fg3);
+            p->drawText(QRect(hr.left(), hr.top(), right - hr.left(), hr.height()), Qt::AlignLeft | Qt::AlignVCenter, section);
+            const int x = hr.left() + fm.horizontalAdvance(section) + 10;
+            const QString note = QFontMetrics(t.uiSmall).elidedText(e.sectionNote, Qt::ElideRight, right - x);
+            if (!note.isEmpty()) {
+                p->setFont(t.uiSmall);
+                p->setPen(e.sectionNote.startsWith(QStringLiteral("\u25CF")) ? t.ok : t.fg3);
+                p->drawText(QRect(x, hr.top(), right - x, hr.height()), Qt::AlignLeft | Qt::AlignVCenter, note);
             }
             p->restore();
             return;
