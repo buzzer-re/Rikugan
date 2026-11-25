@@ -12,7 +12,7 @@ Rikugan is a native C++ plugin. Its agent — turn loop, model providers and log
 
 ## Key Facts
 
-- **Hosts**: IDA Pro 9.3 (Hex-Rays for the decompiler tools) and Binary Ninja (UI mode). Linux x86_64 and arm64, macOS arm64 and x86_64, Windows 10/11 x64.
+- **Hosts**: IDA Pro 9.3 or later (Hex-Rays for the decompiler tools) and Binary Ninja (UI mode). Linux x86_64 and arm64, macOS arm64 and x86_64, Windows 10/11 x64.
 - **Models**: every provider and login libomc supports (Claude, ChatGPT/Codex, Gemini, Copilot, API keys …), any OpenAI-compatible endpoint, local servers (Ollama, LM Studio, llama.cpp).
 - **Tools**: 50 shared analysis tools, plus 12 Binary Ninja IL tools or 8 IDA microcode/pseudocode tools; chat tools (ask_user, save_memory, spawn_subagent, exploration_report, research_note; in Binary Ninja list_databases, open_database (opens a new tab) and ask_database); read/write/edit/grep/glob/bash/web_search/todo, each disk or shell kind asking once per chat.
 - **Full window**: the header's expand button moves the chat into a window-sized tab with a list of every open database's chats; one click switches between them (IDA and Binary Ninja).

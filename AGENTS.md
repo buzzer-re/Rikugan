@@ -10,7 +10,8 @@ analysis tools, the Qt chat panel, per-database chats, undo of database changes,
 modes, subagents that can use the host tools, the bulk renamer, analysis profiles, and the RE prompts and skills.
 
 Platforms: Linux, macOS and Windows 10/11 x64 (libomc.dll, omc's MinGW-w64 build, next to the MSVC-built plugin).
-Hosts: IDA Pro 9.3, Binary Ninja (built against the API revision in `<BN install>/api_REVISION.txt`).
+Hosts: IDA Pro 9.3 or later (built against the 9.3 SDK), Binary Ninja (built against the API revision in
+`<BN install>/api_REVISION.txt`).
 
 ## Directory Structure
 
