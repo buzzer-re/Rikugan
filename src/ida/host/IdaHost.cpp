@@ -107,6 +107,23 @@ void IdaHost::navigate(uint64_t ea) {
     mainOr(*this, MainAccess::Read, false, [ea] { return jumpto(ea_t(ea)); });
 }
 
+void IdaHost::databaseChanged() {
+    // Hex-Rays redraws a pseudocode view for an edit made in it, not for a name or type a tool changed: every open
+    // one decompiles again, and the disassembly views repaint
+    const bool decompiler = hasDecompiler();
+    mainOr(*this, MainAccess::Write, false, [decompiler] {
+        if (decompiler) {
+            for (char c = 'A'; c <= 'Z'; ++c) {
+                const char title[] = {'P', 's', 'e', 'u', 'd', 'o', 'c', 'o', 'd', 'e', '-', c, '\0'};
+                if (TWidget* w = find_widget(title))
+                    if (vdui_t* vu = get_widget_vdui(w)) vu->refresh_view(true);
+            }
+        }
+        refresh_idaview_anyway();
+        return true;
+    });
+}
+
 bool IdaHost::runOnMainThread(const std::function<void()>& fn, MainAccess access) {
     if (is_main_thread()) {
         fn();

@@ -126,8 +126,9 @@ omc events -> EventQueue -> one coalesced QEvent -> ChatSession::frame -> Transc
    as `/compact`, sends no `prompt_result`).
 5. Tool calls run through `ToolDispatcher::execute`: profile denial → mode phase gate → decompiler requirement →
    script approval → `approve_mutations` → undo pre-state → run (on the host main thread for `MainThread` tools) →
-   mutation record → result cache → injection-marker strip → IOC filter → artifact cap (oversized results keep head
-   and tail; the whole text goes to a file in the session's working directory that omc's `read` can page).
+   view refresh (`Host::databaseChanged`, after a change: IDA re-decompiles its open pseudocode views) → mutation
+   record → result cache → injection-marker strip → IOC filter → artifact cap (oversized results keep head and tail;
+   the whole text goes to a file in the session's working directory that omc's `read` can page).
 6. Cards (approvals, `ask_user`, plan/save decisions, disk/shell permissions) block the asking worker, never the UI
    thread. They are live widgets in their transcript rows.
 

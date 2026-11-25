@@ -299,7 +299,9 @@ Flags (`tools/Tool.h`): `Mutating`, `MainThread` (IDA: every tool; BN: UI and mu
 8. Result cache lookup (`list_functions`, `list_strings`, `get_binary_info`, `decompile_function`, `function_xrefs`;
    64-entry LRU per database, flushed by any successful mutation).
 9. Run — on the host main thread for `MainThread` tools. `ToolError` becomes `Error: <message>`; other exceptions
-   become `Unexpected error: ...` and are logged.
+   become `Unexpected error: ...` and are logged. A successful `Mutating` tool then calls `Host::databaseChanged`
+   (also called after `/undo`). IDA re-decompiles its open pseudocode views there, because Hex-Rays does not redraw
+   them for a change made outside them. Binary Ninja's views redraw on their own.
 10. Mutation record pushed to the chat's `MutationLog`.
 11. `stripInjectionMarkers`, then the profile's IOC filter. omc's own tools (files, shell, web, MCP servers) get the
     same through `omc_set_result_filter` (`SessionListener::filterToolResult`).

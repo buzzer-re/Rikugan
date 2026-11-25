@@ -15,7 +15,7 @@
 
 - **libomc**: the agent runs in-process; Rikugan talks to it with omc's RPC frames (`omc_send` / event callback), one omc session plus one worker thread per chat (`src/common/omc/OmcSession.h`).
 - **Host tools**: Rikugan's tools are registered with omc through `set_host_tools`; omc emits `host_tool_call`, Rikugan answers `host_tool_result`. Mutating and script tools are exclusive (run alone, in order).
-- **Tool pipeline** (`ToolDispatcher::execute`): profile denial → mode phase gate → decompiler requirement → script approval → mutation approval → undo pre-state → run (host main thread when required) → mutation record → result cache → injection-marker strip → IOC filter → artifact cap.
+- **Tool pipeline** (`ToolDispatcher::execute`): profile denial → mode phase gate → decompiler requirement → script approval → mutation approval → undo pre-state → run (host main thread when required) → view refresh after a change (`Host::databaseChanged`: IDA re-decompiles its open pseudocode views) → mutation record → result cache → injection-marker strip → IOC filter → artifact cap.
 - **Threads**: the host UI thread never waits; frames reach it through `EventQueue` (one coalesced event per burst); tool calls run on an 8-thread pool; SDK calls are marshalled to the host main thread.
 - **Chats**: per database (`~/.rikugan/sessions/<db id>/chats.json`), resumed from omc session files; at most 4 live omc sessions per process.
 - **Undo**: `/undo [N]` reverses renames, comments and prototypes; type, patch and IL/microcode tools are recorded as irreversible.

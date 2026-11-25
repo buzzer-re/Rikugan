@@ -72,6 +72,9 @@ public:
     virtual PythonResult runPython(const QString& code, const std::shared_ptr<CancelToken>& token) = 0;
     virtual bool writeBytes(uint64_t ea, const QByteArray& bytes) = 0;
     virtual QByteArray readBytes(uint64_t ea, size_t n) = 0;
+    // A tool or /undo just changed the database. Binary Ninja's views redraw on their own; IDA's decompiler views
+    // do not for a change made outside them, so its host refreshes them here.
+    virtual void databaseChanged() {}
 
     // Set when the plugin unloads: waits on the main thread give up.
     static std::atomic<bool> closing;

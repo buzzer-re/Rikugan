@@ -48,7 +48,10 @@ void undo(ChatSession& chat, const QString& arg) {
         const MutationLog::UndoOutcome u = ctx->mutations->undo(count, [&](const QString& t, const QJsonObject& a) {
             return ToolDispatcher::runDirect(*ctx->host, *ctx->registry, ctx.get(), t, a);
         });
-        if (!u.undone.isEmpty() && ctx->cache) ctx->cache->invalidate();
+        if (!u.undone.isEmpty()) {
+            if (ctx->cache) ctx->cache->invalidate();
+            ctx->host->databaseChanged();
+        }
         if (ctx->ui) {
             for (const QString& d : u.undone) ctx->ui->postUiEvent(QJsonObject{{"type", "rikugan_mutation_undone"}, {"description", d}});
             ctx->ui->postUiEvent(output(u.text));

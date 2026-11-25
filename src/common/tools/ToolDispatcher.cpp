@@ -216,6 +216,7 @@ ToolResult ToolDispatcher::execute(ChatContext& chat, const QString& toolName, c
             if (mutating) chat.cache->invalidate();
             else chat.cache->put(toolName, args, result.text);
         }
+        if (mutating && !result.isError) host.databaseChanged();
     }
 
     QJsonObject rk{{"tool", toolName}};

@@ -33,6 +33,7 @@ public:
     PythonResult runPython(const QString& code, const std::shared_ptr<CancelToken>& token) override;
     bool writeBytes(uint64_t ea, const QByteArray& bytes) override;
     QByteArray readBytes(uint64_t ea, size_t n) override;
+    void databaseChanged() override;
 
     // The plugin's ui_screen_ea_changed hook keeps this current (any thread).
     void setCurrentAddress(uint64_t ea) { currentEa_.store(ea, std::memory_order_relaxed); }
