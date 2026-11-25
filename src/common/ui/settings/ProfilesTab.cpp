@@ -141,7 +141,8 @@ QGroupBox* ProfilesTab::buildIocFiltersSection() {
         auto* col = new QVBoxLayout;
         col->setSpacing(3);
         for (qsizetype i = c ? mid : 0; i < (c ? cats.size() : mid); ++i) {
-            auto* cb = new QCheckBox(cats[i].second);
+            // a widget label takes & as a shortcut marker ("Windows & Unix" showed as "Windows _Unix")
+            auto* cb = new QCheckBox(QString(cats[i].second).replace(QLatin1Char('&'), QStringLiteral("&&")));
             ioc_.insert(cats[i].first, cb);
             col->addWidget(cb);
         }
