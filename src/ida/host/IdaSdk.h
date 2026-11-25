@@ -6,16 +6,11 @@
 // pro.h defines it from __LINUX__/__MAC__; the build's -D__UNIX__=1 would make that a redefinition warning
 #undef __UNIX__
 
-// The SDK headers do not build cleanly with -Wall -Wextra (or /W3); their warnings are not ours to fix.
+// The SDK headers do not build cleanly with /W3; their warnings are not ours to fix. GCC and clang take the SDK as a
+// SYSTEM include directory (CMakeLists.txt), which silences them there.
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4018 4146 4244 4267 4996)
-#else
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-compare"
-#pragma GCC diagnostic ignored "-Wparentheses"
-#pragma GCC diagnostic ignored "-Wclass-memaccess"
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
 #include <pro.h>
@@ -42,6 +37,4 @@
 
 #ifdef _MSC_VER
 #pragma warning(pop)
-#else
-#pragma GCC diagnostic pop
 #endif

@@ -82,8 +82,9 @@ if(NOT Qt6_FOUND)
                         "`${_rk_fetch}` and pass -DCMAKE_PREFIX_PATH=$HOME/Qt/${_rk_qt}/${_rk_kit} "
                         "(macos, gcc_64, gcc_arm64 or msvc2022_64), or run the install script, which does both.")
 endif()
-# Qt before 6.9 calls __yield() in qyieldcpu.h without including <arm_acle.h>; recent Apple clang refuses that
-if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64" AND Qt6_VERSION VERSION_LESS 6.9)
+# Qt before 6.9 calls __yield() in qyieldcpu.h without including <arm_acle.h>. Clang on arm64 warns about the implicit
+# declaration, and recent Apple clang refuses it.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64" AND Qt6_VERSION VERSION_LESS 6.9)
     add_compile_options("SHELL:-include arm_acle.h")
 endif()
 if(RIKUGAN_BUILD_TESTS)
@@ -218,7 +219,9 @@ elseif(RIKUGAN_HOST STREQUAL "ida")
     set(IDA_SDK "${CMAKE_SOURCE_DIR}/third_party/ida-sdk/src")
     file(GLOB_RECURSE RK_IDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/ida/*.cpp" "${CMAKE_SOURCE_DIR}/src/ida/*.h")
     add_library(rikugan_ida_objects OBJECT ${RK_IDA_SOURCES})
-    target_include_directories(rikugan_ida_objects PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_INCLUDE_DIR}" "${IDA_SDK}/include")
+    target_include_directories(rikugan_ida_objects PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_INCLUDE_DIR}")
+    # the SDK's own warnings are not ours to fix (the Binary Ninja API is added as SYSTEM too)
+    target_include_directories(rikugan_ida_objects SYSTEM PRIVATE "${IDA_SDK}/include")
     target_compile_definitions(rikugan_ida_objects PRIVATE $<TARGET_PROPERTY:rikugan_common,INTERFACE_COMPILE_DEFINITIONS>)
     if(MSVC)
         set(_ida_cxx_opts ${RK_WARNINGS})
@@ -317,7 +320,8 @@ elseif(RIKUGAN_HOST STREQUAL "ida")
         set(RK_IDA_TOOL_SOURCES ${RK_IDA_SOURCES})
         list(REMOVE_ITEM RK_IDA_TOOL_SOURCES "${CMAKE_SOURCE_DIR}/src/ida/sdk/Plugin.cpp")
         add_executable(rikugan_ida_tooltest ${RK_IDA_TOOLTEST_SOURCES} ${RK_IDA_TOOL_SOURCES} $<TARGET_OBJECTS:rikugan_common>)
-        target_include_directories(rikugan_ida_tooltest PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_INCLUDE_DIR}" "${IDA_SDK}/include")
+        target_include_directories(rikugan_ida_tooltest PRIVATE "${CMAKE_SOURCE_DIR}/src" "${OMC_INCLUDE_DIR}")
+        target_include_directories(rikugan_ida_tooltest SYSTEM PRIVATE "${IDA_SDK}/include")
         target_compile_options(rikugan_ida_tooltest PRIVATE ${_ida_cxx_opts})
         target_compile_definitions(rikugan_ida_tooltest PRIVATE ${_ida_defs}
             $<TARGET_PROPERTY:rikugan_common,INTERFACE_COMPILE_DEFINITIONS>

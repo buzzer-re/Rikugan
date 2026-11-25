@@ -18,7 +18,7 @@
 
 namespace rk::binja {
 
-class BnPython : public BinaryNinja::ScriptingOutputListener {
+class BnPython final : public BinaryNinja::ScriptingOutputListener {
 public:
     explicit BnPython(BinaryNinja::Ref<BinaryNinja::BinaryView> view);
     ~BnPython();
