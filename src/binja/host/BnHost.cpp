@@ -88,10 +88,13 @@ QString BnHost::currentFunctionLabel() const {
 }
 
 bool BnHost::navigateTo(uint64_t ea) {
-    // BinaryView::Navigate for the known view types, then the active view frame
+    // Navigate takes "<view type>:<binary view type>" (Linear:PE, Graph:ELF): the view the user has open on this
+    // database, else its linear view. Both reach this database's frame whichever window is active; the active
+    // frame is the last resort (it is another window's when that one has the focus).
     const bool ok = onMain(*this, MainAccess::Read, [&]() -> bool {
-        for (const char* viewType : {"Graph:IL", "Graph:Disassembly", "Linear:Disassembly", "Linear"})
-            if (view_->Navigate(viewType, ea)) return true;
+        const std::string current = view_->GetCurrentView();
+        if (!current.empty() && view_->Navigate(current, ea)) return true;
+        if (view_->Navigate("Linear:" + view_->GetTypeName(), ea)) return true;
         UIContext* ctx = UIContext::activeContext();
         ViewFrame* frame = ctx ? ctx->getCurrentViewFrame() : nullptr;
         return frame && frame->navigate(view_, ea);
