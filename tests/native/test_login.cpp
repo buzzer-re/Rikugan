@@ -86,7 +86,7 @@ private Q_SLOTS:
             QTcpSocket s;
             s.connectToHost(QHostAddress::LocalHost, quint16(port));
             return s.waitForConnected(100);
-        }));
+        }, 60000));  // a Python start can take seconds on a busy CI runner
         rk::setEnv("KIMI_CODE_OAUTH_HOST", QStringLiteral("http://127.0.0.1:%1/kimi").arg(port));
         rk::setEnv("OMC_AUTH_POLL_SCALE_MS", "20");
         rk::setEnv("OMC_NO_BROWSER", "1");

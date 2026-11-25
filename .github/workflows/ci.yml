@@ -74,6 +74,7 @@ jobs:
           name: tests-${{ matrix.name }}
           path: ${{ runner.temp }}/rikugan-tests/
           if-no-files-found: ignore
+          include-hidden-files: true # the test home's .rikugan (sessions, logs)
           retention-days: 14
       - name: Plugins without the hosts (zero warnings)
         run: build-tools/ci.sh plugins

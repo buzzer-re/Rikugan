@@ -90,8 +90,11 @@ public:
                                note(QStringLiteral("end %1").arg(rk::hex(ea)));
                                return ToolResult::ok(QStringLiteral("Renamed %1 → %2").arg(old, c.str("new_name")));
                            }});
+        // 5 s of wall time, not a count of sleeps: macOS stretches short sleeps on a busy runner
         r.add(rk::ToolSpec{"slow_tool", "test", "Waits until cancelled (5 s at most).", {}, 0, 20000, [this](rk::ToolCall& c) {
-                               for (int i = 0; i < 500; ++i) {
+                               QElapsedTimer clock;
+                               clock.start();
+                               while (clock.elapsed() < 5000) {
                                    if (c.cancelled()) {
                                        slowCancelled = true;
                                        return ToolResult::error(QStringLiteral("cancelled"));

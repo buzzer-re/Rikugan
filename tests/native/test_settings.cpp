@@ -66,7 +66,8 @@ private Q_SLOTS:
             auto* providers = dlg.findChild<QComboBox*>(QStringLiteral("providerCombo"));
             auto* model = dlg.findChild<QComboBox*>(QStringLiteral("modelCombo"));
             QVERIFY(providers && model);
-            // the configured model's provider and model are selected
+            // the configured model's provider and model are selected, once the models came (get_available_models)
+            QVERIFY(rktest::waitFor([&] { return model->count() > 0; }, 30000));
             QCOMPARE(providers->currentData().toString(), QStringLiteral("mock"));
             QCOMPARE(model->currentText(), QStringLiteral("mock-1"));
             // another provider offers its own models, and its first one becomes the choice

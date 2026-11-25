@@ -160,7 +160,7 @@ private Q_SLOTS:
             QTcpSocket s;
             s.connectToHost(QHostAddress::LocalHost, quint16(port));
             return s.waitForConnected(100);
-        }));
+        }, 60000));  // a Python start can take seconds on a busy CI runner
 
         rk::RikuganConfig& cfg = rk::RikuganConfig::instance();
         savedModel = cfg.model;
