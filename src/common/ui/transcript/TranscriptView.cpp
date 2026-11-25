@@ -518,6 +518,11 @@ private:
             d->setPlainText(it.text);
             return;
         case ItemKind::CommandOutput:
+            if (it.markdown) {  // a mode's summary, the memory file: Markdown, in the output's frame
+                d->setMarkdown(it.text.trimmed(), QTextDocument::MarkdownDialectGitHub);
+                polishMarkdown(d);
+                return;
+            }
             d->setDefaultFont(t.monoSmall);
             d->setPlainText(it.text.trimmed());
             return;
@@ -770,7 +775,7 @@ private:
         case ItemKind::CommandOutput: {
             l.doc = withDoc(L + 10, 9, W - 20);
             l.box = QRect(L, 3, W, l.doc.height() + 12);
-            l.nodeY = l.box.top() + 6 + lineH(it.kind == ItemKind::Error ? t.ui : t.monoSmall) / 2;
+            l.nodeY = l.box.top() + 6 + lineH(it.kind == ItemKind::Error || it.markdown ? t.ui : t.monoSmall) / 2;
             l.height = l.box.bottom() + 6;
             break;
         }

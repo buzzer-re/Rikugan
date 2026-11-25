@@ -27,8 +27,9 @@ namespace rk {
 
 namespace {
 
-QJsonObject output(const QString& text, bool error = false) {
-    return QJsonObject{{"type", "rikugan_command_output"}, {"text", text}, {"isError", error}};
+// markdown: Rikugan's own text in Markdown (shown rendered); otherwise preformatted, like omc's command output
+QJsonObject output(const QString& text, bool error = false, bool markdown = false) {
+    return QJsonObject{{"type", "rikugan_command_output"}, {"text", text}, {"isError", error}, {"markdown", markdown}};
 }
 
 void undo(ChatSession& chat, const QString& arg) {
@@ -63,14 +64,14 @@ void memory(ChatSession& chat) {
     }
     if (!QFileInfo::exists(path)) {
         chat.postLocal(output(QStringLiteral("No persistent memory file found.\n\nThe agent can save facts with the `save_memory` "
-                                             "tool, and they will be stored in `%1`.").arg(path)));
+                                             "tool, and they will be stored in `%1`.").arg(path), false, true));
         return;
     }
     bool ok = false;
     const QString content = QString::fromUtf8(readFile(path, &ok)).trimmed();
     if (!ok) chat.postLocal(output(QStringLiteral("Failed to read RIKUGAN.md: %1").arg(path), true));
     else if (content.isEmpty()) chat.postLocal(output(QStringLiteral("RIKUGAN.md exists but is empty.")));
-    else chat.postLocal(output(QStringLiteral("**Persistent Memory** (`%1`):\n\n%2").arg(path, content)));
+    else chat.postLocal(output(QStringLiteral("**Persistent memory** (`%1`)\n\n%2").arg(path, content), false, true));
 }
 
 void mcp(ChatSession& chat) {

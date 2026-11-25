@@ -555,6 +555,7 @@ void TranscriptModel::applyFrame(const QJsonObject& f) {
         TranscriptItem c;
         c.kind = f.value(QLatin1String("isError")).toBool() ? ItemKind::Error : ItemKind::CommandOutput;
         c.text = str(f, "text");
+        c.markdown = f.value(QLatin1String("markdown")).toBool();
         append(std::move(c));
     } else if (type == QLatin1String("rikugan_ui_action")) {
         Q_EMIT uiAction(str(f, "action"), str(f, "arg"));

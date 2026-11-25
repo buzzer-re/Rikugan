@@ -43,6 +43,7 @@ struct TranscriptItem {
     QString key;           // toolCallId / permission key / request id / btw record id
     qint64 timeMs = 0;
     QString text;          // markdown for Text/Thinking/User/Btw/Note; plain for the others
+    bool markdown = false;  // CommandOutput: Rikugan's own output written in Markdown (omc's is preformatted)
     bool streaming = false;
     QList<Chip> chips;     // in `text` (Text items) or in `label` (Tool items)
     QString title;         // Step: "rikugan"; Phase: the phase; Finding: category; Note: title; Btw: question

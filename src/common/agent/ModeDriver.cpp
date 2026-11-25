@@ -245,8 +245,8 @@ private:
     void post(const QJsonObject& e) {
         if (ctx_->ui) ctx_->ui->postUiEvent(e);
     }
-    void say(const QString& text, bool error) {
-        post(QJsonObject{{"type", "rikugan_command_output"}, {"text", text}, {"isError", error}});
+    void say(const QString& text, bool error, bool markdown = false) {
+        post(QJsonObject{{"type", "rikugan_command_output"}, {"text", text}, {"isError", error}, {"markdown", markdown}});
     }
     void phaseEvent(const QString& phase, const QString& text) {
         post(QJsonObject{{"type", "rikugan_mode_phase"}, {"mode", mode_}, {"phase", phase}, {"text", text}});
@@ -429,7 +429,7 @@ private:
             return;
         }
         say(withoutMarker(fill(promptFile("exploration/explore_only_summary.md"), {{"knowledge_summary", ctx_->mode->summary()}})),
-            false);
+            false, true);
     }
 
     // ---- /modify ----
@@ -652,7 +652,7 @@ private:
                                                                  {"notes_dir", in_.notesDir},
                                                                  {"note_lines", lines.join(QLatin1Char('\n'))}});
         }
-        say(complete, false);
+        say(complete, false, true);
         endText_ = QStringLiteral("%1 note(s) written.").arg(notes.size());
     }
 
