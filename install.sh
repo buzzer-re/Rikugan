@@ -136,3 +136,4 @@ fi
 
 [ "$installed" = 1 ] || { echo "No host installed."; exit 1; }
 echo "Done. Restart the host, then connect a provider from the model picker (Ctrl+M) or Settings → Provider."
+echo "Rikugan installs later releases itself, when you agree (Settings → Behavior → Updates)."

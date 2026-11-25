@@ -199,6 +199,7 @@ function Invoke-RikuganInstall {
         }
         if (-not $installed) { Stop-Install 'no host found (pass -Target with -BnPluginsDir or -IdaPluginsDir)' }
         Write-Step 'done. Restart the host, then connect a provider from the model picker (Ctrl+M) or Settings -> Provider.'
+        Write-Step 'Rikugan installs later releases itself, when you agree (Settings -> Behavior -> Updates).'
     } finally {
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
