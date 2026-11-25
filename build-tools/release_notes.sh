@@ -33,8 +33,8 @@ Windows (PowerShell):
 \$env:RIKUGAN_VERSION = '$V'; irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex
 \`\`\`
 
-Rikugan checks for a newer release once a day and asks before it installs one; Settings › Behavior › Check for updates
-turns that off.
+Rikugan checks for a newer release once a day and asks before it installs one. Settings › Behavior › Check for
+updates turns that off.
 
 | Package | Host | Runs on |
 |---|---|---|

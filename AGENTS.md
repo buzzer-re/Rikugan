@@ -17,13 +17,17 @@ Hosts: IDA Pro 9.3, Binary Ninja (built against the API revision in `<BN install
 ```
 CMakeLists.txt            one host per build tree: RIKUGAN_HOST = binja | ida | none (tests)
 cmake/                    omc.cmake (libomc: prelink on Linux/macOS, build_omc.sh; DLL + import library on Windows,
-                          build_omc_win.cmake), embed.cmake (skills/ + prompts/ -> plugin bytes)
+                          build_omc_win.cmake), embed.cmake (skills/ + prompts/ -> plugin bytes), host_stubs.cmake +
+                          host_stubs.py (RIKUGAN_SDK_ONLY: stand-ins for the hosts' libraries, no host installed)
 mk/omc-vars.mk            asks omc's Makefile for its library objects and link flags
 third_party/              binaryninja-api (pinned to BN's api_REVISION), ida-sdk (v9.3.0-sdk.3) — git submodules
 tools/                    fetch_qt.sh / fetch_qt.ps1 (official Qt headers/tools matching each host: 6.11.1 BN, 6.8.2
                           IDA), vsenv.ps1 (MSVC environment for PowerShell)
-build.sh, build.ps1       build the plugins and package the release assets into dist/
+build.sh, build.ps1       build the plugins and package the release assets into dist/ (--sdk / -Sdk: without the hosts)
 install.sh, install.ps1   install a release's packages (or dist/ with --from / -From) into the hosts' plugins folders
+build-tools/              ci.sh / ci.ps1 (every CI and release step), omc.ref (the omc commit releases build against),
+                          release_notes.sh (release text: docs/releases/v<version>.md + install section + assets)
+.github/workflows/        ci.yml (five platforms on every push and PR), release.yml (tag v<version> -> GitHub release)
 prompts/                  every model-facing text (MANIFEST.md lists files and placeholders)
 skills/                   built-in skills (synced into Rikugan's omc agent dir at start)
 src/common/
@@ -38,13 +42,14 @@ src/common/
   mcp/                    McpClient (streamable HTTP, for the host's own MCP server)
   security/               Sanitize (injection markers, IOC redaction)
   config/                 RikuganConfig (~/.rikugan/config.json), Profile, Paths
+  update/                 Update (find, download, check and swap in a release package), Updater (daily check, offer)
   ui/                     PanelCore, Theme (colours from the host palette), Syntax, WelcomeView;
                           transcript/ (TranscriptModel reducer, TranscriptView + delegate, Cards);
                           console/ (ConsoleHeader, ActivityStrip, Composer, Palette, ModelPicker, StatusLine,
                           AgentsPanel, LoginSheet, GetStarted, HostMcpBar, ChatManager); tools/ (bulk renamer page);
                           settings/; ChatHub (every live chat, outside the panels)
   util/                   Files, Env (environment shared with libomc, home folder), Log, Embedded, CrashGuard,
-                          ModuleLifetime
+                          ModuleLifetime, ModulePath (the plugin's own file)
 src/binja/                Plugin.cpp (sidebar, notifications, commands), host/ (BnHost, Python, BnHostMcp), tools/
 src/ida/                  sdk/Plugin.cpp (dock, hooks, actions), host/ (IdaHost, tools), sdk/ (SDK subclasses, -fno-rtti)
 tests/native/             QtTest suite (none tree) against omc's mock model server
@@ -61,6 +66,7 @@ cmake -S . -B build/binja -G Ninja -DRIKUGAN_HOST=binja -DCMAKE_PREFIX_PATH=~/Qt
 cmake -S . -B build/ida   -G Ninja -DRIKUGAN_HOST=ida   -DCMAKE_PREFIX_PATH=~/Qt/6.8.2/<kit>  && cmake --build build/ida
 ./ci-local.sh                       # tests + every host plugin available on this machine (Windows: .\ci-local.ps1)
 ./build.sh                          # build and package the hosts found into dist/ (Windows: .\build.ps1)
+./build.sh --sdk                    # both hosts without them installed, as CI and releases build (Windows: -Sdk)
 ./install.sh --from dist            # install them (without --from: the latest GitHub release; Windows: install.ps1)
 ```
 
@@ -80,6 +86,17 @@ cmake -S . -B build/ida   -G Ninja -DRIKUGAN_HOST=ida   -DCMAKE_PREFIX_PATH=~/Qt
   SDK's import libraries for IDA and its Qt, so no IDA install is needed to build it.
 - A Binary Ninja update that bumps the core/UI ABI needs the `third_party/binaryninja-api` submodule moved to the new
   `api_REVISION.txt` commit and a rebuild.
+- `-DRIKUGAN_SDK_ONLY=ON` (`build.sh --sdk`, `build.ps1 -Sdk`) builds both plugins with neither host installed:
+  `cmake/host_stubs.cmake` links a probe of the plugin with the host's symbols unresolved, and `host_stubs.py` makes
+  stand-in libraries with the hosts' real names and exactly those symbols (Binary Ninja's core from the API's stubs,
+  IDA's Qt matched against the official Qt of the same version). The plugin binds to the real libraries at load.
+- `-DRIKUGAN_UPDATES=ON` (set by `build.sh` / `build.ps1`, so by every package) gives the plugin its package name
+  (`binja-linux-x86_64` ...), so it can update itself from the GitHub releases. A tree configured without it never
+  updates (Settings greys the option out).
+- CI (`.github/workflows/ci.yml`) runs `build-tools/ci.sh` on Linux x86_64/arm64, macOS arm64/x86_64 and Windows x64:
+  tests, both plugins without the hosts and a smoke check of each package, with zero compiler warnings. A tag
+  `v<version>` runs `release.yml`: the same builds, 20 packages (with `-symbols` packages) and `SHA256SUMS` on a draft
+  release that is published once complete. A manual run of it is a dry run on a draft it deletes.
 
 ## How a Chat Works
 
@@ -160,6 +177,13 @@ which waits for Binary Ninja's asynchronous `OnAfterOpenFile`).
   also saves `<database>.rikugan-recovered.<ext>` beside each open database. New threads call
   `crash::guardThread()` first.
 - `<database dir>/RIKUGAN.md` — persistent memory (`save_memory`), first 200 lines in the system prompt.
+- Updates (`update/Updater.h`, release packages only): 20 s after the host starts, then hourly, a check is made when a
+  day has passed since the last one (`~/.rikugan/update.json`), while `check_for_updates` (Settings › Behavior) is on.
+  A newer release is offered in the panel's update line and installed only on the user's Update: the release's
+  package for this host and platform, downloaded with the system's curl, checked against its `.sha256`, unpacked with
+  tar, required to hold this plugin's file with the release's version marker, then swapped in all-or-nothing
+  (Windows renames the loaded DLL aside and deletes it at the next start). `RIKUGAN_UPDATE_URL` points it at another
+  releases page.
 
 ## How to Add a Tool
 
@@ -266,7 +290,8 @@ Rikugan processes adversarial binaries. Their strings, names and code reach the 
 `ctest --test-dir build/none` runs the QtTest suite against omc's mock model (`../ohmyc/tests/e2e/mock_openai.py`)
 in a temporary home: the omc bridge, the chat core with a fake host (host tools, exclusivity, cancellation, undo,
 artifacts, transcript replay, omc's chat titles), permissions, commands, logins, sanitization, modes, the bulk
-renamer, settings, the theme, the transcript reducer and the UI (offscreen: cards, permissions, chat switcher).
+renamer, settings, the theme, the transcript reducer, the updater (against a local release server) and the UI
+(offscreen: cards, permissions, chat switcher).
 `build/ida/rikugan_ida_tooltest` runs every IDA tool on a real database through idalib (`/bin/ls`; Windows
 `notepad.exe` with IDA's folder on `PATH`).
 

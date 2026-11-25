@@ -248,6 +248,7 @@ td code{font-size:.82rem}
       <li><a href="#installation">Installation</a></li>
       <li><a href="#models">Provider &amp; Model</a></li>
       <li><a href="#settings">Settings</a></li>
+      <li><a href="#updates">Updates</a></li>
     </ul>
   </div>
   <div class="sidebar-group">
@@ -298,7 +299,7 @@ td code{font-size:.82rem}
 <h2 id="requirements">Requirements</h2>
 <ul>
   <li><strong>IDA Pro 9.3</strong> (Hex-Rays for the decompiler tools) or <strong>Binary Ninja</strong> (UI mode)</li>
-  <li><strong>Linux, macOS or Windows 10/11 x64</strong></li>
+  <li><strong>Linux x86_64 or arm64, macOS arm64 or x86_64, or Windows 10/11 x64</strong> (the Linux versions are under <a href="#installation">Installation</a>)</li>
   <li>At least one model: an account login, an API key, or a local server</li>
 </ul>
 <div class="callout info">
@@ -312,7 +313,7 @@ td code{font-size:.82rem}
     <h4>Install the release</h4>
     <pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash      # Linux, macOS</code></pre>
     <pre><code class="language-powershell">irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex              # Windows</code></pre>
-    <p>The installer downloads the prebuilt plugin of each host it finds from the GitHub release, checks it against its <code>.sha256</code> and unpacks it into the host's plugins folder (<code>--binja-only</code>, <code>--ida-only</code>, <code>--version X.Y.Z</code>; on Windows <code>-Target</code>, <code>-Version</code>). A Rikugan 1.x (Python) install of the same host is moved to <code>~/.rikugan-1.x-backup/</code> first.</p>
+    <p>The installer looks up the latest GitHub release and downloads the package of each host it finds for this platform (<code>rikugan-&lt;version&gt;-&lt;host&gt;-&lt;os&gt;-&lt;arch&gt;.tar.gz</code>, a <code>.zip</code> on Windows). It checks each package against its <code>.sha256</code>, so a package that does not match is not installed, and unpacks it into the host's plugins folder. <code>--version X.Y.Z</code> installs another release and <code>--binja-only</code> / <code>--ida-only</code> one host (on Windows <code>-Version</code> and <code>-Target</code>). A Rikugan 1.x (Python) install of the same host is moved to <code>~/.rikugan-1.x-backup/</code> first.</p>
     <div class="table-wrap">
       <table>
         <tr><th>Host</th><th>Plugin</th></tr>
@@ -323,6 +324,17 @@ td code{font-size:.82rem}
         <tr><td>Binary Ninja (Windows)</td><td><code>%APPDATA%\Binary Ninja\plugins\rikugan.dll</code>, with <code>libomc.dll</code> in <code>plugins\rikugan\</code></td></tr>
       </table>
     </div>
+    <p>Each release is built for five platforms:</p>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Platform</th><th>Runs on</th></tr>
+        <tr><td>Linux x86_64</td><td>glibc 2.35 or later and OpenSSL 3 (Ubuntu 22.04+, Debian 12+, Fedora 36+)</td></tr>
+        <tr><td>Linux arm64</td><td>glibc 2.39 or later (Ubuntu 24.04+, Debian 13+, Fedora 40+)</td></tr>
+        <tr><td>macOS arm64, macOS x86_64</td><td>OpenSSL is built in</td></tr>
+        <tr><td>Windows x86_64</td><td>Windows 10 or 11</td></tr>
+      </table>
+    </div>
+    <p>Beside each package the release has a <code>-symbols</code> package with the debug information the plugin was stripped of. It is only needed to read the <code>module+offset</code> lines of a crash log.</p>
   </div>
 
   <div class="step">
@@ -331,6 +343,7 @@ td code{font-size:.82rem}
 git clone https://github.com/buzzer-re/Oh-My-C ohmyc     # libomc, next to Rikugan
 cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1; .\install.ps1 -From dist</code></pre>
     <p>The build scripts fetch the official Qt headers matching each host (Qt 6.11.1 for Binary Ninja, 6.8.2 for IDA 9.3), build the plugins and write the release packages to <code>dist/</code>. Linux and macOS need CMake, a C++20 compiler, the OpenSSL 3 and zlib headers, <code>curl</code>, and <code>bsdtar</code> or 7-Zip (Debian/Ubuntu: <code>sudo apt install build-essential cmake ninja-build libssl-dev zlib1g-dev libarchive-tools curl</code>; macOS: the Xcode command line tools and <code>brew install cmake openssl@3</code>). Windows needs Visual Studio 2022 or later with <strong>Desktop development with C++</strong>, and builds libomc through WSL or MSYS2, or takes it from omc's release (<code>.\build.ps1 -OmcVersion latest</code>). Hosts are looked up in their default places; <code>BN_INSTALL_DIR</code>, <code>IDA_DIR</code> and <code>OMC_DIR</code> point elsewhere.</p>
+    <p><code>./build.sh --sdk</code> (<code>.\build.ps1 -Sdk</code>) builds both plugins on a machine with neither host installed, the way CI and the releases build them. It also needs <code>python3</code>.</p>
   </div>
 
   <div class="step">
@@ -364,13 +377,22 @@ cd Rikugan && ./build.sh && ./install.sh --from dist      # Windows: .\build.ps1
   <table>
     <tr><th>Tab</th><th>What it holds</th></tr>
     <tr><td><strong>Provider</strong></td><td>Provider, login or API key, model and thinking level, custom connections, shared omc logins, local discovery</td></tr>
-    <tr><td><strong>Behavior</strong></td><td>Auto-inject binary context, restore chats on startup, don't auto-load chats, session storage directory, exploration turn limit, quiet retries, allow file access / shell commands without asking, approval for mutating tools, bulk renamer batch size and concurrency</td></tr>
+    <tr><td><strong>Behavior</strong></td><td>Auto-inject binary context, restore chats on startup, don't auto-load chats, session storage directory, exploration turn limit, quiet retries, allow file access / shell commands without asking, approval for mutating tools, bulk renamer batch size and concurrency, the daily update check (see <a href="#updates">Updates</a>)</td></tr>
     <tr><td><strong>Skills</strong></td><td>Enable or disable built-in skills, list your own skills</td></tr>
     <tr><td><strong>MCP</strong></td><td>Add, edit, enable/disable MCP servers (stdio command or URL); in Binary Ninja, the <strong>Address</strong> of its own MCP server</td></tr>
     <tr><td><strong>Profiles</strong></td><td>Active analysis profile and its rules (see <a href="#profiles">Profiles</a>)</td></tr>
   </table>
 </div>
 <p>Settings live in <code>~/.rikugan/config.json</code>, shared by both hosts. Saving applies them to open chats: an idle chat takes the new profile, MCP servers and other session settings at once (its agent session reopens on the next message), a working one when its run ends.</p>
+
+<h2 id="updates">Updates</h2>
+<p>Rikugan checks GitHub for a newer release 20 seconds after the host starts, then once a day. When there is one, a line at the top of the panel says <strong>Rikugan X is available (you have Y)</strong>, with <strong>Update</strong>, <strong>Release notes</strong> and <strong>Later</strong>. Nothing is installed until you press <strong>Update</strong>.</p>
+<ul>
+  <li><strong>Settings &rarr; Behavior &rarr; Updates</strong> has <strong>Check for updates once a day</strong> (on by default, <code>check_for_updates</code> in <code>config.json</code>) and <strong>Check now</strong>. <code>Ctrl+K</code> &rarr; <strong>Check for updates</strong> checks at once too, and tells you when you already have the latest release.</li>
+  <li><strong>Update</strong> downloads the package the installer would install for this host and platform, with the system's <code>curl</code>. Before anything is replaced, the package has to match its <code>.sha256</code>, unpack into regular files only and hold Rikugan's plugin file, and that file has to carry the release's version. The files are then replaced all together. If any step fails, the installed plugin stays as it was and the line says why (the installer can still install the release).</li>
+  <li>The host keeps running the version it loaded. Once the new files are in place, the line says <strong>Rikugan X is installed</strong> and asks you to restart the host to use it. On Windows the loaded DLL is renamed aside and deleted at the next start.</li>
+  <li>Only the release packages update themselves, and the packages <code>build.sh</code> / <code>build.ps1</code> make, which are built the same way. A plugin built straight with CMake never does, and Settings greys the section out.</li>
+</ul>
 
 <!-- ═══════════════════════════════════════════════
      USAGE
@@ -658,6 +680,7 @@ Task: &lt;instruction for the agent&gt;
   <table>
     <tr><th>Path</th><th>Content</th></tr>
     <tr><td><code>~/.rikugan/config.json</code></td><td>Rikugan settings (both hosts)</td></tr>
+    <tr><td><code>~/.rikugan/update.json</code></td><td>When Rikugan last checked for an update</td></tr>
     <tr><td><code>~/.rikugan/omc/agent/auth.json</code></td><td>Logins and API keys (0600)</td></tr>
     <tr><td><code>~/.rikugan/omc/agent/models.yml</code></td><td>Custom connections</td></tr>
     <tr><td><code>~/.rikugan/omc/agent/mcp.json</code></td><td>MCP servers</td></tr>

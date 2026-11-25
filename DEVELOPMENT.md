@@ -109,6 +109,7 @@ Windows also `OMC_LIB_DIR` (a prebuilt libomc: a folder with `libomc.dll` and `l
 | `rikugan-<v>-binja-<os>-<arch>.tar.gz` | `librikugan.so` / `librikugan.dylib` |
 | `rikugan-<v>-ida-windows-x86_64.zip` | `rikugan\ida-plugin.json`, `rikugan\rikugan.dll`, `rikugan\libomc.dll` |
 | `rikugan-<v>-binja-windows-x86_64.zip` | `rikugan.dll`, `rikugan\libomc.dll` (Binary Ninja loads every DLL at the top of `plugins\` as a plugin) |
+| `rikugan-<v>-<host>-<os>-<arch>-symbols.tar.gz` / `.zip` | the debug information the plugin was stripped of: a `.debug` file (Linux, gnu-debuglink), a `.dSYM` (macOS), a `.pdb` (Windows) |
 
 `<os>-<arch>` is `linux-x86_64`, `linux-arm64`, `macos-arm64`, `macos-x86_64`. Each asset has a `<asset>.sha256`
 (`<hash>  <asset>`). `install.sh` / `install.ps1` download `v<version>/<asset>` and its `.sha256` from the GitHub
@@ -117,6 +118,20 @@ release (`RIKUGAN_DOWNLOAD_URL` overrides the base, `RIKUGAN_REPO` the repositor
 API revision it was built against (`third_party/binaryninja-api`).
 
 For a dev loop, rebuild the tree and copy the module over the installed one (or symlink it once), then restart the host.
+
+### Building without the hosts
+
+`./build.sh --sdk` and `.\build.ps1 -Sdk` build both plugins on a machine with neither host installed, into
+`build/<host>-sdk`. They set `-DRIKUGAN_SDK_ONLY=ON`: `cmake/host_stubs.cmake` links a probe of the plugin with the
+host's symbols left unresolved, and `cmake/host_stubs.py` turns what it needed into stand-in libraries that carry the
+hosts' real library names and exactly those symbols. Binary Ninja's core comes from the API's own stubs and its UI
+library from the probe. IDA's own libraries come from the SDK, and IDA's namespaced Qt is matched against the
+official Qt release of the same version, so a symbol IDA's Qt does not have fails the build. The plugin binds to the
+host's real libraries when the host loads it. This is what CI and the releases build.
+
+`build.sh` and `build.ps1` (with or without `--sdk` / `-Sdk`) also set `-DRIKUGAN_UPDATES=ON`, which gives the plugin
+its package name (`binja-linux-x86_64` ...). Only such a build updates itself from the GitHub releases
+(`src/common/update/`). A tree configured by hand without it never does, and Settings greys the option out.
 
 ## Tests
 
@@ -216,16 +231,44 @@ chore/deps     ─┘
 - Commit prefix `fix(scope)`, `feat(scope)`, `refactor(scope)`, `security`, `docs`; scopes `ida`, `binja`, `agent`,
   `ui`, `omc`, `tools`, `build`. One logical change per commit.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and `dev-libomc` and on every pull request, on the five
+platforms the release ships: Linux x86_64 (Ubuntu 22.04) and arm64 (Ubuntu 24.04), macOS arm64 and x86_64, Windows
+x64. Each job fetches omc's source at the commit pinned in `build-tools/omc.ref`, runs the native suite, builds both
+plugins without the hosts, packages them as a release does and checks every package. The build must have no compiler
+warning. The packages are kept as the run's artifacts for 14 days (a failed test run also keeps the test home).
+
+Every step is a script, so a red job can be reproduced locally:
+
+```bash
+build-tools/ci.sh deps        # what the build needs is installed
+build-tools/ci.sh omc         # omc at build-tools/omc.ref, in $OMC_DIR (default build/ohmyc)
+build-tools/ci.sh test        # build/none with zero warnings, then ctest
+build-tools/ci.sh plugins     # build.sh --sdk with zero warnings, packages in dist/
+build-tools/ci.sh smoke       # each package: what it links and exports, no RPATH, no debug info
+build-tools\ci.ps1 test|plugins|smoke   # the same on Windows (MSVC), after ci.sh omc and ci.sh libomc in Git Bash
+```
+
+The workflows use no third-party action except GitHub's own `upload-artifact`: checkout is plain git and publishing
+uses the `gh` CLI the runners ship with.
+
 ## Releases
 
 1. Merge `dev` → `main`.
-2. Bump `project(rikugan VERSION x.y.z)` in `CMakeLists.txt` and `version` in `ida-plugin.json`. Check that the omc
-   the packages build against (`-DOMC_DIR`, or `build.ps1 -OmcVersion`) has the libomc API version Rikugan expects
-   (`OMC_API_VERSION`).
-3. `git tag vx.y.z && git push origin vx.y.z` — the release workflow checks that the tag matches both and publishes the
-   GitHub release.
-4. The release carries the packages `build.sh` / `build.ps1` write to `dist/` for every platform, each with its
-   `.sha256` (names and contents: "Packages and installing" above); the installers download exactly those.
+2. Bump `project(rikugan VERSION x.y.z)` in `CMakeLists.txt` and `version` in `ida-plugin.json`. If the release needs a
+   newer omc, move `build-tools/omc.ref` to it (its libomc must have the API version Rikugan expects,
+   `OMC_API_VERSION`).
+3. Write `docs/releases/vx.y.z.md`, what changed. `build-tools/release_notes.sh x.y.z` previews the whole release text
+   (that file, then the install section and the asset table).
+4. `git tag vx.y.z && git push origin vx.y.z`. `.github/workflows/release.yml` checks that the tag matches both
+   versions (`build-tools/ci.sh tag-check`), builds the two plugins on the five platforms and uploads 20 packages
+   (package and `-symbols` package per host and platform), each with its `.sha256`, to a draft release. It then adds
+   `SHA256SUMS`, checks that all 20 are there and publishes the release as the latest. Until then nothing is public.
+5. The installers and every installed Rikugan's updater fetch the new packages from the latest release.
+
+To try the release workflow without publishing, run it by hand (Actions › Release › Run workflow): the same builds go
+to a draft named `v<version>-dry-run-<run id>`, which the workflow deletes at the end. No tag is created.
 
 ## Help
 

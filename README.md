@@ -24,6 +24,8 @@ irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex
 
 Each package is checked against its `.sha256` and unpacked into the host's plugins folder (`--binja-only` / `--ida-only`, `--version X.Y.Z`; Windows: `-Target`, `-Version`). A Rikugan 1.x (Python) install of the same host is moved to `~/.rikugan-1.x-backup/` first. Binary Ninja plugins are tied to its API version: after a Binary Ninja update, install the matching Rikugan release, or build it yourself.
 
+**Updates.** Once installed, Rikugan checks for a newer release once a day. When there is one, the panel says so and installs it only when you click Update: the release's package for your host and platform, checked against its `.sha256` and its version, replaces the plugin and the host uses it after a restart. Settings → Behavior → Updates turns the daily check off and has a Check now button (also Ctrl+K → Check for updates). Packages built with `build.sh` / `build.ps1` update themselves the same way. A plugin built straight with CMake never does.
+
 **Building from source** (`build.sh` on Linux and macOS, `build.ps1` on Windows) produces the same packages in `dist/`; `install.sh --from dist` / `install.ps1 -From dist` installs them. See [DEVELOPMENT.md](DEVELOPMENT.md) for the toolchains.
 
 ```bash
@@ -101,14 +103,16 @@ Also supports any OpenAI-compatible endpoint and local servers.
 ## Requirements
 
 - IDA Pro 9.3 (Hex-Rays for the decompiler tools) or Binary Ninja (UI mode)
-- Linux, macOS or Windows 10/11 x64
+- Linux x86_64 (glibc 2.35+: Ubuntu 22.04, Debian 12, Fedora 36 or later) or arm64 (glibc 2.39+: Ubuntu 24.04, Debian 13, Fedora 40 or later), macOS (Apple silicon or Intel), Windows 10/11 x64
 - At least one model: an account login, an API key, or a local server
 
 On Windows, omc's shell tool runs Git Bash when Git for Windows is installed, else PowerShell.
 
+Every release is built and tested on all five platforms by the project's CI, and each package ships with a `-symbols` package for reading crash logs (`~/.rikugan/logs/`).
+
 ## What changed in 2.0
 
-Rikugan 2.0 is a native rewrite on top of libomc. Gone with the Python version: Rikugan's own provider layer (the new one covers far more providers and logins), encrypted API keys (credentials live in `~/.rikugan/omc/agent/auth.json`, mode 0600 on Linux and macOS), importing Claude Code / Codex skills and MCP servers, the research-note reviewer chain, resuming a cancelled mode, skill `allowed_tools`, and undo of file writes. Old chats and settings are not migrated.
+Rikugan 2.0 is a native rewrite on top of libomc, for IDA Pro and Binary Ninja on Linux, macOS and Windows, and it updates itself from the GitHub releases. Gone with the Python version: Rikugan's own provider layer (the new one covers far more providers and logins), encrypted API keys (credentials live in `~/.rikugan/omc/agent/auth.json`, mode 0600 on Linux and macOS), importing Claude Code / Codex skills and MCP servers, the research-note reviewer chain, resuming a cancelled mode, skill `allowed_tools`, and undo of file writes. Old chats and settings are not migrated. The release notes list everything that is new: [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md).
 
 ## Conclusion
 

@@ -485,8 +485,10 @@ td code{font-size:.82rem}
     <li><a href="#modes">Modes</a></li>
     <li><a href="#subagents">Subagents &amp; Renamer</a></li>
     <li><a href="#settings">Settings &amp; Files</a></li>
+    <li><a href="#updates">Updates</a></li>
     <li><a href="#security">Security Model</a></li>
     <li><a href="#tests">Tests</a></li>
+    <li><a href="#building">Building &amp; Releases</a></li>
   </ol>
 </nav>
 
@@ -549,6 +551,7 @@ td code{font-size:.82rem}
       <tr><td><code>src/common/omc/AgentHome.h</code></td><td><code>~/.rikugan/omc</code> preparation</td></tr>
       <tr><td><code>src/common/omc/AuthSync.h</code></td><td>&ldquo;Use my omc logins&rdquo;</td></tr>
       <tr><td><code>src/common/security/Sanitize.h</code></td><td>Injection markers, memory/context sanitizing, IOC redaction</td></tr>
+      <tr><td><code>src/common/update/Updater.h</code></td><td>Daily update check and the offer (the steps are in <code>update/Update.h</code>)</td></tr>
     </table>
   </div>
 </section>
@@ -760,7 +763,7 @@ omc frames -&gt; SessionListener -&gt; EventQueue -&gt; ChatSession::frame -&gt;
   <p><code>RikuganConfig</code> (<code>~/.rikugan/config.json</code>; <code>RIKUGAN_HOME</code> overrides the root) is shared by both hosts. The Settings dialog has five tabs.</p>
   <ul>
     <li>The Provider tab handles one provider at a time, as in Rikugan 1.x. The provider list is omc's <code>get_login_providers</code> plus the custom connections. For the selected provider the tab shows the account status, Log in (the same login sheet as the panel's &ldquo;Connect a provider&rdquo;), Log out and the API key, which is written to <code>auth.json</code>, then the provider's models (from <code>get_available_models</code>, which lists credentialed models only) and the thinking level. Custom connections, added and removed with +/&minus;, hold a base URL, API type, key, model ids and, optionally, the context window and maximum output (0 keeps omc's default). They are written to <code>models.yml</code>, with <code>contextWindow</code> / <code>maxTokens</code> per model. Below them sit &ldquo;Also use the logins of the omc command-line agent&rdquo; (AuthSync) and local model discovery. omc's setup errors are reworded for Rikugan (<code>omc/UserErrors.h</code>) here and in the chat.</li>
-    <li>The Behavior tab covers auto context, restoring chats on start, not auto-loading chats, the session storage dir, the exploration turn limit, quiet retries, allowing file access and shell commands without asking, approving mutations, and the bulk renamer's batch size and concurrency.</li>
+    <li>The Behavior tab covers auto context, restoring chats on start, not auto-loading chats, the session storage dir, the exploration turn limit, quiet retries, allowing file access and shell commands without asking, approving mutations, the bulk renamer's batch size and concurrency, and the Updates group (<code>check_for_updates</code> and Check now, see <a href="#updates">Updates</a>).</li>
     <li>The Skills tab enables and disables the built-in skills (a disabled one is removed from omc's skill dir) and lists the user's skills.</li>
     <li>The MCP tab edits the servers in omc's <code>mcp.json</code> and, on Binary Ninja, the address of Binary Ninja's own MCP server (<code>binja_mcp_url</code>).</li>
     <li>The Profiles tab has the built-in <code>default</code> and <code>private</code> profiles and the custom ones. A profile sets denied tools (Rikugan's and omc's built-ins), denied functions, hiding of binary metadata, IOC filter categories, custom regex rules, custom instructions and singular analysis.</li>
@@ -770,6 +773,7 @@ omc frames -&gt; SessionListener -&gt; EventQueue -&gt; ChatSession::frame -&gt;
     <table>
       <tr><th>Path</th><th>Content</th></tr>
       <tr><td><code>~/.rikugan/config.json</code></td><td>Rikugan settings</td></tr>
+      <tr><td><code>~/.rikugan/update.json</code></td><td>time of the last update check (<code>lastCheck</code>)</td></tr>
       <tr><td><code>~/.rikugan/omc/agent/</code></td><td><code>auth.json</code> (0600), <code>models.yml</code>, <code>mcp.json</code>, <code>skills/</code>, managed <code>config.yml</code></td></tr>
       <tr><td><code>~/.rikugan/sessions/&lt;db id&gt;/</code></td><td>omc session files, <code>chats.json</code>, <code>database.json</code>, <code>subagents/</code></td></tr>
       <tr><td><code>~/.rikugan/scratch/&lt;db id&gt;/</code></td><td>session cwd, <code>artifacts/</code>, files the agent writes</td></tr>
@@ -785,9 +789,46 @@ omc frames -&gt; SessionListener -&gt; EventQueue -&gt; ChatSession::frame -&gt;
   <p>&ldquo;Use my Claude Code / Codex login&rdquo; (<code>omc/ExternalLogins.h</code>) is asked once, with links to the providers' policies. It shares the subscription logins of Claude Code (<code>~/.claude/.credentials.json</code>, or the macOS keychain item &ldquo;Claude Code-credentials&rdquo; when there is no file) and of the Codex CLI (<code>~/.codex/auth.json</code>) as R's <code>anthropic</code> and <code>openai-codex</code> OAuth credentials. A login is imported when R has none. For the same account the later expiry wins on both sides; refresh tokens are single-use, so a token omc refreshed is written back to the tool's file or keychain item with the other fields kept. An API key or another account's login in R is left alone. The sharing runs at start, after each prompt and when the option is turned on.</p>
 </section>
 
-<!-- ═══════════════ 11 SECURITY MODEL ═══════════════ -->
-<section class="section" id="security">
+<!-- ═══════════════ 11 UPDATES ═══════════════ -->
+<section class="section" id="updates">
   <div class="section-num">11</div>
+  <h2>Updates</h2>
+  <p>A release package updates itself from Rikugan's GitHub releases, and only when the user says so. <code>update/Updater.h</code> is the UI-thread side, one state machine per process under the module anchor. <code>update/Update.h</code> holds the blocking steps, which the updater runs on spawned threads. <code>ui/console/UpdateBar.h</code> is the panel's update line, and every panel shows the same state.</p>
+  <ul>
+    <li>Only a build configured with <code>-DRIKUGAN_UPDATES=ON</code> knows its package name (<code>binja-linux-x86_64</code>, <code>ida-windows-x86_64</code> ...). <code>build.sh</code>, <code>build.ps1</code> and the release set it. Any other build has none (<code>Updater::supported()</code> is false), never checks, and Settings &rarr; Behavior greys the Updates group out.</li>
+    <li><code>Updater::start</code> runs at plugin init. It deletes what an earlier update renamed aside (<code>removeLeftovers</code>), checks 20 s later, then every hour checks whether a day has passed since the last check (<code>lastCheck</code> in <code>~/.rikugan/update.json</code>), while <code>check_for_updates</code> is on. Check now in Settings and Ctrl+K &rarr; Check for updates call <code>check(true)</code>, which ignores the setting and shows the outcome even when nothing is newer.</li>
+    <li>A check is a HEAD request to <code>&lt;releases&gt;/latest</code> that follows the redirect. Only a landing on <code>&lt;releases&gt;/tag/v&lt;version&gt;</code> of the same site counts as a release, and its version is compared number by number with this build's. <code>&lt;releases&gt;</code> is <code>https://github.com/buzzer-re/Rikugan/releases</code>, or <code>RIKUGAN_UPDATE_URL</code> (the tests point it at a local server). When the plugin file on disk already carries the newer version, because another window installed it, the state goes straight to <code>Installed</code>.</li>
+    <li>The network and the archives go through the system's <code>curl</code> and <code>tar</code> (Windows 10 and later ship both), because IDA's Qt has no network module.</li>
+  </ul>
+  <div class="table-wrap">
+    <table>
+      <tr><th>State</th><th>Meaning</th><th>Update line</th></tr>
+      <tr><td><code>Idle</code></td><td>nothing to say</td><td>hidden</td></tr>
+      <tr><td><code>Checking</code></td><td>asking GitHub, shown only when the user asked</td><td>&ldquo;Checking for a newer Rikugan&hellip;&rdquo;</td></tr>
+      <tr><td><code>UpToDate</code></td><td>the user asked and nothing is newer</td><td>the current version is the latest, Dismiss</td></tr>
+      <tr><td><code>Available</code></td><td>a newer release</td><td>&ldquo;Rikugan X is available (you have Y).&rdquo; Update, Release notes, Later</td></tr>
+      <tr><td><code>Installing</code></td><td>downloading, checking, putting it in place</td><td>the current step</td></tr>
+      <tr><td><code>Installed</code></td><td>the new version is on disk</td><td>&ldquo;Rikugan X is installed. Restart &lt;host&gt; to use it.&rdquo; Release notes, Dismiss</td></tr>
+      <tr><td><code>Failed</code></td><td>a check the user asked for, or an install, did not work</td><td>&ldquo;Rikugan was not updated: &lt;why&gt;&rdquo;, Dismiss</td></tr>
+    </table>
+  </div>
+  <p>Later hides the offer until the next check finds the release again.</p>
+  <h3>Installing</h3>
+  <p><code>update::install</code> runs on a spawned thread after the user's Update and reports each step to the update line.</p>
+  <ol>
+    <li><code>curl</code> downloads <code>rikugan-&lt;version&gt;-&lt;package&gt;.tar.gz</code> (<code>.zip</code> on Windows), the asset the installers use, and its <code>.sha256</code> into a temporary folder.</li>
+    <li>The archive must match the SHA-256 in that file.</li>
+    <li><code>tar</code> unpacks it. <code>plan()</code> refuses links and anything that is not a regular file, and requires exactly one file with the plugin's own name, at the same place below the plugins folder as the installed one.</li>
+    <li>That file must carry the release's version marker (<code>RIKUGAN-VERSION:&lt;version&gt;</code>, which every build embeds).</li>
+    <li>Every new file is copied next to its place as <code>&lt;file&gt;.rikugan-new</code>, so nothing is touched unless all of them could be written.</li>
+    <li>Each installed file is renamed aside to <code>&lt;file&gt;.rikugan-old-&lt;stamp&gt;</code> and the new one renamed into its place. Any failure puts every file back as it was. Windows lets a loaded DLL be renamed but not overwritten, so the old copy stays until <code>removeLeftovers</code> deletes it at the next start. Linux and macOS delete the old files at once, and the running process keeps its copy.</li>
+  </ol>
+  <p>The host keeps the version it loaded until it restarts. A failure leaves the installed plugin as it was, and its reason goes to the update line and the host's log.</p>
+</section>
+
+<!-- ═══════════════ 12 SECURITY MODEL ═══════════════ -->
+<section class="section" id="security">
+  <div class="section-num">12</div>
   <h2>Security Model</h2>
   <p>Rikugan processes adversarial binaries, and strings, names and code from the sample reach the model and the UI.</p>
   <ul>
@@ -807,13 +848,51 @@ omc frames -&gt; SessionListener -&gt; EventQueue -&gt; ChatSession::frame -&gt;
   </ul>
 </section>
 
-<!-- ═══════════════ 12 TESTS ═══════════════ -->
+<!-- ═══════════════ 13 TESTS ═══════════════ -->
 <section class="section" id="tests">
-  <div class="section-num">12</div>
+  <div class="section-num">13</div>
   <h2>Tests</h2>
   <ul>
     <li><code>tests/native/</code> (QtTest, <code>build/none</code>) runs omc's mock model (<code>../ohmyc/tests/e2e/mock_openai.py</code>) in a temporary home. It covers the omc bridge and managed config, the AuthSync merge and Claude Code / Codex login sharing, and the chat core with <code>FakeHost</code>: host tool round trip, exclusivity and order, cancellation, undo, artifacts, transcript replay, and local commands such as <code>/compact</code>. It also covers disk and shell permissions, the profile's filtering of omc's tools, other databases, Binary Ninja's MCP client (handshake, retries, description clipping, address override), the crash guard (in a child process), sanitisation and IOC filters, modes (cancelled-mode tools included), the bulk renamer, settings, the transcript reducer, and widgets offscreen (cards, chat manager, image paste).</li>
+    <li><code>tests/native/test_update.cpp</code> runs the updater against a local stand-in for GitHub's releases (<code>RIKUGAN_UPDATE_URL</code>). The latest release is found through the <code>/releases/latest</code> redirect and a newer one replaces the installed plugin, while a package that does not match its SHA-256, holds another version, lacks the plugin or cannot be written leaves the installed plugin as it was. A build without a package name does not update.</li>
     <li><code>tests/ida/</code> (<code>build/ida/rikugan_ida_tooltest</code>) runs every model-visible IDA tool against a fresh idalib database of <code>/bin/ls</code> (<code>notepad.exe</code> on Windows) with the cases in <code>tool_cases.json</code>, then runs <code>/undo</code> on a rename.</li>
+    <li>CI runs the native suite on all five release platforms (<a href="#building">Building &amp; Releases</a>).</li>
+  </ul>
+</section>
+
+<!-- ═══════════════ 14 BUILDING &AMP; RELEASES ═══════════════ -->
+<section class="section" id="building">
+  <div class="section-num">14</div>
+  <h2>Building &amp; Releases</h2>
+  <h3>Building without the hosts</h3>
+  <p><code>-DRIKUGAN_SDK_ONLY=ON</code> (what <code>build.sh --sdk</code> and <code>build.ps1 -Sdk</code> set) builds the plugins on a machine with neither IDA nor Binary Ninja installed. <code>cmake/host_stubs.cmake</code> and <code>cmake/host_stubs.py</code> link a probe of the plugin with the host's symbols left unresolved, then generate stand-in libraries that carry the hosts' real library names and exactly those symbols. Binary Ninja's core comes from the API's own stubs and its UI library from the probe. IDA's own libraries come from the SDK, and IDA's namespaced Qt is matched against the official Qt release of the same version. The plugins bind to the hosts' real libraries when the host loads them, as plugins built against an install do (verified in both hosts).</p>
+  <h3>CI</h3>
+  <p><code>.github/workflows/ci.yml</code> runs on every push to <code>main</code> and <code>dev-libomc</code> and on every pull request, with one job per platform the release ships.</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Platform</th><th>Runner</th><th>Packages run on</th></tr>
+      <tr><td><code>linux-x86_64</code></td><td><code>ubuntu-22.04</code></td><td>glibc 2.35+ and OpenSSL 3 (Ubuntu 22.04+, Debian 12+, Fedora 36+)</td></tr>
+      <tr><td><code>linux-arm64</code></td><td><code>ubuntu-24.04-arm</code></td><td>glibc 2.39+ (Ubuntu 24.04+, Debian 13+, Fedora 40+)</td></tr>
+      <tr><td><code>macos-arm64</code></td><td><code>macos-15</code></td><td>macOS arm64, OpenSSL built in</td></tr>
+      <tr><td><code>macos-x86_64</code></td><td><code>macos-15-intel</code></td><td>macOS x86_64, OpenSSL built in</td></tr>
+      <tr><td><code>windows-x86_64</code></td><td><code>windows-2025</code></td><td>Windows 10/11 x64</td></tr>
+    </table>
+  </div>
+  <ol>
+    <li>omc's source is fetched at the commit pinned in <code>build-tools/omc.ref</code>.</li>
+    <li>The native test suite builds with zero compiler warnings and runs.</li>
+    <li>Both plugins build without the hosts (<code>build.sh --sdk</code>), with zero warnings, and are packaged exactly as the release ships them.</li>
+    <li>A smoke check reads every package: what the plugin links, that it exports only the host's entry points, no RPATH, no debug information left in, and the zip layout on Windows.</li>
+  </ol>
+  <p>The packages are kept as the run's artifacts for 14 days, and a failed test run keeps its test home as an artifact too. Every step is <code>build-tools/ci.sh</code> (<code>build-tools/ci.ps1</code> for the MSVC steps on Windows), so a job can be run locally: <code>ci.sh deps|omc|libomc|test|plugins|smoke|tag-check|dist-assets</code>. The only third-party action is GitHub's own <code>upload-artifact</code>, and checkout is plain git.</p>
+  <h3>Releases</h3>
+  <ul>
+    <li>Pushing a tag <code>v&lt;version&gt;</code> runs <code>.github/workflows/release.yml</code>. The tag must match <code>project(rikugan VERSION ...)</code> in <code>CMakeLists.txt</code> and <code>version</code> in <code>ida-plugin.json</code> (<code>ci.sh tag-check</code>).</li>
+    <li>The five runners build both plugins and upload 20 packages (5 platforms &times; 2 hosts &times; package and <code>-symbols</code> package), each with its <code>.sha256</code>, to a draft release. The publish job adds <code>SHA256SUMS</code> over every file, checks that all 20 are there, and only then publishes the release as Latest.</li>
+    <li>Packages are stripped. The <code>-symbols</code> packages hold the debug information (a <code>.debug</code> file with a gnu-debuglink on Linux, a <code>.dSYM</code> on macOS, a <code>.pdb</code> on Windows) for reading a crash log's <code>module+offset</code> lines.</li>
+    <li>The release text is <code>docs/releases/v&lt;version&gt;.md</code> when it exists (what changed), then an install section and an asset table from <code>build-tools/release_notes.sh</code>, which previews it locally.</li>
+    <li>A manual run (Actions &rarr; Release &rarr; Run workflow) is a dry run: the same builds go to a draft named <code>v&lt;version&gt;-dry-run-&lt;run id&gt;</code>, which the cleanup job deletes. No tag is made and nothing is published.</li>
+    <li><code>install.sh</code> / <code>install.ps1</code> and the <a href="#updates">updater</a> download these packages from the latest release.</li>
   </ul>
 </section>
 

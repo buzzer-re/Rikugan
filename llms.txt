@@ -1,13 +1,13 @@
 # Rikugan (六眼)
 
-> A reverse-engineering agent that lives inside IDA Pro 9.3 and Binary Ninja as a native C++ plugin (Linux, macOS, Windows). Its agent — turn loop, every model provider and login, sessions, compaction, retries, skills, MCP, file/shell/search tools — is libomc (oh-my-c), linked in-process (on Windows: libomc.dll beside the plugin). Rikugan adds the host analysis tools, the Qt chat panel, per-database chats, undo, plan/explore/modify/research modes, subagents with host tools, the bulk renamer, analysis profiles, and the RE prompts and skills. Rikugan 1.x was a Python plugin; it remains only in the git history.
+> A reverse-engineering agent that lives inside IDA Pro 9.3 and Binary Ninja as a native C++ plugin (Linux x86_64/arm64, macOS arm64/x86_64, Windows x64). Its agent — turn loop, every model provider and login, sessions, compaction, retries, skills, MCP, file/shell/search tools — is libomc (oh-my-c), linked in-process (on Windows: libomc.dll beside the plugin). Rikugan adds the host analysis tools, the Qt chat panel, per-database chats, undo, plan/explore/modify/research modes, subagents with host tools, the bulk renamer, analysis profiles, and the RE prompts and skills. Rikugan 1.x was a Python plugin. It remains only in the git history.
 
 ## Documentation
 
 - [README.md](README.md): install, features, providers.
 - [AGENTS.md](AGENTS.md): developer guide — layout, building, how a chat works, adding tools, threading and security rules.
 - [ARCHITECTURE.md](ARCHITECTURE.md): internals — libomc embedding, threads, chat lifecycle, system prompt, tool pipeline, undo, modes, subagents, bulk renamer, settings, AuthSync, security model.
-- [DEVELOPMENT.md](DEVELOPMENT.md): build trees, Qt headers, submodules and BN ABI pinning, tests, adding tools/skills/prompts, releases.
+- [DEVELOPMENT.md](DEVELOPMENT.md): build trees, building without the hosts, Qt headers, submodules and BN ABI pinning, tests, adding tools/skills/prompts, continuous integration, releases.
 - [prompts/MANIFEST.md](prompts/MANIFEST.md): every model-facing text and its placeholders.
 - [Docs page](https://rikugan.reversing.codes/docs.html) and [Architecture page](https://rikugan.reversing.codes/ARCHITECTURE.html).
 
@@ -21,23 +21,28 @@
 - **Undo**: `/undo [N]` reverses renames, comments and prototypes; type, patch and IL/microcode tools are recorded as irreversible.
 - **Memory**: `RIKUGAN.md` next to the database (`save_memory`), first 200 lines in the system prompt.
 - **Security**: tool output is sanitised (injection markers, optional IOC redaction); scripts always ask; disk and shell tools only after the user allows them; omc's cwd is a scratch dir, project config and project MCP are off.
+- **Updates** (`src/common/update/`): a build configured with `-DRIKUGAN_UPDATES=ON` (`build.sh`, `build.ps1` and the release set it) knows its package name and checks GitHub 20 s after start, then once a day (`~/.rikugan/update.json`), while `check_for_updates` is on (Settings → Behavior). Ctrl+K → Check for updates checks now. A newer release is installed only on the user's Update in the panel: downloaded with the system's curl, checked against its `.sha256`, unpacked with tar (regular files only), required to hold the plugin file with the release's version marker, then swapped in all-or-nothing (Windows renames the loaded DLL aside). The host uses it after a restart. `RIKUGAN_UPDATE_URL` points it at another releases page.
+- **Building without the hosts**: `build.sh --sdk` / `build.ps1 -Sdk` (`-DRIKUGAN_SDK_ONLY=ON`) link stand-ins for the hosts' libraries (`cmake/host_stubs.cmake`, `cmake/host_stubs.py`). The plugin binds to the hosts' real libraries when it loads.
+- **CI and releases**: `.github/workflows/ci.yml` runs `build-tools/ci.sh` (tests, both plugins with `--sdk`, a smoke check of each package, zero compiler warnings) on linux-x86_64, linux-arm64, macos-arm64, macos-x86_64 and windows-x86_64. A tag `v<version>` runs `release.yml`: 20 packages (each host and platform, plus `-symbols` packages), each with its `.sha256`, and `SHA256SUMS` on a draft release that is published once complete. Linux x86_64 packages need glibc 2.35+ and OpenSSL 3, linux-arm64 glibc 2.39+.
 
 ## File Layout
 
 ```
 CMakeLists.txt     RIKUGAN_HOST = binja | ida | none (tests)
-cmake/             omc.cmake + build_omc.sh / build_omc_win.cmake (libomc), embed.cmake (skills/ + prompts/ into the plugin)
+cmake/             omc.cmake + build_omc.sh / build_omc_win.cmake (libomc), embed.cmake (skills/ + prompts/ into the plugin), host_stubs.cmake + host_stubs.py (RIKUGAN_SDK_ONLY)
 prompts/           model-facing texts (MANIFEST.md)
 skills/            12 built-in skills
-src/common/        omc/ agent/ tools/ host/ security/ config/ ui/ util/
+src/common/        omc/ agent/ tools/ host/ security/ config/ ui/ util/ update/
 src/binja/         Plugin.cpp, host/ (BnHost, BnPython), tools/
 src/ida/           sdk/Plugin.cpp, host/ (IdaHost, tools/), sdk/ (SDK subclasses, -fno-rtti)
 tests/native/      QtTest suite against omc's mock model
 tests/ida/         idalib tool test
 third_party/       binaryninja-api, ida-sdk (submodules)
 tools/             fetch_qt.sh / fetch_qt.ps1 (Qt headers matching each host), vsenv.ps1 (MSVC environment)
-build.sh build.ps1 build and package the plugins into dist/
-install.sh install.ps1  install a release (or dist/) into the hosts' plugins folders
+build.sh build.ps1 build and package the plugins into dist/ (--sdk / -Sdk: without the hosts)
+install.sh install.ps1  install the latest release (or --version, or dist/) into the hosts' plugins folders
+build-tools/       ci.sh / ci.ps1 (every CI and release step), omc.ref (omc commit), release_notes.sh
+.github/workflows/ ci.yml (five platforms), release.yml (tag v<version> -> GitHub release)
 ```
 
 ## Commands

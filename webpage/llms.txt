@@ -7,12 +7,12 @@ Rikugan is a native C++ plugin. Its agent — turn loop, model providers and log
 ## Pages
 
 - [Home](index.html): overview, features, skills, providers.
-- [Documentation](docs.html): installation, models and accounts, settings, usage, commands, modes, skills, MCP, memory, profiles, tool reference.
-- [Architecture](ARCHITECTURE.html): libomc embedding, threads, chat lifecycle, system prompt, tool pipeline, undo, modes, subagents, bulk renamer, settings and files, security model.
+- [Documentation](docs.html): installation and supported platforms, models and accounts, settings, updates, usage, commands, modes, skills, MCP, memory, profiles, tool reference.
+- [Architecture](ARCHITECTURE.html): libomc embedding, threads, chat lifecycle, system prompt, tool pipeline, undo, modes, subagents, bulk renamer, settings and files, updates, security model, tests, building without the hosts, CI and releases.
 
 ## Key Facts
 
-- **Hosts**: IDA Pro 9.3 (Hex-Rays for the decompiler tools) and Binary Ninja (UI mode). Linux, macOS and Windows 10/11 x64.
+- **Hosts**: IDA Pro 9.3 (Hex-Rays for the decompiler tools) and Binary Ninja (UI mode). Linux x86_64 and arm64, macOS arm64 and x86_64, Windows 10/11 x64.
 - **Models**: every provider and login libomc supports (Claude, ChatGPT/Codex, Gemini, Copilot, API keys …), any OpenAI-compatible endpoint, local servers (Ollama, LM Studio, llama.cpp).
 - **Tools**: 50 shared analysis tools, plus 12 Binary Ninja IL tools or 8 IDA microcode/pseudocode tools; chat tools (ask_user, save_memory, spawn_subagent, exploration_report, research_note; in Binary Ninja list_databases, open_database (opens a new tab) and ask_database); read/write/edit/grep/glob/bash/web_search/todo, each disk or shell kind asking once per chat.
 - **Full window**: the header's expand button moves the chat into a window-sized tab with a list of every open database's chats; one click switches between them (IDA and Binary Ninja).
@@ -23,7 +23,8 @@ Rikugan is a native C++ plugin. Its agent — turn loop, model providers and log
 - **Script approval**: `execute_python` always asks; it runs in the host's own Python behind a guard.
 - **Memory**: `RIKUGAN.md` next to the database, first 200 lines in the system prompt.
 - **Profiles**: IOC redaction and denied tools apply to every tool result, omc's file, shell, web and MCP tools included.
-- **Files**: settings in `~/.rikugan/config.json`; logins, MCP servers and skills in `~/.rikugan/omc/agent/`; chats in `~/.rikugan/sessions/`.
+- **Updates**: a release package checks GitHub once a day (Settings → Behavior → "Check for updates once a day", config key `check_for_updates`, on by default) and offers a newer release in the panel (Update, Release notes, Later). Ctrl+K → Check for updates checks now. Update downloads the package for this host and platform, checks it against its `.sha256`, requires regular files only and the plugin file with the release's version, then swaps the files all at once (or not at all). The host uses it after a restart. A plugin built straight with CMake never updates. `RIKUGAN_UPDATE_URL` points the updater at another releases page.
+- **Files**: settings in `~/.rikugan/config.json`; logins, MCP servers and skills in `~/.rikugan/omc/agent/`; chats in `~/.rikugan/sessions/`, the last update check in `~/.rikugan/update.json`.
 
 ## Installation
 
@@ -35,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh |
 irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex                  # Windows
 ```
 
-The installers download the release's prebuilt plugin for each host found, check it against its `.sha256` and unpack it into the host's plugins folder. To build from source: `./build.sh` (Linux, macOS) or `.\build.ps1` (Windows) write the same packages to `dist/`, and `./install.sh --from dist` / `.\install.ps1 -From dist` installs them. Binary Ninja plugins are tied to its API version: after a Binary Ninja update, install the matching release or rebuild.
+The installers download the latest release's prebuilt plugin for each host found (`--version X.Y.Z` / `-Version` installs another release), check it against its `.sha256` and unpack it into the host's plugins folder. Releases are built for Linux x86_64 (glibc 2.35+ and OpenSSL 3: Ubuntu 22.04+, Debian 12+, Fedora 36+), Linux arm64 (glibc 2.39+: Ubuntu 24.04+, Debian 13+, Fedora 40+), macOS arm64 and x86_64, and Windows 10/11 x64. To build from source: `./build.sh` (Linux, macOS) or `.\build.ps1` (Windows) write the same packages to `dist/`, and `./install.sh --from dist` / `.\install.ps1 -From dist` installs them. `./build.sh --sdk` / `.\build.ps1 -Sdk` builds both plugins with neither host installed, as CI (on the five platforms, for every pull request and every push to `main`) and the releases do. Binary Ninja plugins are tied to its API version: after a Binary Ninja update, install the matching release or rebuild.
 
 ## Source
 

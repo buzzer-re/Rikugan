@@ -293,7 +293,8 @@ Flags (`tools/Tool.h`): `Mutating`, `MainThread` (IDA: every tool; BN: UI and mu
 3. Mode phase gate: a read-only phase refuses `Mutating` and `Script` tools.
 4. `RequiresDecompiler` without a decompiler → error.
 5. `Script` tools always ask (Allow / Always allow for this chat / Deny).
-6. `approve_mutations` asks before each `Mutating` tool.
+6. `approve_mutations` asks before each `Mutating` tool (Allow / Allow for this chat / Deny). The chat-wide answers,
+   for scripts and for database changes, are shared with the chat's subagents both ways.
 7. Undo pre-state captured for reversible mutations (internal readers via `runDirect`).
 8. Result cache lookup (`list_functions`, `list_strings`, `get_binary_info`, `decompile_function`, `function_xrefs`;
    64-entry LRU per database, flushed by any successful mutation).
@@ -382,7 +383,8 @@ dialog has five tabs:
   (`omc/UserErrors.h`) here and in the chat.
 - **Behavior** — auto context, restore chats on start, don't auto-load chats, session storage dir, exploration turn
   limit, quiet retries, allow file access / shell commands without asking, approve mutations, bulk renamer batch
-  size and concurrency.
+  size and concurrency, and Updates: check for updates once a day (`check_for_updates`), Check now and the last
+  outcome (packaged builds only, greyed out in a tree configured without `RIKUGAN_UPDATES`).
 - **Skills** — enable/disable built-ins (removed from omc's skill dir when disabled), list user skills.
 - **MCP** — servers in omc's `mcp.json`; on Binary Ninja, the address of its own MCP server (`binja_mcp_url`).
 - **Profiles** — built-in `default` and `private`, custom profiles: denied tools (Rikugan's and omc's built-ins) and
@@ -397,6 +399,7 @@ Saving the dialog applies to open chats (see Chat lifecycle → Settings changes
 | `~/.rikugan/sessions/<db id>/` | omc session files, `chats.json`, `database.json`, `subagents/` |
 | `~/.rikugan/scratch/<db id>/` | session cwd, `artifacts/`, files the agent writes |
 | `~/.rikugan/logs/` | crash logs, `crash-log-<YYYYMMDD-HHMMSS>-<pid>.log` |
+| `~/.rikugan/update.json` | when the updater last checked for a release |
 | `<database dir>/RIKUGAN.md` | persistent memory (`save_memory`, `/memory`) |
 | `<database dir>/notes/` | `/research` notes |
 
@@ -415,6 +418,21 @@ policy links) shares the subscription logins of Claude Code (`~/.claude/.credent
 (refresh tokens are single-use, so a token omc refreshed is written back to the tool's file or keychain item, other
 fields kept); an API key or another account's login in R is left alone. It runs at start, after each prompt and when
 turned on.
+
+**Updates** (`update/Update.h`, `update/Updater.h`, `ui/console/UpdateBar.h`). A release package (built with
+`RIKUGAN_UPDATES`, which gives it its package name such as `binja-linux-x86_64`) checks the GitHub releases 20 s after
+the host starts and then every hour, when a day has passed since the last check and `check_for_updates` is on. Ctrl+K
+and Settings check at once. The check is a `curl -I` on `<releases>/latest`: the page it lands on, `tag/v<version>` on
+the same site, names the release, and the package URL follows from it. A newer version shows in each panel's update
+line (Update, Release notes, Later). Update runs on a worker thread: the package and its `.sha256` downloaded with the
+system's curl (https only), the hash checked, the archive unpacked with tar into a scratch folder (regular files
+only), the package required to hold the plugin's own file (`util/ModulePath.h`) at the same relative path, and that
+file's `RIKUGAN-VERSION:` marker required to say the release's version. Then every file is staged next to its target
+as `.rikugan-new`, the old ones renamed to `.rikugan-old-<stamp>` and the new ones moved in. Any failure puts the old
+files back. On Linux and macOS the running host keeps its mapped copy. On Windows the loaded DLL can be renamed but not
+deleted, so the next start removes the leftovers. The host loads the new version after a restart. `Updater` lives on
+the UI thread and only posts results back to `uiAnchor()`. `RIKUGAN_UPDATE_URL` replaces the releases page (the tests
+serve one locally).
 
 ## 12. Security model
 
@@ -442,8 +460,8 @@ Rikugan processes adversarial binaries; strings, names and code from the sample 
 granted, an injected instruction can reach `bash` with the user's privileges, and file changes are not undoable. The
 guard prelude is a blocklist inside the host's Python, not a sandbox: an approved script can do anything the host
 can. MCP servers the user configures run as the user. Binary Ninja's own MCP tools are not undoable: their
-changes stay unless the user reverts them in Binary Ninja. Approving "Always allow" removes the per-script prompt for that
-chat.
+changes stay unless the user reverts them in Binary Ninja. "Allow for this chat" on a script or database-change card
+removes that prompt for the rest of the chat.
 
 ## 13. Tests
 
@@ -453,6 +471,27 @@ chat.
   commands such as `/compact`), disk/shell permissions and the profile's filtering of omc's tools, other databases,
   Binary Ninja's MCP client (handshake, retries, description clipping, address override), the crash guard (in a child
   process), sanitisation and IOC filters, modes (cancelled-mode tools included), the bulk renamer, settings, the
-  transcript reducer and widgets offscreen (cards, chat manager, image paste).
+  updater (a local release server: newer, corrupt, wrong-version and plugin-less packages, an unwritable folder, a
+  developer build), the transcript reducer and widgets offscreen (cards, chat manager, image paste).
 - `tests/ida/` (`build/ida/rikugan_ida_tooltest`): every model-visible IDA tool against a fresh idalib database of
   `/bin/ls` (Windows: `notepad.exe`) with the cases in `tool_cases.json`, then `/undo` of a rename.
+
+## 14. Builds, CI and releases
+
+Each host links its own Qt and its own libraries at load time, so a plugin can be built where the host is not
+installed. `-DRIKUGAN_SDK_ONLY=ON` (`build.sh --sdk`, `build.ps1 -Sdk`) does that through `cmake/host_stubs.cmake`: it
+links a probe of the plugin (`<module>_probe`) with the host's symbols left unresolved (ELF `-z,defs
+--warn-unresolved-symbols`, Mach-O `-undefined,dynamic_lookup` read back with `nm -m`, MSVC `/FORCE:UNRESOLVED`), and
+`cmake/host_stubs.py` turns what it needed into stand-in libraries under the hosts' real names (`libbinaryninjaui.so.1`,
+`@rpath/libbinaryninjaui.1.dylib`, an import library on Windows, `libQt6Core.so.6` ...). Binary Ninja's core comes from
+the API's own stubs. IDA's libraries come from the SDK, and IDA's namespaced Qt (`QT::`, `_QT` in C names) is matched
+against the exports of the official Qt of the same version, so a symbol IDA would not have fails the build. The
+plugin's NEEDED list is the same as a build against the installed hosts.
+
+CI (`.github/workflows/ci.yml`) and releases (`release.yml`) run `build-tools/ci.sh` (`ci.ps1` for the MSVC steps) on
+Linux x86_64 and arm64, macOS arm64 and x86_64 and Windows x64: omc at `build-tools/omc.ref`, the native suite, both
+plugins without the hosts, zero compiler warnings, and a smoke check of each package (allowed libraries only, no RPATH,
+no debug info, only the host entry points exported, the Windows zip layout). Packages are stripped, with the debug
+information in `-symbols` packages. A tag `v<version>` that matches CMakeLists.txt and ida-plugin.json builds the 20
+packages onto a draft release, adds `SHA256SUMS` and publishes it once all are there. `install.sh` / `install.ps1` and
+the updater install from those assets.
