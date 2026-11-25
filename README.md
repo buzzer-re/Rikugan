@@ -68,7 +68,7 @@ The `/deobfuscation` skill starts plan mode and uses Binary Ninja's IL read and 
 
 |![Control-flow flattening removed with /deobfuscation](assets/cff_remove_example.gif)|
 |:--:|
-|~3x speed of the workflow, original process took ~4:30 min|
+|~3x speed of the workflow, original process took ~4:30 min (Old Rikugan 1.X version)|
 
 ### Goals
 
