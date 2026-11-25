@@ -231,6 +231,36 @@ private Q_SLOTS:
         done.insert("status", "complete");
         m.applyFrame(QJsonObject{{"type", "goal_updated"}, {"goal", done}});
         QVERIFY(m.activity().goal.isEmpty());
+        // omc's state after the run still carries the finished goal: it stays gone
+        m.applyState(QJsonObject{{"goal", QJsonObject{{"present", true}, {"goal", done}}}});
+        QVERIFY(m.activity().goal.isEmpty());
+        // a paused goal is still the chat's goal, and a state without one clears it
+        QJsonObject paused = goal;
+        paused.insert("status", "paused");
+        m.applyState(QJsonObject{{"goal", QJsonObject{{"present", true}, {"goal", paused}}}});
+        QCOMPARE(m.activity().goal.value("status").toString(), QString("paused"));
+        m.applyState(QJsonObject{{"goal", QJsonObject{{"present", false}}}});
+        QVERIFY(m.activity().goal.isEmpty());
+    }
+
+    // `/goal X` shows once: omc's objective message takes the line typed, as it reads on replay; another prompt a
+    // goal command sends (/goal resume's) is a line of its own
+    void goalObjectiveTakesTheTypedLine() {
+        const auto start = [](QJsonObject msg) { return QJsonObject{{"type", "message_start"}, {"message", msg}}; };
+        const QJsonObject context{{"role", "user"}, {"synthetic", true}, {"customType", "goal-mode-context"},
+                                  {"content", "<goal_context>x</goal_context>"}};
+        TranscriptModel m;
+        m.addLocalUser("/goal  map the C2 protocol");
+        m.applyFrame(start(context));
+        m.applyFrame(start(QJsonObject{{"role", "user"}, {"content", "map the C2 protocol"}}));
+        QCOMPARE(m.rowCount(), 1);
+        QCOMPARE(m.at(0).text, QString("map the C2 protocol"));
+
+        TranscriptModel r;
+        r.addLocalUser("/goal resume");
+        r.applyFrame(start(QJsonObject{{"role", "user"}, {"content", "Continue working toward the goal."}}));
+        QCOMPARE(r.rowCount(), 2);
+        QCOMPARE(r.at(0).text, QString("/goal resume"));
     }
 
     void replayRebuildsTheConversation() {

@@ -25,6 +25,12 @@ QString str(const QJsonObject& o, const char* k) { return o.value(QLatin1String(
 
 qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
 
+// the goal the activity strip shows: none once it is complete or dropped
+QJsonObject liveGoal(const QJsonObject& g) {
+    const QString status = str(g, "status");
+    return status == QLatin1String("complete") || status == QLatin1String("dropped") ? QJsonObject() : g;
+}
+
 // tools whose payload the transcript shows elsewhere (the question card, the todo list)
 bool hiddenTool(const QString& name) { return name == QLatin1String("ask_user") || name == QLatin1String("todo"); }
 
@@ -679,13 +685,9 @@ void TranscriptModel::applyFrame(const QJsonObject& f) {
             break;
         }
     } else if (type == QLatin1String("goal_updated")) {
-        activity([&](ChatActivity& a) {
-            const QJsonObject g = f.value(QLatin1String("goal")).toObject();
-            const QString status = str(g, "status");
-            a.goal = status == QLatin1String("dropped") || status == QLatin1String("complete") ? QJsonObject() : g;
-        });
-        const QString status = str(f.value(QLatin1String("goal")).toObject(), "status");
-        if (status == QLatin1String("complete")) addNotice(QStringLiteral("Goal complete."));
+        const QJsonObject g = f.value(QLatin1String("goal")).toObject();
+        activity([&](ChatActivity& a) { a.goal = liveGoal(g); });
+        if (str(g, "status") == QLatin1String("complete")) addNotice(QStringLiteral("Goal complete."));
     } else if (type == QLatin1String("btw_record") || type == QLatin1String("btw_delta")) {
         const QJsonObject rec = f.value(QLatin1String("record")).toObject();
         const QString id = type == QLatin1String("btw_delta") ? str(f, "recordId") : str(rec, "id");
@@ -723,15 +725,15 @@ void TranscriptModel::onMessageStart(const QJsonObject& m) {
         if (!text) return;
         finishStreaming();
         step_ = 0;
-        // the /skill typed here is on screen as typed (addLocalUser): omc's message for it takes that line, which
-        // then reads as it will on replay
-        if (str(m, "customType") == QLatin1String("skill-prompt")) {
-            const quint64 echo = std::exchange(localEcho_, 0);
-            if (echo && !items_.isEmpty() && items_.last().id == echo) {
-                items_.last().text = *text;
-                touch(int(items_.size()) - 1);
-                return;
-            }
+        // a command typed here is on screen as typed (addLocalUser): omc's message for it takes that line, which
+        // then reads as it will on replay (a /skill's prompt, a /goal's objective)
+        const quint64 echo = std::exchange(localEcho_, 0);
+        if (echo && !items_.isEmpty() && items_.last().id == echo &&
+            (str(m, "customType") == QLatin1String("skill-prompt") ||
+             items_.last().text.simplified() == (QStringLiteral("/goal ") + *text).simplified())) {
+            items_.last().text = *text;
+            touch(int(items_.size()) - 1);
+            return;
         }
         TranscriptItem u;
         u.kind = ItemKind::User;
@@ -1097,8 +1099,9 @@ void TranscriptModel::applyState(const QJsonObject& st) {
         a.contextPercent = cu.value(QLatin1String("percent")).isNull() || !cu.contains(QLatin1String("percent"))
                                ? -1
                                : int(cu.value(QLatin1String("percent")).toDouble());
-        const QJsonObject goal = st.value(QLatin1String("goal")).toObject().value(QLatin1String("goal")).toObject();
-        if (!goal.isEmpty()) a.goal = goal;
+        // omc keeps a finished goal in its state: like goal_updated, only a live one is shown
+        if (st.contains(QLatin1String("goal")))
+            a.goal = liveGoal(st.value(QLatin1String("goal")).toObject().value(QLatin1String("goal")).toObject());
     });
 }
 
