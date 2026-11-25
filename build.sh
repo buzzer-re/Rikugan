@@ -5,24 +5,31 @@
 # installs a local build). Windows: build.ps1.
 #
 #   ./build.sh                    # every host found
+#   ./build.sh --sdk              # both hosts, without them installed (what CI and the release build)
 #   ./build.sh --binja-only | --ida-only
 #   BN_INSTALL_DIR=... IDA_DIR=... OMC_DIR=... ./build.sh
 #
+# --sdk links stand-ins for the hosts' libraries (cmake/host_stubs.cmake): the plugins bind to the host's own
+# libraries when they load, like plugins built against an install.
+#
 # Needs: cmake, a C++20 compiler, OpenSSL 3 and zlib headers, curl + bsdtar or 7-Zip (to fetch the Qt headers that
-# match each host: Qt 6.11.1 for Binary Ninja, 6.8.2 for IDA 9.3), and omc's source next to this repo (../ohmyc) or
-# OMC_DIR.
+# match each host: Qt 6.11.1 for Binary Ninja, 6.8.2 for IDA 9.3), python3 (--sdk), and omc's source next to this repo
+# (../ohmyc) or OMC_DIR.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 cd "$ROOT"
 
 WANT_BN=1
 WANT_IDA=1
-case "${1:-}" in
-    --binja-only) WANT_IDA=0 ;;
-    --ida-only) WANT_BN=0 ;;
-    "") ;;
-    *) echo "usage: $0 [--binja-only|--ida-only]"; exit 2 ;;
-esac
+SDK=0
+for arg in "$@"; do
+    case "$arg" in
+        --binja-only) WANT_IDA=0 ;;
+        --ida-only) WANT_BN=0 ;;
+        --sdk) SDK=1 ;;
+        *) echo "usage: $0 [--sdk] [--binja-only|--ida-only]"; exit 2 ;;
+    esac
+done
 
 OS=$(uname -s)
 case "$OS-$(uname -m)" in
@@ -54,20 +61,53 @@ qt() {  # qt <version> -> prints the kit dir, fetching it when missing
 
 first_dir() { for d in "$@"; do [ -d "$d" ] && { echo "$d"; return; }; done; }
 
-# package <host> <file>: dist/rikugan-<version>-<host>-<plat>.tar.gz holding <file> at its root, and its .sha256
-package() {
-    local asset="rikugan-$VERSION-$1-$PLAT.tar.gz"
+# archive <asset> <dir> <file...>: dist/<asset> (.tar.gz) holding the files of <dir>, and its .sha256
+archive() {
+    local asset=$1 dir=$2
+    shift 2
     mkdir -p dist
-    tar -czf "dist/$asset" -C "$(dirname "$2")" "$(basename "$2")"
+    tar -czf "dist/$asset" -C "$dir" "$@"
     (cd dist && { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > "$asset.sha256")
     echo "Packaged dist/$asset"
 }
 
+# package <host> <module>: dist/rikugan-<version>-<host>-<plat>.tar.gz holding the module without its debug
+# information (what installs), and rikugan-<version>-<host>-<plat>-symbols.tar.gz with that information (to read a
+# crash log's module+offset lines: Linux, a .debug file the module points to; macOS, a .dSYM bundle).
+package() {
+    local stage="build/package/$1" name
+    name=$(basename "$2")
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    cp "$2" "$stage/$name"
+    if [ "$OS" = Darwin ]; then
+        dsymutil "$2" -o "$stage/$name.dSYM"
+        strip -S "$stage/$name"  # the debug map only: crash stacks still name functions
+        codesign --force --sign - "$stage/$name"  # stripping invalidates the linker's ad hoc signature (arm64 needs one)
+        archive "rikugan-$VERSION-$1-$PLAT-symbols.tar.gz" "$stage" "$name.dSYM"
+    else
+        objcopy --only-keep-debug "$stage/$name" "$stage/$name.debug"
+        strip --strip-debug "$stage/$name"
+        (cd "$stage" && objcopy --add-gnu-debuglink="$name.debug" "$name")
+        archive "rikugan-$VERSION-$1-$PLAT-symbols.tar.gz" "$stage" "$name.debug"
+    fi
+    archive "rikugan-$VERSION-$1-$PLAT.tar.gz" "$stage" "$name"
+}
+
 built=0
 
-if [ "$WANT_BN" = 1 ]; then
+if [ "$WANT_BN" = 1 ] && [ "$SDK" = 1 ]; then
+    echo "== Binary Ninja (no install: stand-ins for its libraries)"
+    QT_BN=$(qt 6.11.1)
+    cmake -S . -B build/binja-sdk -G "$GEN" -DRIKUGAN_HOST=binja -DRIKUGAN_SDK_ONLY=ON -DOMC_DIR="$OMC_DIR" \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$QT_BN"
+    cmake --build build/binja-sdk --target rikugan_binja
+    package binja "build/binja-sdk/librikugan.$EXT"
+    built=1
+elif [ "$WANT_BN" = 1 ]; then
     BN=${BN_INSTALL_DIR:-$(first_dir "$HOME/binaryninja" "/opt/binaryninja" "/Applications/Binary Ninja.app/Contents/MacOS")}
-    if [ -n "$BN" ] && { [ -e "$BN/libbinaryninjacore.so.1" ] || [ -e "$BN/libbinaryninjacore.dylib" ]; }; then
+    if [ -n "$BN" ] && { [ -e "$BN/libbinaryninjacore.so.1" ] || [ -e "$BN/libbinaryninjacore.dylib" ] ||
+                         [ -e "$BN/libbinaryninjacore.1.dylib" ]; }; then
         echo "== Binary Ninja at $BN"
         QT_BN=$(qt 6.11.1)
         cmake -S . -B build/binja -G "$GEN" -DRIKUGAN_HOST=binja -DOMC_DIR="$OMC_DIR" -DBN_INSTALL_DIR="$BN" \
@@ -80,7 +120,15 @@ if [ "$WANT_BN" = 1 ]; then
     fi
 fi
 
-if [ "$WANT_IDA" = 1 ]; then
+if [ "$WANT_IDA" = 1 ] && [ "$SDK" = 1 ]; then
+    echo "== IDA Pro (no install: the SDK and stand-ins for IDA's Qt)"
+    QT_IDA=$(qt 6.8.2)
+    cmake -S . -B build/ida-sdk -G "$GEN" -DRIKUGAN_HOST=ida -DRIKUGAN_SDK_ONLY=ON -DOMC_DIR="$OMC_DIR" \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$QT_IDA"
+    cmake --build build/ida-sdk --target rikugan_ida
+    package ida "build/ida-sdk/rikugan.$EXT"
+    built=1
+elif [ "$WANT_IDA" = 1 ]; then
     IDA=${IDA_DIR:-$(first_dir "$HOME/ida-pro-9.3" "$HOME/idapro-9.3" "/opt/ida-pro-9.3" "/Applications/IDA Professional 9.3.app/Contents/MacOS")}
     if [ -n "$IDA" ] && { [ -e "$IDA/libida.so" ] || [ -e "$IDA/libida.dylib" ]; }; then
         echo "== IDA Pro at $IDA"

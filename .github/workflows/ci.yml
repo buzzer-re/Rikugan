@@ -1,41 +1,103 @@
+# Build and test every push to main and dev-libomc and every pull request, on every platform the release ships:
+# Linux x86_64 and arm64, macOS arm64 and x86_64, Windows x86_64. Each job runs the native test suite, builds both
+# plugins without the hosts installed (cmake/host_stubs.cmake), packages them as the release does and checks the
+# packages (build-tools/ci.sh smoke). The packages are kept as the run's artifacts, to try a build before a release.
+# Supply chain: the code is checked out with plain git; build-tools/ci.sh (ci.ps1 on Windows) does every step. The one
+# action used is GitHub's own upload-artifact.
 name: CI
 
 on:
+  push:
+    branches: [main, dev-libomc]
   pull_request:
-    branches: [main, dev]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
-    name: Native tests
-    runs-on: ubuntu-24.04
+  unix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-22.04
+          - name: linux-arm64
+            runner: ubuntu-22.04-arm
+          - name: macos-arm64
+            runner: macos-15
+          - name: macos-x86_64
+            runner: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: omc (libomc source)
-        uses: actions/checkout@v4
-        with:
-          repository: buzzer-re/Oh-My-C
-          path: ohmyc
-
-      - name: Build dependencies
+      - name: Check out (git only)
+        env:
+          TOKEN: ${{ github.token }}
+        run: &checkout |
+          git init -q .
+          git config core.autocrlf false # Windows runners default to CRLF checkouts
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git submodule update -q --init --recursive --depth 1
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build libssl-dev zlib1g-dev libarchive-tools \
-            libgl-dev libegl-dev libxkbcommon-dev libfontconfig1-dev python3
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ninja-build libssl-dev zlib1g-dev libarchive-tools \
+            libgl-dev libegl-dev libxkbcommon-dev libfontconfig1-dev
+      - name: Dependencies
+        run: build-tools/ci.sh deps
+      - name: omc
+        run: build-tools/ci.sh omc
+      - name: Tests (zero warnings)
+        run: build-tools/ci.sh test
+      - name: Plugins without the hosts (zero warnings)
+        run: build-tools/ci.sh plugins
+      - name: Smoke (the packages as they ship)
+        run: build-tools/ci.sh smoke
+      - name: Keep the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikugan-${{ matrix.name }}
+          path: dist/
+          retention-days: 14
 
-      - name: Qt 6.11.1 headers and tools (Binary Ninja's Qt)
-        run: tools/fetch_qt.sh 6.11.1 "$HOME/Qt"
-
-      - name: Configure
-        run: cmake -S . -B build/none -G Ninja -DRIKUGAN_HOST=none -DOMC_DIR="$PWD/ohmyc" -DCMAKE_PREFIX_PATH="$HOME/Qt/6.11.1/gcc_64"
-
-      - name: Build
-        run: cmake --build build/none
-
-      - name: Test
-        run: ctest --test-dir build/none --output-on-failure
+  windows:
+    name: windows-x86_64
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash # Git Bash; the MSVC steps run ci.ps1 in pwsh
+    steps:
+      - name: Check out (git only)
+        env:
+          TOKEN: ${{ github.token }}
+        run: *checkout
+      - name: omc
+        run: build-tools/ci.sh omc
+      - name: libomc.dll (MinGW-w64, as omc builds it)
+        run: build-tools/ci.sh libomc
+      - name: Tests (zero warnings)
+        shell: pwsh
+        run: build-tools/ci.ps1 test
+      - name: Plugins without Binary Ninja (zero warnings)
+        shell: pwsh
+        run: build-tools/ci.ps1 plugins
+      - name: Smoke (the packages as they ship)
+        shell: pwsh
+        run: build-tools/ci.ps1 smoke
+      - name: Keep the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikugan-windows-x86_64
+          path: dist/
+          retention-days: 14

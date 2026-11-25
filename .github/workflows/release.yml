@@ -1,32 +1,182 @@
+# Release: pushing a tag v<version> (CMakeLists.txt and ida-plugin.json must say the same version) publishes a GitHub
+# release with both plugins for every platform: rikugan-<version>-<ida|binja>-<linux|macos|windows>-<arch>.tar.gz/.zip,
+# each with its .sha256, the -symbols packages with the debug information the plugins were stripped of, and SHA256SUMS
+# over all of them. install.sh / install.ps1 and Rikugan's own updater install from these assets.
+# The release stays a draft until every asset is uploaded.
+#
+# Run it by hand (Actions > Release > Run workflow) for a dry run: the same builds, uploaded to a draft named
+# v<version>-dry-run-<run id>, which only the repository's maintainers can see and which is deleted at the end. No tag
+# is created and nothing is published.
+#
+# Supply chain: no third-party actions. Checkout is plain git; publishing uses the gh CLI that GitHub's runners ship
+# with; build-tools/ci.sh (ci.ps1 on Windows) does every build step.
 name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
 
 jobs:
-  validate-and-release:
-    name: Validate & Publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+  prepare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.which.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate tag matches the CMake project version
+      - name: Check out (git only)
+        env:
+          TOKEN: ${{ github.token }}
+        run: &checkout |
+          git init -q .
+          git config core.autocrlf false # Windows runners default to CRLF checkouts
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" fetch -q --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git submodule update -q --init --recursive --depth 1
+      - name: Which release
+        id: which
         run: |
-          TAG=${GITHUB_REF#refs/tags/v}
-          VERSION=$(sed -n 's/^project(rikugan VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
-          IDA=$(sed -n 's/.*"version": "\([0-9.]*\)".*/\1/p' ida-plugin.json | head -n1)
-          echo "Tag: $TAG  |  CMakeLists.txt: $VERSION  |  ida-plugin.json: $IDA"
-          if [ "$TAG" != "$VERSION" ] || [ "$TAG" != "$IDA" ]; then
-            echo "ERROR: tag v$TAG does not match the project version"
+          v=$(sed -n 's/^project(rikugan VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            build-tools/ci.sh tag-check "$GITHUB_REF_NAME"
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            build-tools/ci.sh tag-check "v$v" # the versions agree; the dry run makes no tag
+            echo "tag=v$v-dry-run-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Draft release
+        env:
+          TAG: ${{ steps.which.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; delete it (and re-push the tag) to publish again" >&2
             exit 1
           fi
+          v=$(sed -n 's/^project(rikugan VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          build-tools/release_notes.sh "$v" > notes.md
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            gh release create "$TAG" --draft --verify-tag --title "Rikugan $TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Rikugan v$v (dry run, deleted when the run ends)" \
+              --notes-file notes.md
+          fi
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
+  unix:
+    needs: prepare
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false # every platform reports; publish still needs all of them
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-22.04
+          - name: linux-arm64
+            runner: ubuntu-22.04-arm
+          - name: macos-arm64
+            runner: macos-15
+          - name: macos-x86_64
+            runner: macos-15-intel
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Check out (git only)
+        env:
+          TOKEN: ${{ github.token }}
+        run: *checkout
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ninja-build libssl-dev zlib1g-dev libarchive-tools \
+            libgl-dev libegl-dev libxkbcommon-dev libfontconfig1-dev
+      - name: Dependencies
+        run: build-tools/ci.sh deps
+      - name: omc
+        run: build-tools/ci.sh omc
+      - name: Tests (zero warnings)
+        run: build-tools/ci.sh test
+      - name: Plugins without the hosts (zero warnings)
+        run: build-tools/ci.sh plugins
+      - name: Smoke (the packages as they ship)
+        run: build-tools/ci.sh smoke
+      - name: Upload to the draft release
+        run: gh release upload "$TAG" $(build-tools/ci.sh dist-assets)
+
+  windows:
+    needs: prepare
+    name: windows-x86_64
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Check out (git only)
+        env:
+          TOKEN: ${{ github.token }}
+        run: *checkout
+      - name: omc
+        run: build-tools/ci.sh omc
+      - name: libomc.dll (MinGW-w64, as omc builds it)
+        run: build-tools/ci.sh libomc
+      - name: Tests (zero warnings)
+        shell: pwsh
+        run: build-tools/ci.ps1 test
+      - name: Plugins without Binary Ninja (zero warnings)
+        shell: pwsh
+        run: build-tools/ci.ps1 plugins
+      - name: Smoke (the packages as they ship)
+        shell: pwsh
+        run: build-tools/ci.ps1 smoke
+      - name: Upload to the draft release
+        run: gh release upload "$TAG" $(build-tools/ci.sh dist-assets)
+
+  publish:
+    needs: [prepare, unix, windows]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Checksums
+        run: |
+          mkdir sums && cd sums
+          gh release download "$TAG" --pattern '*.sha256'
+          cat ./*.sha256 | sed 's/ [*]/  /' | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+          # every platform's two plugins and their symbols: 5 platforms x 2 hosts x 2 packages
+          n=$(wc -l < SHA256SUMS)
+          [ "$n" = 20 ] || { echo "expected 20 packages, the draft has $n" >&2; exit 1; }
+          gh release upload "$TAG" SHA256SUMS
+      - name: Publish
+        if: github.event_name == 'push'
+        run: gh release edit "$TAG" --draft=false --latest
+
+  dry-run-cleanup:
+    # whatever happened: the dry run's draft goes (a real release that failed stays a draft, to look at)
+    needs: [prepare, unix, windows, publish]
+    if: always() && github.event_name != 'push' && needs.prepare.result == 'success'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Delete the dry run's draft
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release delete "$TAG" --yes

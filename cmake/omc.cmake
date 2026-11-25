@@ -79,8 +79,14 @@ if(WIN32)
 endif()
 
 set(OMC_LIB_O "${CMAKE_BINARY_DIR}/omc/omc-lib.o")
+# macOS: OpenSSL linked in statically (Homebrew's static libraries), as build_omc.sh builds omc: the plugin must load on
+# a Mac without Homebrew
+set(_omc_env)
+if(APPLE)
+    set(_omc_env STATIC_OPENSSL=1)
+endif()
 execute_process(
-    COMMAND make -s -C "${OMC_DIR}" -f Makefile -f "${CMAKE_SOURCE_DIR}/mk/omc-vars.mk" rios-libs
+    COMMAND "${CMAKE_COMMAND}" -E env ${_omc_env} make -s -C "${OMC_DIR}" -f Makefile -f "${CMAKE_SOURCE_DIR}/mk/omc-vars.mk" rios-libs
     OUTPUT_VARIABLE OMC_LINK_LIBS OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE _omc_rc)
 if(NOT _omc_rc EQUAL 0)
     message(FATAL_ERROR "cannot read omc's link libraries from ${OMC_DIR}/Makefile")

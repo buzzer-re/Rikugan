@@ -6,6 +6,7 @@
 # install.ps1 installs them from a release, or from this folder with -From dist.
 #
 #   .\build.ps1                            # IDA, and Binary Ninja when it is installed
+#   .\build.ps1 -Sdk                       # both, without Binary Ninja installed (what CI and the release build)
 #   .\build.ps1 -Target ida                # or binja
 #   .\build.ps1 -OmcVersion latest         # libomc from omc's Windows release instead of ..\ohmyc
 #
@@ -15,8 +16,11 @@
 #   -OmcLibDir   a folder with a prebuilt libomc.dll and libomc.def (omc.h in ..\include)
 #   -OmcVersion  an omc release (e.g. 19.1.0 or latest) whose Windows zip carries libomc; used when there is no source
 # IDA needs no install to build: the SDK (third_party\ida-sdk) carries the import libraries for IDA and its Qt.
+# -Sdk links Binary Ninja's plugin against stand-ins for its core and UI DLLs (cmake\host_stubs.cmake): it binds to the
+# installed Binary Ninja's own when it loads, like a plugin built against an install.
 param(
     [ValidateSet('both', 'binja', 'ida')][string]$Target = 'both',
+    [switch]$Sdk,
     [string]$OmcDir = $env:OMC_DIR,
     [string]$OmcLibDir = $env:OMC_LIB_DIR,
     [string]$OmcVersion = $env:OMC_VERSION,
@@ -72,17 +76,27 @@ function Get-Version {
     return $m.Matches[0].Groups[1].Value
 }
 
-# dist\rikugan-<version>-<host>-windows-x86_64.zip from a staged folder, with its .sha256
-function New-Package([string]$HostName, [string]$Staged) {
+# dist\rikugan-<version>-<host>-windows-x86_64<suffix>.zip from a staged folder, with its .sha256
+function New-Package([string]$HostName, [string]$Staged, [string]$Suffix = '') {
     $dist = Join-Path $Root 'dist'
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
-    $asset = "rikugan-$(Get-Version)-$HostName-windows-x86_64.zip"
+    $asset = "rikugan-$(Get-Version)-$HostName-windows-x86_64$Suffix.zip"
     $zip = Join-Path $dist $asset
     Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue
     [IO.Compression.ZipFile]::CreateFromDirectory($Staged, $zip)
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$zip.sha256", "$hash  $asset`n")
     Write-Host "Packaged dist\$asset"
+}
+
+# rikugan-<version>-<host>-windows-x86_64-symbols.zip: the plugin's PDB, to read a crash log's module+offset lines
+# (next to rikugan.dll, it also names the functions in Rikugan's own crash logs)
+function New-SymbolsPackage([string]$HostName, [string]$BuildDir) {
+    $stage = Join-Path $Root "build\package\$HostName-symbols"
+    Remove-Item -Recurse -Force -LiteralPath $stage -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    Copy-Item (Join-Path $BuildDir 'rikugan.pdb') $stage
+    New-Package $HostName $stage '-symbols'
 }
 
 function New-Stage([string]$HostName) {
@@ -92,13 +106,18 @@ function New-Stage([string]$HostName) {
     return $stage
 }
 
+# Builds rikugan_<host> in build\<host> (build\<host>-sdk with -Sdk); returns the build folder.
 function Invoke-HostBuild([string]$HostName, [string]$Qt, [string[]]$Extra) {
-    $a = @('-S', $Root, '-B', (Join-Path $Root "build\$HostName"), '-G', 'Ninja', "-DRIKUGAN_HOST=$HostName",
+    $dir = Join-Path $Root ("build\$HostName" + $(if ($Sdk) { '-sdk' } else { '' }))
+    $a = @('-S', $Root, '-B', $dir, '-G', 'Ninja', "-DRIKUGAN_HOST=$HostName",
            '-DCMAKE_BUILD_TYPE=RelWithDebInfo', "-DCMAKE_PREFIX_PATH=$Qt")
+    if ($Sdk) { $a += '-DRIKUGAN_SDK_ONLY=ON' }
     # both, so a tree switches between a prebuilt libomc and the source build
-    if ($script:OmcLibDir) { $a += "-DOMC_LIB_DIR=$script:OmcLibDir" } else { $a += @("-DOMC_DIR=$script:OmcDir", '-DOMC_LIB_DIR=') }
-    Invoke-Native cmake ($a + $Extra)
-    Invoke-Native cmake @('--build', (Join-Path $Root "build\$HostName"), '--target', "rikugan_$HostName")
+    if ($script:OmcLibDir) { $a += @("-DOMC_DIR=$script:OmcDir", "-DOMC_LIB_DIR=$script:OmcLibDir") } else { $a += @("-DOMC_DIR=$script:OmcDir", '-DOMC_LIB_DIR=') }
+    # shown, not returned: the caller gets the folder only
+    Invoke-Native cmake ($a + $Extra) | Out-Host
+    Invoke-Native cmake @('--build', $dir, '--target', "rikugan_$HostName") | Out-Host
+    return $dir
 }
 
 # ---- libomc ----
@@ -122,13 +141,15 @@ $built = $false
 if ($Target -in 'both', 'binja') {
     $bn = @($BnInstallDir, "$env:LOCALAPPDATA\Programs\Vector35\BinaryNinja", "$env:ProgramFiles\Vector35\BinaryNinja") |
         Where-Object { $_ -and (Test-Path (Join-Path $_ 'binaryninjacore.dll')) } | Select-Object -First 1
-    if ($bn) {
-        Write-Step "Binary Ninja at $bn"
-        Invoke-HostBuild 'binja' (Get-QtKit '6.11.1') @("-DBN_INSTALL_DIR=$bn")
+    if ($bn -or $Sdk) {
+        if ($Sdk) { Write-Step 'Binary Ninja (no install: stand-ins for its DLLs)'; $extra = @() }
+        else { Write-Step "Binary Ninja at $bn"; $extra = @("-DBN_INSTALL_DIR=$bn") }
+        $dir = Invoke-HostBuild 'binja' (Get-QtKit '6.11.1') $extra
         $stage = New-Stage 'binja'
-        Copy-Item (Join-Path $Root 'build\binja\rikugan.dll') $stage
-        Copy-Item (Join-Path $Root 'build\binja\libomc.dll') (Join-Path $stage 'rikugan')
+        Copy-Item (Join-Path $dir 'rikugan.dll') $stage
+        Copy-Item (Join-Path $dir 'libomc.dll') (Join-Path $stage 'rikugan')
         New-Package 'binja' $stage
+        New-SymbolsPackage 'binja' $dir
         $built = $true
     } elseif ($Target -eq 'binja') {
         throw 'Binary Ninja not found (pass -BnInstallDir): its plugin links against the installed core and UI.'
@@ -139,10 +160,11 @@ if ($Target -in 'both', 'binja') {
 
 if ($Target -in 'both', 'ida') {
     Write-Step 'IDA Pro'
-    Invoke-HostBuild 'ida' (Get-QtKit '6.8.2') @()
+    $dir = Invoke-HostBuild 'ida' (Get-QtKit '6.8.2') @()
     $stage = New-Stage 'ida'
-    Copy-Item (Join-Path $Root 'ida-plugin.json'), (Join-Path $Root 'build\ida\rikugan.dll'), (Join-Path $Root 'build\ida\libomc.dll') (Join-Path $stage 'rikugan')
+    Copy-Item (Join-Path $Root 'ida-plugin.json'), (Join-Path $dir 'rikugan.dll'), (Join-Path $dir 'libomc.dll') (Join-Path $stage 'rikugan')
     New-Package 'ida' $stage
+    New-SymbolsPackage 'ida' $dir
     $built = $true
 }
 
