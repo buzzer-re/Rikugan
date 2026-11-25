@@ -131,7 +131,7 @@ struct ToolSpec {
     uint32_t flags = 0;
     int resultLimit = 20000;
     ToolFn fn;
-    QJsonObject inputSchema;  // an External tool's own JSON schema, sent as is instead of `params`
+    QJsonObject inputSchema = {};  // an External tool's own JSON schema, sent as is instead of `params`
 
     bool has(ToolFlag f) const { return (flags & f) != 0; }
     bool exclusive() const { return (flags & (Mutating | Script | Exclusive)) != 0; }

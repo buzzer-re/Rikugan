@@ -32,7 +32,8 @@ public:
     };
 
     // The logins found (credentials included): for the offer in Connect a model and Settings.
-    static QList<ExternalLogin> find(const Sources& sources = {});
+    static QList<ExternalLogin> find();
+    static QList<ExternalLogin> find(const Sources& sources);
     // Merges them into Rikugan's auth.json as described above and makes omc re-read it when it changed. No-op unless
     // config.useExternalLogins. Returns whether Rikugan's logins changed.
     static bool run();

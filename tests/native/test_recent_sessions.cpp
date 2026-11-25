@@ -13,7 +13,7 @@ namespace {
 
 QString touch(const QString& path) {
     QFile f(path);
-    f.open(QIODevice::WriteOnly);
+    if (!f.open(QIODevice::WriteOnly)) qFatal("cannot create %s", qPrintable(path));
     return path;
 }
 

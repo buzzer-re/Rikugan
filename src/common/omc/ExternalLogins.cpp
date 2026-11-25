@@ -46,6 +46,7 @@ double jwtExpiryMs(const QString& jwt) {
 
 // ---- macOS keychain (Claude Code keeps its login there instead of a file) ----
 
+#ifdef __APPLE__
 QString runSecurity(const QStringList& args, const QByteArray& input = {}) {
     QProcess p;
     p.start(QStringLiteral("/usr/bin/security"), args);
@@ -58,6 +59,7 @@ QString runSecurity(const QStringList& args, const QByteArray& input = {}) {
     }
     return QString::fromUtf8(p.readAllStandardOutput());
 }
+#endif
 
 std::optional<QJsonObject> readKeychain() {
 #ifdef __APPLE__
@@ -102,8 +104,8 @@ bool writeKeychain(const QJsonObject& whole) {
 struct Source {
     QString provider, tool, path;
     bool keychain = false;  // read from (and written back to) the macOS keychain
-    QJsonObject whole;      // the tool's own document
-    QJsonObject credential;
+    QJsonObject whole = {};  // the tool's own document
+    QJsonObject credential = {};
 };
 
 QJsonObject fromClaude(const QJsonObject& whole) {
@@ -183,6 +185,8 @@ bool writeBack(Source& src, const QJsonObject& cred) {
 }
 
 }  // namespace
+
+QList<ExternalLogin> ExternalLogins::find() { return find(Sources{}); }
 
 QList<ExternalLogin> ExternalLogins::find(const Sources& s) {
     QList<ExternalLogin> out;
