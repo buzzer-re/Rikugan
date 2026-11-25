@@ -203,9 +203,9 @@ registry.add(rk::ToolSpec{
 ```
 
 - Flags: `Mutating` (changes the database: undo record, cache flush, `approve_mutations`), `MainThread`,
-  `RequiresDecompiler`, `Script` (runs model-written code: always asks first), `Internal` (never shown to the
-  model), `Exclusive`, `Blocking` (waits on the user or another agent: own thread instead of the pool), `External`
-  (another program serves it: Binary Ninja's MCP tools, see below).
+  `RequiresDecompiler`, `Script` (runs model-written code: always asks first, and that card also covers its database
+  changes), `Internal` (never shown to the model), `Exclusive`, `Blocking` (waits on the user or another agent: own
+  thread instead of the pool), `External` (another program serves it: Binary Ninja's MCP tools, see below).
 - Every `Mutating` tool must be in `MutationLog::reverseBuilders()` (with its pre-state reader in
   `capturePreState`) or in `MutationLog::knownIrreversible()`, or be `External` (recorded as not reversible). A reversible tool's success text starts with one of
   "Renamed", "Named", "Set ".

@@ -293,8 +293,9 @@ Flags (`tools/Tool.h`): `Mutating`, `MainThread` (IDA: every tool; BN: UI and mu
 3. Mode phase gate: a read-only phase refuses `Mutating` and `Script` tools.
 4. `RequiresDecompiler` without a decompiler → error.
 5. `Script` tools always ask (Allow / Always allow for this chat / Deny).
-6. `approve_mutations` asks before each `Mutating` tool (Allow / Allow for this chat / Deny). The chat-wide answers,
-   for scripts and for database changes, are shared with the chat's subagents both ways.
+6. `approve_mutations` asks before each `Mutating` tool that is not a `Script` (Allow / Allow for this chat / Deny): a
+   script's own card, which shows its code, is its approval. The chat-wide answers, for scripts and for database
+   changes, are shared with the chat's subagents both ways.
 7. Undo pre-state captured for reversible mutations (internal readers via `runDirect`).
 8. Result cache lookup (`list_functions`, `list_strings`, `get_binary_info`, `decompile_function`, `function_xrefs`;
    64-entry LRU per database, flushed by any successful mutation).

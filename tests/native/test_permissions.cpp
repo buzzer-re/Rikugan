@@ -206,6 +206,32 @@ private Q_SLOTS:
         QCOMPARE(host->names.value(0x402000), QStringLiteral("after_b"));
     }
 
+    // A script that changes the database (execute_python) shows its code on one card: that answer is its approval,
+    // with or without approve_mutations, and it is never asked again as a database change.
+    void scriptAsksOnce() {
+        rk::RikuganConfig& cfg = rk::RikuganConfig::instance();
+        std::atomic<int> runs{0};
+        db->registry.add(rk::ToolSpec{"run_db_script", "test", "Runs a script that may change the database.",
+                                      {rk::ToolParam{"code", rk::ToolParam::String, "Code", {}, {}, {}}},
+                                      rk::Mutating | rk::Script, 20000, [&runs](rk::ToolCall&) {
+                                          ++runs;
+                                          return rk::ToolResult::ok(QStringLiteral("done"));
+                                      }});
+        auto chat = newChat();
+        QList<rk::ApprovalRequest::Kind> kinds;
+        auto c = QObject::connect(chat.get(), &rk::ChatSession::approvalRequested, [&](int id, const rk::ApprovalRequest& r) {
+            kinds << r.kind;
+            chat->answerApproval(id, rk::ApprovalChoice::Allow);
+        });
+        cfg.approveMutations = true;
+        const Run r = run(*chat, R"js(batch:[["run_db_script",{"code":"print(1)"}]])js", rk::PermissionChoice::AllowOnce);
+        cfg.approveMutations = false;
+        QObject::disconnect(c);
+        QVERIFY(r.done);
+        QCOMPARE(runs.load(), 1);
+        QCOMPARE(kinds, (QList<rk::ApprovalRequest::Kind>{rk::ApprovalRequest::Script}));
+    }
+
     void cleanupTestCase() {
         rk::RikuganConfig::instance().autoAllowFiles = false;
         rk::RikuganConfig::instance().autoAllowCommands = false;

@@ -693,7 +693,7 @@ omc frames -&gt; SessionListener -&gt; EventQueue -&gt; ChatSession::frame -&gt;
     <li>The mode phase gate applies: a read-only phase refuses <code>Mutating</code> and <code>Script</code> tools.</li>
     <li>A <code>RequiresDecompiler</code> tool returns an error when there is no decompiler.</li>
     <li><code>Script</code> tools always ask, with Allow, Always allow for this chat and Deny.</li>
-    <li>With <code>approve_mutations</code> on, the user is asked before each <code>Mutating</code> tool.</li>
+    <li>With <code>approve_mutations</code> on, the user is asked before each <code>Mutating</code> tool that is not a <code>Script</code>. A script's own card, which shows its code, is its approval.</li>
     <li>The undo pre-state is captured for reversible mutations, by internal readers called through <code>runDirect</code>.</li>
     <li>The result cache is checked for <code>list_functions</code>, <code>list_strings</code>, <code>get_binary_info</code>, <code>decompile_function</code> and <code>function_xrefs</code>. It is a 64-entry LRU per database, flushed by any successful mutation.</li>
     <li>The tool runs, on the host main thread for <code>MainThread</code> tools. A <code>ToolError</code> becomes <code>Error: &lt;message&gt;</code>; other exceptions become <code>Unexpected error: ...</code> and are logged. A successful <code>Mutating</code> tool then calls <code>Host::databaseChanged</code> (so does <code>/undo</code>): IDA re-decompiles its open pseudocode views, which Hex-Rays does not redraw for a change made outside them. Binary Ninja's views redraw on their own.</li>
