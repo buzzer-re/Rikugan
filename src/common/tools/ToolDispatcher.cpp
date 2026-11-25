@@ -180,9 +180,10 @@ ToolResult ToolDispatcher::execute(ChatContext& chat, const QString& toolName, c
         if (c == ApprovalChoice::AlwaysAllow) chat.alwaysAllowScripts = true;
     }
     const bool mutating = spec->has(Mutating);
-    if (mutating && RikuganConfig::instance().approveMutations && chat.ui) {
+    if (mutating && RikuganConfig::instance().approveMutations && chat.ui && !chat.alwaysAllowMutations.load()) {
         const ApprovalChoice c = chat.ui->askApproval(ApprovalRequest{ApprovalRequest::Mutation, toolName, args, {}}, token);
         if (c == ApprovalChoice::Deny) return ToolResult::error(QStringLiteral("Mutation denied by user."));
+        if (c == ApprovalChoice::AlwaysAllow) chat.alwaysAllowMutations = true;
     }
 
     Host& host = *chat.host;

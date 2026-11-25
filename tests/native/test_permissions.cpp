@@ -176,6 +176,36 @@ private Q_SLOTS:
         QVERIFY2(!r.text.contains("203.0.113.7") && r.text.contains("[IP_REDACTED]"), qPrintable(r.text));
     }
 
+    // "Allow for this chat" on a database-change card covers the chat's later changes; "Allow" covers one
+    void databaseChangeAllowedForTheChat() {
+        rk::RikuganConfig& cfg = rk::RikuganConfig::instance();
+        cfg.approveMutations = true;
+        auto* host = static_cast<rktest::FakeHost*>(db->host.get());
+        const QString twoRenames =
+            R"(batch:[["rename_function",{"address":"0x401000","new_name":"%1_a"}],["rename_function",{"address":"0x402000","new_name":"%1_b"}]])";
+        auto cardsFor = [&](rk::ChatSession& chat, const QString& prompt, rk::ApprovalChoice choice) {
+            int cards = 0;
+            auto c = QObject::connect(&chat, &rk::ChatSession::approvalRequested, [&](int id, const rk::ApprovalRequest&) {
+                ++cards;
+                chat.answerApproval(id, choice);
+            });
+            const Run r = run(chat, prompt, rk::PermissionChoice::AllowOnce);
+            QObject::disconnect(c);
+            return r.done ? cards : -1;
+        };
+        auto chat = newChat();
+        const int once = cardsFor(*chat, twoRenames.arg("once"), rk::ApprovalChoice::Allow);
+        const int forChat = cardsFor(*chat, twoRenames.arg("chat"), rk::ApprovalChoice::AlwaysAllow);
+        const int after = cardsFor(*chat, twoRenames.arg("after"), rk::ApprovalChoice::Deny);
+        cfg.approveMutations = false;
+        QCOMPARE(once, 2);
+        QCOMPARE(forChat, 1);
+        QCOMPARE(after, 0);
+        std::lock_guard<std::mutex> g(host->mu);
+        QCOMPARE(host->names.value(0x401000), QStringLiteral("after_a"));
+        QCOMPARE(host->names.value(0x402000), QStringLiteral("after_b"));
+    }
+
     void cleanupTestCase() {
         rk::RikuganConfig::instance().autoAllowFiles = false;
         rk::RikuganConfig::instance().autoAllowCommands = false;

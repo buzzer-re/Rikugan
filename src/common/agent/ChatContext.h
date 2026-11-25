@@ -68,7 +68,9 @@ struct ChatContext {
     // shared with the chat's subagents
     std::shared_ptr<MutationLog> mutations = std::make_shared<MutationLog>();
     std::shared_ptr<ChatUi> ui;  // null for headless chats (bulk renamer workers)
+    // "Allow for this chat" on a script card, on a database-change card (shared with subagents, both ways)
     std::atomic<bool> alwaysAllowScripts{false};
+    std::atomic<bool> alwaysAllowMutations{false};
     // disk / shell tool approvals (shared with subagents)
     std::shared_ptr<PermissionState> permissions = std::make_shared<PermissionState>();
     // the chat's omc session (set when it opens; read by tool workers for sendControl)

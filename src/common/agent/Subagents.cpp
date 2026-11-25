@@ -251,6 +251,7 @@ SubagentOutcome runSubagent(ChatContext& parent, const SubagentSpec& spec, const
     if (!peer) child->mutations = parent.mutations;
     child->ui = parent.ui;
     child->alwaysAllowScripts = parent.alwaysAllowScripts.load();
+    child->alwaysAllowMutations = parent.alwaysAllowMutations.load();
     child->permissions = parent.permissions;  // grants given in the chat cover its subagents, and back
     child->depth = parent.depth + 1;
     child->mode = peer ? nullptr : parent.mode;
@@ -433,6 +434,7 @@ SubagentOutcome runSubagent(ChatContext& parent, const SubagentSpec& spec, const
     listener->setFrameFn({});
     session->close();
     if (child->alwaysAllowScripts) parent.alwaysAllowScripts = true;
+    if (child->alwaysAllowMutations) parent.alwaysAllowMutations = true;
 
     out.status = result.status;
     out.text = result.lastText;
