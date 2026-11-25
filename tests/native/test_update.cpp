@@ -124,7 +124,7 @@ private Q_SLOTS:
         QDir().mkpath(release);
         server.start(rktest::python(), {QStringLiteral("-I"), script, dir.filePath(QStringLiteral("www")), kTag});
         QVERIFY(server.waitForStarted(10000));
-        QVERIFY(server.waitForReadyRead(10000));
+        QVERIFY(server.waitForReadyRead(60000));  // a Python start can take seconds on a busy CI runner
         const int port = server.readLine().trimmed().toInt();
         QVERIFY(port > 0);
         qputenv("RIKUGAN_UPDATE_URL", QStringLiteral("http://127.0.0.1:%1/releases").arg(port).toUtf8());
