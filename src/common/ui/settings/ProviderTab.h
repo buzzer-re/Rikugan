@@ -83,6 +83,10 @@ private:
     QLineEdit* connModels_ = nullptr;
     QSpinBox* connContext_ = nullptr;
     QSpinBox* connMaxTokens_ = nullptr;
+    QWidget* connCaRow_ = nullptr;
+    QLineEdit* connCa_ = nullptr;
+    QWidget* connTestRow_ = nullptr;
+    QLabel* connTestResult_ = nullptr;
     QComboBox* model_ = nullptr;
     QComboBox* thinking_ = nullptr;
     QLabel* status_ = nullptr;

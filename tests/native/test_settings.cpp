@@ -140,6 +140,7 @@ private Q_SLOTS:
             QCOMPARE(context->value(), 0);  // omc's default until set
             context->setValue(200000);
             maxTokens->setValue(16000);
+            QTest::keyClicks(dlg.findChild<QLineEdit*>(QStringLiteral("connectionCaEdit")), QStringLiteral("~/certs/inference.pem"));
             auto* model = dlg.findChild<QComboBox*>(QStringLiteral("modelCombo"));
             QCOMPARE(model->count(), 2);
             model->setCurrentIndex(model->findText(QStringLiteral("small")));
@@ -159,6 +160,7 @@ private Q_SLOTS:
         QCOMPARE(e.models, (QStringList{"small", "big"}));
         QCOMPARE(e.contextWindow, 200000);
         QCOMPARE(e.maxTokens, 16000);
+        QCOMPARE(e.caFile, QStringLiteral("~/certs/inference.pem"));
         QCOMPARE(loaded.customEndpoints[0].id, QStringLiteral("mock"));
         QCOMPARE(loaded.model, QStringLiteral("mylocal/small"));
 
@@ -179,6 +181,7 @@ private Q_SLOTS:
             QCOMPARE(dlg.findChild<QLineEdit*>(QStringLiteral("connectionModelsEdit"))->text(), QStringLiteral("small, big"));
             QCOMPARE(dlg.findChild<QSpinBox*>(QStringLiteral("connectionContextSpin"))->value(), 200000);
             QCOMPARE(dlg.findChild<QSpinBox*>(QStringLiteral("connectionMaxTokensSpin"))->value(), 16000);
+            QCOMPARE(dlg.findChild<QLineEdit*>(QStringLiteral("connectionCaEdit"))->text(), QStringLiteral("~/certs/inference.pem"));
         }
 
         rk::RikuganConfig::instance() = original;

@@ -76,6 +76,7 @@ RikuganConfig RikuganConfig::load() {
                           toStrings(e.value(QStringLiteral("models")))};
         ep.contextWindow = e.value(QStringLiteral("context_window")).toInt();
         ep.maxTokens = e.value(QStringLiteral("max_tokens")).toInt();
+        ep.caFile = e.value(QStringLiteral("ca_file")).toString();
         if (!ep.id.isEmpty() && !ep.baseUrl.isEmpty()) c.customEndpoints << ep;
     }
     integer("bulk_renamer_batch_size", c.bulkRenamerBatchSize);
@@ -89,10 +90,13 @@ bool RikuganConfig::save() const {
     RikuganConfig c = *this;
     c.clamp();
     QJsonArray eps;
-    for (const CustomEndpoint& e : c.customEndpoints)
-        eps.append(QJsonObject{{"id", e.id}, {"base_url", e.baseUrl}, {"api", e.api}, {"api_key", e.apiKey},
-                               {"models", fromStrings(e.models)}, {"context_window", e.contextWindow},
-                               {"max_tokens", e.maxTokens}});
+    for (const CustomEndpoint& e : c.customEndpoints) {
+        QJsonObject eo{{"id", e.id}, {"base_url", e.baseUrl}, {"api", e.api}, {"api_key", e.apiKey},
+                       {"models", fromStrings(e.models)}, {"context_window", e.contextWindow},
+                       {"max_tokens", e.maxTokens}};
+        if (!e.caFile.isEmpty()) eo.insert(QStringLiteral("ca_file"), e.caFile);
+        eps.append(eo);
+    }
     const QJsonObject o{
         {"schema_version", kSchemaVersion},
         {"model", c.model},

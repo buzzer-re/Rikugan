@@ -17,6 +17,8 @@ struct CustomEndpoint {
     // 32000 or the window).
     int contextWindow = 0;
     int maxTokens = 0;
+    // A PEM file (the server's self-signed certificate or its private CA) trusted for HTTPS, on top of the system's.
+    QString caFile{};
 };
 
 struct RikuganConfig {

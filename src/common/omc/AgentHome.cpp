@@ -15,6 +15,7 @@
 #include "common/util/Embedded.h"
 #include "common/util/Env.h"
 #include "common/util/Files.h"
+#include "common/util/Log.h"
 
 namespace rk {
 
@@ -54,6 +55,33 @@ void writeProjectPrompt() {
                     text.toUtf8());
 }
 
+// Custom connections' trusted certificates (a self-signed server, a private CA): omc loads one extra CA file
+// (OMC_EXTRA_CA_CERTS, read when its first HTTPS connection opens), so they join the file already named there (the
+// system bundle on Linux, or the user's own) in one bundle. Verification stays on for every connection.
+void writeTrustBundle() {
+    QByteArray certs;
+    for (const CustomEndpoint& e : RikuganConfig::instance().customEndpoints) {
+        if (e.caFile.isEmpty()) continue;
+        bool ok = false;
+        const QByteArray pem = readFile(expandHome(e.caFile), &ok);
+        if (!ok || !pem.contains("-----BEGIN CERTIFICATE-----")) {
+            log(QStringLiteral("Rikugan: the certificate %1 of the connection %2 is not a readable PEM certificate")
+                    .arg(e.caFile, e.id));
+            continue;
+        }
+        certs += pem + '\n';
+    }
+    if (certs.isEmpty()) return;
+    QByteArray bundle;
+    for (const char* var : {"OMC_EXTRA_CA_CERTS", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"})
+        if (const QString base = qEnvironmentVariable(var); !base.isEmpty()) {
+            bundle = readFile(base) + '\n';
+            break;
+        }
+    const QString path = paths::omcAgentDir() + QStringLiteral("/trusted-ca.pem");
+    if (writeFileAtomic(path, bundle + certs)) setEnv("OMC_EXTRA_CA_CERTS", path);
+}
+
 }  // namespace
 
 QString AgentHome::standaloneAgentDir() { return g_standaloneAgentDir; }
@@ -84,6 +112,7 @@ void AgentHome::prepare() {
     }
 
     ensureDir(paths::omcAgentDir());
+    writeTrustBundle();
     writeManagedConfig();
     syncSkills();
     writeProjectPrompt();

@@ -7,6 +7,7 @@
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -16,8 +17,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QPainter>
 #include <QPixmap>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
@@ -26,6 +29,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "common/config/ConnectionTest.h"
 #include "common/config/Paths.h"
 #include "common/omc/AgentHome.h"
 #include "common/omc/AuthSync.h"
@@ -166,6 +170,59 @@ ProviderTab::ProviderTab(const RikuganConfig& cfg, QWidget* parent)
     connMaxTokens_ = tokenSpin("connectionMaxTokensSpin", 10'000'000, tr("Default"),
                                tr("The most tokens a reply may have. Default: 32000, or the context window when smaller."));
     form_->addRow(tr("Max output:"), connMaxTokens_);
+    // a private server with a self-signed certificate: trust that certificate (verification stays on)
+    connCaRow_ = new QWidget;
+    auto* caRow = new QHBoxLayout(connCaRow_);
+    caRow->setContentsMargins(0, 0, 0, 0);
+    connCa_ = new QLineEdit;
+    connCa_->setObjectName(QStringLiteral("connectionCaEdit"));
+    connCa_->setPlaceholderText(tr("None: the system's trusted authorities"));
+    connCa_->setToolTip(tr("A PEM file to trust for this server's HTTPS: its self-signed certificate, or the CA that "
+                           "signed it. The connection is still verified."));
+    caRow->addWidget(connCa_, 1);
+    auto* caBrowse = new QPushButton(tr("Browse\u2026"));
+    caRow->addWidget(caBrowse);
+    form_->addRow(tr("Certificate:"), connCaRow_);
+    connTestRow_ = new QWidget;
+    auto* testRow = new QVBoxLayout(connTestRow_);
+    testRow->setContentsMargins(0, 0, 0, 0);
+    auto* testBtn = new QPushButton(tr("Test connection"));
+    testBtn->setObjectName(QStringLiteral("testConnectionButton"));
+    testRow->addWidget(testBtn, 0, Qt::AlignLeft);
+    connTestResult_ = new QLabel;
+    connTestResult_->setObjectName(QStringLiteral("testConnectionResult"));
+    connTestResult_->setWordWrap(true);
+    connTestResult_->setTextFormat(Qt::PlainText);
+    connTestResult_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    testRow->addWidget(connTestResult_);
+    form_->addRow(QString(), connTestRow_);
+    connect(caBrowse, &QPushButton::clicked, this, [this] {
+        const int i = customIndex(currentProvider());
+        if (i < 0) return;
+        const QString f = QFileDialog::getOpenFileName(this, tr("Certificate to trust"), QFileInfo(connCa_->text()).path(),
+                                                       tr("Certificates (*.pem *.crt *.cer);;All files (*)"));
+        if (f.isEmpty()) return;
+        connCa_->setText(f);
+        customs_[i].caFile = f;
+    });
+    connect(testBtn, &QPushButton::clicked, this, [this, testBtn] {
+        const int i = customIndex(currentProvider());
+        if (i < 0) return;
+        const CustomEndpoint e = customs_[i];
+        testBtn->setEnabled(false);
+        setStatus(connTestResult_, tr("Asking %1\u2026").arg(connectionTestUrl(e)), settings::kHintStyle);
+        QPointer<ProviderTab> self(this);
+        QPointer<QPushButton> btn(testBtn);
+        spawnThread([self, btn, e] {
+            const ConnectionTestResult r = testConnection(e);
+            QMetaObject::invokeMethod(
+                uiAnchor(), [self, btn, r] {
+                    if (btn) btn->setEnabled(true);
+                    if (self) self->setStatus(self->connTestResult_, r.message, r.ok ? settings::kOkStyle : settings::kErrStyle);
+                },
+                Qt::QueuedConnection);
+        });
+    });
 
     auto* modelRow = new QHBoxLayout;
     model_ = new QComboBox;
@@ -304,6 +361,9 @@ ProviderTab::ProviderTab(const RikuganConfig& cfg, QWidget* parent)
     connect(connMaxTokens_, &QSpinBox::valueChanged, this, [this](int v) {
         if (filling_) return;
         if (const int i = customIndex(currentProvider()); i >= 0) customs_[i].maxTokens = v;
+    });
+    connect(connCa_, &QLineEdit::textEdited, this, [this](const QString& t) {
+        if (const int i = customIndex(currentProvider()); i >= 0) customs_[i].caFile = t.trimmed();
     });
     connect(model_, &QComboBox::currentTextChanged, this, [this] {
         if (filling_) return;
@@ -527,6 +587,9 @@ void ProviderTab::updateConnectionRows() {
     form_->setRowVisible(connModels_, custom);
     form_->setRowVisible(connContext_, custom);
     form_->setRowVisible(connMaxTokens_, custom);
+    form_->setRowVisible(connCaRow_, custom);
+    form_->setRowVisible(connTestRow_, custom);
+    connTestResult_->clear();
     restartHint_->setVisible(custom);
     removeConn_->setEnabled(custom);
     saveKey_->setVisible(!custom);
@@ -539,6 +602,7 @@ void ProviderTab::updateConnectionRows() {
         connModels_->setText(e.models.join(QStringLiteral(", ")));
         connContext_->setValue(e.contextWindow);
         connMaxTokens_->setValue(e.maxTokens);
+        connCa_->setText(e.caFile);
         key_->setText(e.apiKey);
         key_->setPlaceholderText(tr("API key for this endpoint (leave empty for local servers)"));
     } else {
