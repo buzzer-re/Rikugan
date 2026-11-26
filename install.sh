@@ -1,220 +1,139 @@
 #!/usr/bin/env bash
-# ──────────────────────────────────────────────────────────────────────
-# Rikugan — universal installer (Linux / macOS)
+# Installs a Rikugan release for every host found on this machine (Linux and macOS; Windows: install.ps1):
+#   Binary Ninja -> <BN user dir>/plugins/librikugan.so (.dylib)
+#   IDA Pro      -> ~/.idapro/plugins/rikugan.so (.dylib)
+# The packages come from the GitHub release (rikugan-<version>-<host>-<os>-<arch>.tar.gz, checked against its .sha256),
+# or from a local folder of packages built with ./build.sh (--from dist).
 #
 #   curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash -s -- --ida
-#   curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash -s -- --binja
-#   curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash -s -- --both
+#   ./install.sh [--binja-only | --ida-only] [--version X.Y.Z] [--from DIR] [--yes]
 #
-# Environment variables:
-#   RIKUGAN_DIR     — where to clone the repo   (default: ~/.rikugan)
-#   RIKUGAN_BRANCH  — git branch to check out   (default: main)
-#   IDADIR          — override IDA install dir  (forwarded to install_ida.sh)
-#   IDA_PYTHON      — override Python for IDA    (forwarded to install_ida.sh)
-#   BN_PYTHON       — override Python for BN     (forwarded to install_binaryninja.sh)
-# ──────────────────────────────────────────────────────────────────────
+# Environment: RIKUGAN_VERSION, RIKUGAN_REPO (owner/name), RIKUGAN_DOWNLOAD_URL (release download base), BN_USER_DIR,
+# IDA_USER_DIR. A Rikugan 1.x (Python) install of the same host is moved to ~/.rikugan-1.x-backup/ first (asks).
 set -euo pipefail
 
-REPO_URL="https://github.com/buzzer-re/Rikugan.git"
-INSTALL_DIR="${RIKUGAN_DIR:-$HOME/.rikugan}"
-BRANCH="${RIKUGAN_BRANCH:-main}"
-
-# ── Colors ───────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
-
-info()   { printf "${CYAN}[*]${NC} %s\n" "$*"; }
-ok()     { printf "${GREEN}[+]${NC} %s\n" "$*"; }
-warn()   { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
-err()    { printf "${RED}[-]${NC} %s\n" "$*" >&2; }
-
-banner() {
-    printf "\n${BOLD}"
-    cat << 'EOF'
-    ╔══════════════════════════════════════════╗
-    ║            六眼  Rikugan                 ║
-    ║     Reverse Engineering AI Agent         ║
-    ║        IDA Pro  ·  Binary Ninja          ║
-    ╚══════════════════════════════════════════╝
-EOF
-    printf "${NC}\n"
-}
-
-# ── Parse arguments ──────────────────────────────────────────────────
-TARGET=""
-for arg in "$@"; do
-    case "$arg" in
-        --ida)       TARGET="ida"   ;;
-        --binja|--bn) TARGET="binja" ;;
-        --both)      TARGET="both"  ;;
-        --help|-h)
-            echo "Usage: curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash -s -- [OPTIONS]"
-            echo ""
-            echo "Options:"
-            echo "  --ida       Install for IDA Pro only"
-            echo "  --binja     Install for Binary Ninja only"
-            echo "  --both      Install for both hosts"
-            echo "  (no flag)   Auto-detect installed hosts"
-            echo ""
-            echo "Environment:"
-            echo "  RIKUGAN_DIR=$INSTALL_DIR"
-            echo "  RIKUGAN_BRANCH=$BRANCH"
-            exit 0
-            ;;
+WANT_BN=1
+WANT_IDA=1
+VERSION=${RIKUGAN_VERSION:-}
+FROM=""
+YES=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --binja-only) WANT_IDA=0 ;;
+        --ida-only) WANT_BN=0 ;;
+        --version) VERSION=${2:?--version needs a value}; shift ;;
+        --from) FROM=${2:?--from needs a folder}; shift ;;
+        --yes|-y) YES=1 ;;
+        *) echo "usage: $0 [--binja-only|--ida-only] [--version X.Y.Z] [--from DIR] [--yes]"; exit 2 ;;
     esac
+    shift
 done
 
-# ── Host detection ───────────────────────────────────────────────────
-detect_ida() {
-    if [[ "$(uname)" == "Darwin" ]]; then
-        [[ -d "$HOME/.idapro" ]] && return 0
-        [[ -d "$HOME/Library/Application Support/Hex-Rays/IDA Pro" ]] && return 0
-        ls /Applications/IDA*.app &>/dev/null && return 0
-        ls "$HOME/Applications/IDA"*.app &>/dev/null 2>&1 && return 0
-    else
-        [[ -d "$HOME/.idapro" ]] && return 0
-        [[ -d "$HOME/.ida" ]] && return 0
-        ls /opt/ida* &>/dev/null 2>&1 && return 0
-    fi
-    command -v ida64 &>/dev/null && return 0
-    command -v idat64 &>/dev/null && return 0
-    return 1
+REPO=${RIKUGAN_REPO:-buzzer-re/Rikugan}
+BASE=${RIKUGAN_DOWNLOAD_URL:-https://github.com/$REPO/releases/download}
+OS=$(uname -s)
+case "$OS-$(uname -m)" in
+    Linux-aarch64) PLAT=linux-arm64 ;;
+    Linux-x86_64)  PLAT=linux-x86_64 ;;
+    Darwin-arm64)  PLAT=macos-arm64 ;;
+    Darwin-x86_64) PLAT=macos-x86_64 ;;
+    *) echo "Unsupported platform: $OS-$(uname -m) (Windows: install.ps1)"; exit 1 ;;
+esac
+EXT=$([ "$OS" = Darwin ] && echo dylib || echo so)
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+ask() {  # ask <question>: true when the user agrees (always with --yes; never without a terminal)
+    [ "$YES" = 1 ] && return 0
+    [ -r /dev/tty ] || return 1
+    local a
+    read -r -p "$1 [y/N] " a </dev/tty || return 1
+    case "$a" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
-detect_binja() {
-    if [[ "$(uname)" == "Darwin" ]]; then
-        [[ -d "$HOME/Library/Application Support/Binary Ninja" ]] && return 0
-        [[ -d "$HOME/.binaryninja" ]] && return 0
-        [[ -d "/Applications/Binary Ninja.app" ]] && return 0
-        [[ -d "$HOME/Applications/Binary Ninja.app" ]] && return 0
+# fetch <host>: prints the path of the verified package for this platform
+fetch() {
+    local asset
+    if [ -n "$FROM" ]; then
+        asset=$(cd "$FROM" && ls -1 rikugan-*-"$1"-"$PLAT".tar.gz 2>/dev/null | sort -V | tail -n 1)
+        [ -n "$asset" ] || { echo "no rikugan-*-$1-$PLAT.tar.gz in $FROM (./build.sh makes them)" >&2; return 1; }
+        cp "$FROM/$asset" "$FROM/$asset.sha256" "$TMP/" 2>/dev/null || cp "$FROM/$asset" "$TMP/"
     else
-        [[ -d "$HOME/.binaryninja" ]] && return 0
-    fi
-    return 1
-}
-
-# ── Prerequisites ────────────────────────────────────────────────────
-check_prereqs() {
-    if ! command -v git &>/dev/null; then
-        err "git is required but not installed."
-        if [[ "$(uname)" == "Darwin" ]]; then
-            err "Install with: xcode-select --install"
-        else
-            err "Install with your package manager (apt install git / dnf install git)"
+        if [ -z "$VERSION" ]; then
+            VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)
+            [ -n "$VERSION" ] || { echo "could not find the latest release of $REPO" >&2; return 1; }
         fi
-        exit 1
+        VERSION=${VERSION#v}
+        asset="rikugan-$VERSION-$1-$PLAT.tar.gz"
+        curl -fsSL -o "$TMP/$asset" "$BASE/v$VERSION/$asset" || { echo "download failed: $BASE/v$VERSION/$asset" >&2; return 1; }
+        curl -fsSL -o "$TMP/$asset.sha256" "$BASE/v$VERSION/$asset.sha256" || { echo "download failed: $asset.sha256" >&2; return 1; }
     fi
-
-    if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
-        warn "Python not found in PATH — the per-host installer will attempt to find the bundled Python."
+    if [ -f "$TMP/$asset.sha256" ]; then
+        local want got
+        want=$(awk '{print $1}' "$TMP/$asset.sha256")
+        got=$( (sha256sum "$TMP/$asset" 2>/dev/null || shasum -a 256 "$TMP/$asset") | awk '{print $1}')
+        [ "$want" = "$got" ] || { echo "checksum mismatch for $asset; nothing was installed" >&2; return 1; }
+    elif [ -z "$FROM" ]; then
+        echo "no checksum for $asset" >&2; return 1
     fi
+    echo "$TMP/$asset"
 }
 
-# ── Clone or update ──────────────────────────────────────────────────
-clone_or_update() {
-    if [[ -d "$INSTALL_DIR/.git" ]]; then
-        info "Updating existing installation at $INSTALL_DIR..."
-        git -C "$INSTALL_DIR" fetch origin "$BRANCH" --quiet
-        git -C "$INSTALL_DIR" checkout "$BRANCH" --quiet 2>/dev/null || true
-        git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" --quiet
-        ok "Updated to latest $BRANCH"
-    else
-        if [[ -d "$INSTALL_DIR" ]]; then
-            warn "$INSTALL_DIR exists but is not a git repo — backing up"
-            mv "$INSTALL_DIR" "${INSTALL_DIR}.bak.$(date +%s)"
+# move_aside <path> <host>: a Rikugan 1.x file or folder goes to ~/.rikugan-1.x-backup/<host>/<time>/
+move_aside() {
+    local dest
+    dest="$HOME/.rikugan-1.x-backup/$2/$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$dest"
+    mv "$1" "$dest/"
+    echo "Moved $1 to $dest"
+}
+
+installed=0
+
+if [ "$WANT_BN" = 1 ]; then
+    if [ "$OS" = Darwin ]; then BN_USER=${BN_USER_DIR:-$HOME/Library/Application Support/Binary Ninja}
+    else BN_USER=${BN_USER_DIR:-$HOME/.binaryninja}; fi
+    if [ -d "$BN_USER" ]; then
+        echo "== Binary Ninja ($BN_USER)"
+        pkg=$(fetch binja)
+        dest="$BN_USER/plugins"
+        mkdir -p "$dest"
+        if [ -e "$dest/rikugan" ]; then
+            ask "$dest/rikugan holds Rikugan 1.x (or a checkout), which would load next to 2.x. Move it to ~/.rikugan-1.x-backup?" ||
+                { echo "Not installed: $dest/rikugan is in the way."; exit 1; }
+            move_aside "$dest/rikugan" binaryninja
         fi
-        info "Cloning Rikugan into $INSTALL_DIR..."
-        git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR" --quiet
-        ok "Cloned successfully"
-    fi
-}
-
-# ── Run installers ───────────────────────────────────────────────────
-run_ida_installer() {
-    local script="$INSTALL_DIR/install_ida.sh"
-    if [[ ! -f "$script" ]]; then
-        err "install_ida.sh not found in $INSTALL_DIR"
-        return 1
-    fi
-    info "Running IDA Pro installer..."
-    echo ""
-    chmod +x "$script"
-    bash "$script"
-}
-
-run_binja_installer() {
-    local script="$INSTALL_DIR/install_binaryninja.sh"
-    if [[ ! -f "$script" ]]; then
-        err "install_binaryninja.sh not found in $INSTALL_DIR"
-        return 1
-    fi
-    info "Running Binary Ninja installer..."
-    echo ""
-    chmod +x "$script"
-    bash "$script"
-}
-
-# ── Main ─────────────────────────────────────────────────────────────
-main() {
-    banner
-    check_prereqs
-
-    # Auto-detect if no target specified
-    if [[ -z "$TARGET" ]]; then
-        local has_ida=false has_binja=false
-        detect_ida   && has_ida=true
-        detect_binja && has_binja=true
-
-        if $has_ida && $has_binja; then
-            TARGET="both"
-            ok "Detected both IDA Pro and Binary Ninja"
-        elif $has_ida; then
-            TARGET="ida"
-            ok "Detected IDA Pro"
-        elif $has_binja; then
-            TARGET="binja"
-            ok "Detected Binary Ninja"
-        else
-            warn "No IDA Pro or Binary Ninja installation detected."
-            warn "Installing anyway — use --ida or --binja to specify the target."
-            warn "Defaulting to both."
-            TARGET="both"
-        fi
-    fi
-
-    info "Target: ${TARGET}"
-    info "Install directory: ${INSTALL_DIR}"
-    echo ""
-
-    clone_or_update
-    echo ""
-
-    local failed=false
-
-    case "$TARGET" in
-        ida)
-            run_ida_installer || failed=true
-            ;;
-        binja)
-            run_binja_installer || failed=true
-            ;;
-        both)
-            run_ida_installer || { warn "IDA installation failed"; failed=true; }
-            echo ""
-            run_binja_installer || { warn "Binary Ninja installation failed"; failed=true; }
-            ;;
-    esac
-
-    echo ""
-    if $failed; then
-        warn "Installation completed with errors. Check the output above."
+        tar -xzf "$pkg" -C "$dest"
+        echo "Installed $dest/librikugan.$EXT"
+        installed=1
     else
-        ok "Rikugan installation complete!"
+        echo "== Binary Ninja: no user folder at $BN_USER (run Binary Ninja once, or set BN_USER_DIR)"
     fi
-    printf "${DIM}  Install location: ${INSTALL_DIR}${NC}\n"
-    printf "${DIM}  To update later:  cd ${INSTALL_DIR} && git pull${NC}\n"
-    echo ""
-}
+fi
 
-main
+if [ "$WANT_IDA" = 1 ]; then
+    IDA_USER=${IDA_USER_DIR:-${IDAUSR:-$HOME/.idapro}}
+    IDA_USER=${IDA_USER%%:*}
+    if [ -d "$IDA_USER" ]; then
+        echo "== IDA Pro ($IDA_USER)"
+        pkg=$(fetch ida)
+        dest="$IDA_USER/plugins"
+        mkdir -p "$dest"
+        if [ -e "$dest/rikugan_plugin.py" ] || [ -e "$dest/rikugan" ]; then
+            ask "IDA has Rikugan 1.x (rikugan_plugin.py / plugins/rikugan), which would load next to 2.x. Move it to ~/.rikugan-1.x-backup?" ||
+                { echo "Not installed: Rikugan 1.x is in the way."; exit 1; }
+            [ -e "$dest/rikugan_plugin.py" ] && move_aside "$dest/rikugan_plugin.py" ida
+            [ -e "$dest/rikugan" ] && move_aside "$dest/rikugan" ida
+        fi
+        tar -xzf "$pkg" -C "$dest"
+        echo "Installed $dest/rikugan.$EXT"
+        installed=1
+    else
+        echo "== IDA Pro: no user folder at $IDA_USER (run IDA once, or set IDA_USER_DIR)"
+    fi
+fi
+
+[ "$installed" = 1 ] || { echo "No host installed."; exit 1; }
+echo "Done. Restart the host, then connect a provider from the model picker (Ctrl+M) or Settings → Provider."
+echo "Rikugan installs later releases itself, when you agree (Settings → Behavior → Updates)."

@@ -1,0 +1,1 @@
+Deobfuscate the function {{func_name}} at {{address}}. Identify obfuscation patterns (opaque predicates, junk code, control-flow flattening, encrypted strings) and explain them. If possible, apply {{optimizer_term}} optimizations to clean the output.

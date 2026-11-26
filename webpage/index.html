@@ -371,11 +371,11 @@ img{max-width:100%;display:block}
   <div class="hero-jp"><span class="hero-romaji">Rikugan</span> 六眼</div>
   <h1>A reverse-engineering <strong>AI agent</strong> for <strong>IDA Pro</strong> and <strong>Binary Ninja</strong> that lives inside your disassembler.</h1>
   <div class="hero-badges">
-    <span class="badge"><span class="dot" style="background:var(--accent)"></span>Generator-based Loop</span>
-    <span class="badge"><span class="dot" style="background:var(--pink)"></span>4-Phase Exploration</span>
-    <span class="badge"><span class="dot" style="background:var(--green)"></span>63+ Tools</span>
+    <span class="badge"><span class="dot" style="background:var(--accent)"></span>Native C++ on libomc</span>
+    <span class="badge"><span class="dot" style="background:var(--pink)"></span>Plan / Explore / Modify / Research</span>
+    <span class="badge"><span class="dot" style="background:var(--green)"></span>60+ Tools</span>
     <span class="badge"><span class="dot" style="background:var(--orange)"></span>12 Skills</span>
-    <span class="badge"><span class="dot" style="background:var(--blue)"></span>5 LLM Providers</span>
+    <span class="badge"><span class="dot" style="background:var(--blue)"></span>Dozens of providers</span>
   </div>
   <div class="hero-cta">
     <a href="docs.html#installation" class="btn btn-primary">Get Started</a>
@@ -401,11 +401,11 @@ img{max-width:100%;display:block}
 <!-- ═══════════ STATS ═══════════ -->
 <div class="container">
   <div class="stats reveal">
-    <div class="stat"><div class="stat-num purple">63+</div><div class="stat-label">Tools</div></div>
+    <div class="stat"><div class="stat-num purple">60+</div><div class="stat-label">Tools</div></div>
     <div class="stat"><div class="stat-num pink">12</div><div class="stat-label">Skills</div></div>
-    <div class="stat"><div class="stat-num green">5</div><div class="stat-label">Providers</div></div>
-    <div class="stat"><div class="stat-num orange">9</div><div class="stat-label">Quick Actions</div></div>
-    <div class="stat"><div class="stat-num blue">4</div><div class="stat-label">Platforms</div></div>
+    <div class="stat"><div class="stat-num green">4</div><div class="stat-label">Modes</div></div>
+    <div class="stat"><div class="stat-num orange">10</div><div class="stat-label">Quick Actions</div></div>
+    <div class="stat"><div class="stat-num blue">2</div><div class="stat-label">Hosts</div></div>
   </div>
 </div>
 
@@ -415,16 +415,16 @@ img{max-width:100%;display:block}
     <div class="sec-header reveal">
       <div class="sec-label">Philosophy</div>
       <div class="sec-title">Not another MCP client.</div>
-      <p class="sec-sub">Rikugan is a full <strong>agent</strong> &mdash; its own agentic loop, context management, role prompt, and in-process tool orchestration. It doesn't talk to your disassembler through a server &mdash; it <em>lives</em> inside it.</p>
+      <p class="sec-sub">Rikugan is a full <strong>agent</strong> &mdash; libomc's agent loop, linked into a native plugin, with Rikugan's role prompt and its own host tools. It doesn't talk to your disassembler through a server &mdash; it <em>lives</em> inside it.</p>
     </div>
     <div class="loop-viz reveal">
       <div class="loop-node a">User Message</div>
       <div class="loop-arrow"></div>
-      <div class="loop-node b">LLM Stream</div>
+      <div class="loop-node b">Model Stream</div>
       <div class="loop-arrow"></div>
-      <div class="loop-node c">Tool Execution</div>
+      <div class="loop-node c">Host Tools</div>
       <div class="loop-arrow"></div>
-      <div class="loop-node d">Yield Events</div>
+      <div class="loop-node d">Results</div>
       <div class="loop-arrow"></div>
       <div class="loop-node a">Next Turn</div>
     </div>
@@ -439,16 +439,16 @@ img{max-width:100%;display:block}
       <div class="sec-title">Everything you need for AI-assisted RE</div>
     </div>
     <div class="features-grid">
-      <div class="feat reveal"><div class="feat-icon">&#x1F527;</div><div class="feat-title">63+ Native Tools</div><div class="feat-desc">Navigation, decompiler, disassembly, xrefs, strings, annotations, type engineering, microcode/IL read+write, and scripting &mdash; all callable by the agent.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x1F527;</div><div class="feat-title">60+ Native Tools</div><div class="feat-desc">Navigation, decompiler, disassembly, xrefs, strings, annotations, type engineering, microcode/IL read+write, and scripting &mdash; implemented in C++ against the host SDK, run in parallel where it is safe.</div></div>
       <div class="feat reveal"><div class="feat-icon">&#x1F3AF;</div><div class="feat-title">12 Built-in Skills</div><div class="feat-desc">Malware analysis, deobfuscation, vulnerability audit, driver analysis, CTF solving, and more. Create your own custom skills too.</div></div>
-      <div class="feat reveal"><div class="feat-icon">&#x1F916;</div><div class="feat-title">5 LLM Providers</div><div class="feat-desc">Anthropic (Claude), OpenAI, Google Gemini, Ollama for local inference, and any OpenAI-compatible API endpoint.</div></div>
-      <div class="feat reveal"><div class="feat-icon">&#x1F50D;</div><div class="feat-title">Exploration Mode</div><div class="feat-desc">4-phase autonomous flow: Explore the binary, Plan modifications, Execute patches, Save with approval gate. Full undo support.</div></div>
-      <div class="feat reveal"><div class="feat-icon">&#x1F4CB;</div><div class="feat-title">Plan Mode</div><div class="feat-desc">Multi-step workflows with plan generation, user approval, and step-by-step execution with progress tracking.</div></div>
-      <div class="feat reveal"><div class="feat-icon">&#x21A9;&#xFE0F;</div><div class="feat-title">Mutation Undo</div><div class="feat-desc">Every database mutation is tracked with reverse operations. Type <code>/undo</code> to roll back renames, comments, type changes, and more.</div></div>
-      <div class="feat reveal"><div class="feat-icon">&#x1F4AC;</div><div class="feat-title">Multi-Tab Chat</div><div class="feat-desc">Multiple independent conversations per file. Fork sessions to branch analysis from a checkpoint. Auto-save across restarts.</div></div>
-      <div class="feat reveal"><div class="feat-icon">&#x1F50C;</div><div class="feat-title">MCP Client</div><div class="feat-desc">Connect external MCP servers &mdash; their tools appear alongside built-in ones. Full JSON-RPC 2.0 with heartbeat monitoring.</div></div>
-      <div class="feat reveal"><div class="feat-icon">&#x1F6E1;&#xFE0F;</div><div class="feat-title">Script Approval</div><div class="feat-desc"><code>execute_python</code> always asks permission. See the full code with syntax highlighting before allowing execution.</div></div>
-      <div class="feat reveal"><div class="feat-icon">&#x1F4E4;</div><div class="feat-title">Chat Export</div><div class="feat-desc">Export conversations to Markdown with syntax-highlighted code blocks. Tool calls formatted with proper language tags.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x1F916;</div><div class="feat-title">Any Model</div><div class="feat-desc">Every provider and login libomc supports &mdash; Claude, ChatGPT/Codex, Gemini, Copilot, API keys &mdash; plus OpenAI-compatible endpoints and local servers.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x1F50D;</div><div class="feat-title">Modify Mode</div><div class="feat-desc">Explore the binary, plan modifications, execute patches, then save or discard &mdash; with your approval at every gate.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x1F4CB;</div><div class="feat-title">Plan, Explore &amp; Research</div><div class="feat-desc">Step-by-step plans with approval, read-only exploration with structured findings, and research notes written next to your database.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x21A9;&#xFE0F;</div><div class="feat-title">Mutation Undo</div><div class="feat-desc">Renames, comments and prototypes are tracked with reverse operations. Type <code>/undo</code> to roll them back.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x1F4AC;</div><div class="feat-title">Chats per Database</div><div class="feat-desc">Many conversations per file, restored when you reopen it. Fork a chat to branch the analysis.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x1F50C;</div><div class="feat-title">MCP Servers</div><div class="feat-desc">Add stdio or HTTP MCP servers in Settings &mdash; their tools appear alongside the built-in ones.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x1F6E1;&#xFE0F;</div><div class="feat-title">Script Approval</div><div class="feat-desc"><code>execute_python</code> always asks permission. See the full code before allowing execution.</div></div>
+      <div class="feat reveal"><div class="feat-icon">&#x1F465;</div><div class="feat-title">Subagents &amp; Bulk Renamer</div><div class="feat-desc">Delegate subtasks to isolated subagents with the same host tools, and rename hundreds of functions in batches.</div></div>
       <div class="feat reveal"><div class="feat-icon">&#x1F9E0;</div><div class="feat-title">Persistent Memory</div><div class="feat-desc">RIKUGAN.md stores facts per binary. Findings persist across sessions. The agent remembers what it learned before.</div></div>
     </div>
   </div>
@@ -460,7 +460,7 @@ img{max-width:100%;display:block}
     <div class="sec-header reveal">
       <div class="sec-label">Skills</div>
       <div class="sec-title">Specialized analysis workflows</div>
-      <p class="sec-sub">Type <code>/</code> to see available skills with autocomplete. Create custom skills in your user directory.</p>
+      <p class="sec-sub">Type <code>/</code> to see available skills with autocomplete. Add your own in <code>~/.rikugan/omc/agent/skills/</code>.</p>
     </div>
     <div class="skills-grid reveal">
       <div class="skill"><span class="skill-slug">/malware-analysis</span><span class="skill-name">Windows PE malware triage, IOCs, ATT&CK</span></div>
@@ -488,10 +488,10 @@ img{max-width:100%;display:block}
       <p class="sec-sub">Type <code>/modify &lt;goal&gt;</code> and the agent autonomously explores, plans, patches, and saves &mdash; with your approval at every gate.</p>
     </div>
     <div class="explore-phases reveal">
-      <div class="phase"><div class="phase-num">1</div><div class="phase-label">EXPLORE</div><div class="phase-desc">Investigate binary, accumulate findings in KnowledgeBase</div></div>
-      <div class="phase"><div class="phase-num">2</div><div class="phase-label">PLAN</div><div class="phase-desc">Synthesize findings into concrete modification plan</div></div>
-      <div class="phase"><div class="phase-num">3</div><div class="phase-label">EXECUTE</div><div class="phase-desc">Apply patches in-memory for each planned change</div></div>
-      <div class="phase"><div class="phase-num">4</div><div class="phase-label">SAVE</div><div class="phase-desc">User approval gate before persisting changes to file</div></div>
+      <div class="phase"><div class="phase-num">1</div><div class="phase-label">EXPLORE</div><div class="phase-desc">A subagent investigates the binary and records findings</div></div>
+      <div class="phase"><div class="phase-num">2</div><div class="phase-label">PLAN</div><div class="phase-desc">Synthesize findings into a concrete modification plan</div></div>
+      <div class="phase"><div class="phase-num">3</div><div class="phase-label">EXECUTE</div><div class="phase-desc">Apply and verify each planned change</div></div>
+      <div class="phase"><div class="phase-num">4</div><div class="phase-label">SAVE</div><div class="phase-desc">Keep the patches, or discard and restore the original bytes</div></div>
     </div>
   </div>
 </section>
@@ -501,14 +501,15 @@ img{max-width:100%;display:block}
   <div class="container">
     <div class="sec-header reveal">
       <div class="sec-label">Providers</div>
-      <div class="sec-title">Choose your LLM</div>
-      <p class="sec-sub">Switch providers anytime from the settings panel. Supports prompt caching, retry logic, and streaming.</p>
+      <div class="sec-title">Choose your model</div>
+      <p class="sec-sub">Providers, logins, streaming, retries and compaction come from libomc. Log in with an account, add an API key, or point Rikugan at your own endpoint.</p>
     </div>
     <div class="providers reveal">
-      <div class="provider"><div class="provider-name">Anthropic</div><div class="provider-note">Claude &bull; OAuth auto-detect &bull; Prompt caching</div></div>
-      <div class="provider"><div class="provider-name">OpenAI</div><div class="provider-note">GPT-4o, o1, o3 &bull; Standard SDK</div></div>
-      <div class="provider"><div class="provider-name">Google Gemini</div><div class="provider-note">Gemini Pro &bull; google-genai SDK</div></div>
-      <div class="provider"><div class="provider-name">Ollama</div><div class="provider-note">Local inference &bull; No API key needed</div></div>
+      <div class="provider"><div class="provider-name">Anthropic</div><div class="provider-note">Claude &bull; Account login or API key</div></div>
+      <div class="provider"><div class="provider-name">OpenAI</div><div class="provider-note">ChatGPT/Codex login &bull; API key</div></div>
+      <div class="provider"><div class="provider-name">Google Gemini</div><div class="provider-note">Account login &bull; API key</div></div>
+      <div class="provider"><div class="provider-name">GitHub Copilot</div><div class="provider-note">Account login</div></div>
+      <div class="provider"><div class="provider-name">Local servers</div><div class="provider-note">Ollama, LM Studio, llama.cpp</div></div>
       <div class="provider"><div class="provider-name">OpenAI-Compatible</div><div class="provider-note">Any custom endpoint &bull; Custom base URL</div></div>
     </div>
   </div>
@@ -520,19 +521,19 @@ img{max-width:100%;display:block}
     <div class="sec-header reveal">
       <div class="sec-label">Under the Hood</div>
       <div class="sec-title">Deeply engineered internals</div>
-      <p class="sec-sub">Rikugan has a sophisticated architecture built for reliability, extensibility, and safety.</p>
+      <p class="sec-sub">A native plugin that embeds libomc and keeps your disassembler responsive.</p>
     </div>
     <div class="arch-grid reveal">
-      <div class="arch-item"><div class="icon">&#x1F504;</div><div class="title">Agentic Loop</div><div class="desc">Generator-based turn cycle with streaming events</div></div>
-      <div class="arch-item"><div class="icon">&#x1F4E1;</div><div class="title">TurnEvent System</div><div class="desc">23 event types for UI communication</div></div>
-      <div class="arch-item"><div class="icon">&#x1F9F0;</div><div class="title">Tool Framework</div><div class="desc">@tool decorator, coercion, timeout, categories</div></div>
-      <div class="arch-item"><div class="icon">&#x1F50D;</div><div class="title">Subagents</div><div class="desc">Isolated context for parallel task execution</div></div>
-      <div class="arch-item"><div class="icon">&#x21A9;&#xFE0F;</div><div class="title">Mutation Tracking</div><div class="desc">Full reverse operation for every mutation</div></div>
-      <div class="arch-item"><div class="icon">&#x1F4CA;</div><div class="title">Context Window</div><div class="desc">Auto-compaction at 80% threshold</div></div>
-      <div class="arch-item"><div class="icon">&#x1F9F5;</div><div class="title">Thread Safety</div><div class="desc">@idasync marshalling, queue-based answers</div></div>
-      <div class="arch-item"><div class="icon">&#x1F4BE;</div><div class="title">Session Persistence</div><div class="desc">Auto-save/restore across restarts</div></div>
-      <div class="arch-item"><div class="icon">&#x1F6E1;&#xFE0F;</div><div class="title">Error Recovery</div><div class="desc">Retry with backoff, consecutive error tracking</div></div>
-      <div class="arch-item"><div class="icon">&#x1F4DD;</div><div class="title">Structured Logging</div><div class="desc">JSONL + debug file + IDA output</div></div>
+      <div class="arch-item"><div class="icon">&#x1F504;</div><div class="title">In-Process Agent</div><div class="desc">The agent loop runs inside the host (libomc), no external client</div></div>
+      <div class="arch-item"><div class="icon">&#x1F4E1;</div><div class="title">Host Tools</div><div class="desc">Native IDA / Binary Ninja tools on a worker pool</div></div>
+      <div class="arch-item"><div class="icon">&#x1F9F0;</div><div class="title">Tool Pipeline</div><div class="desc">Profile, phase and approval gates, sanitized results</div></div>
+      <div class="arch-item"><div class="icon">&#x1F50D;</div><div class="title">Subagents</div><div class="desc">Isolated sessions that share host tools and undo</div></div>
+      <div class="arch-item"><div class="icon">&#x21A9;&#xFE0F;</div><div class="title">Mutation Tracking</div><div class="desc">Reverse operations for database changes</div></div>
+      <div class="arch-item"><div class="icon">&#x1F4CA;</div><div class="title">Context Window</div><div class="desc">Automatic compaction and retries</div></div>
+      <div class="arch-item"><div class="icon">&#x1F9F5;</div><div class="title">Threading</div><div class="desc">The UI thread never waits; SDK calls marshalled to the main thread</div></div>
+      <div class="arch-item"><div class="icon">&#x1F4BE;</div><div class="title">Session Persistence</div><div class="desc">Chats per database, resumed where you left them</div></div>
+      <div class="arch-item"><div class="icon">&#x1F6E1;&#xFE0F;</div><div class="title">Security</div><div class="desc">Injection stripping, IOC redaction, isolated agent settings</div></div>
+      <div class="arch-item"><div class="icon">&#x1F4DD;</div><div class="title">Prompts &amp; Skills</div><div class="desc">Embedded in the plugin, one source of truth</div></div>
     </div>
     <div style="text-align:center;margin-top:36px" class="reveal">
       <a href="ARCHITECTURE.html" class="btn btn-outline">Read Full Architecture Docs</a>
@@ -543,7 +544,7 @@ img{max-width:100%;display:block}
 <!-- ═══════════ CTA ═══════════ -->
 <section class="cta-banner">
   <h2>Ready to get started?</h2>
-  <p>Clone the repo, run the installer, and start reversing with AI.</p>
+  <p>Clone Rikugan and libomc, run the installer, and start reversing with AI.</p>
   <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap">
     <a href="docs.html#installation" class="btn btn-primary">Installation Guide</a>
     <a href="https://github.com/buzzer-re/rikugan" class="btn btn-outline" target="_blank" rel="noopener">View on GitHub</a>

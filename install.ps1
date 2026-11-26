@@ -1,511 +1,208 @@
-# ──────────────────────────────────────────────────────────────────────
-# Rikugan — universal installer (Windows)
-#
-#   irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex
-#
-# Or with arguments:
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1))) -Target ida
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1))) -Target binja
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1))) -Target both
-#
-# Environment variables:
-#   RIKUGAN_DIR     — where to clone the repo   (default: ~\.rikugan)
-#   RIKUGAN_BRANCH  — git branch to check out   (default: main)
-#   IDADIR          — override IDA install dir  (forwarded to install_ida.bat)
-#   IDA_PYTHON      — override Python for IDA    (forwarded to install_ida.bat)
-#   BN_PYTHON       — override Python for BN     (forwarded to install_binaryninja.bat)
-# ──────────────────────────────────────────────────────────────────────
+<#
+.SYNOPSIS
+    Rikugan installer for Windows: installs a release's prebuilt plugins for IDA Pro and Binary Ninja.
 
+.DESCRIPTION
+    The twin of install.sh. Downloads rikugan-<version>-<host>-windows-x86_64.zip for each host found, checks it against
+    its .sha256 and unpacks it into the host's plugins folder:
+        Binary Ninja  <BN user dir>\plugins\rikugan.dll, with libomc.dll in plugins\rikugan\
+        IDA Pro       <IDA user dir>\plugins\rikugan\ (ida-plugin.json, rikugan.dll, libomc.dll)
+    -From installs the packages of a local build instead (.\build.ps1 writes them to dist\). A Rikugan 1.x (Python)
+    install of the same host is moved to ~\.rikugan-1.x-backup\ first (asks, unless -Yes).
+
+    Works in Windows PowerShell 5.1 and PowerShell 7:
+        irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex
+        & ([scriptblock]::Create((irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1))) -Target ida
+        .\install.ps1 -From dist
+
+.PARAMETER Target
+    both (default: every host found), binja or ida. Also $env:RIKUGAN_TARGET.
+.PARAMETER Version
+    The release to install, e.g. 2.0.0 (default: the latest release). Also $env:RIKUGAN_VERSION.
+.PARAMETER From
+    A folder of packages built with build.ps1 to install instead of a release. Also $env:RIKUGAN_FROM.
+.PARAMETER BnPluginsDir
+    Binary Ninja's plugins folder (default: $env:BN_USER_DIRECTORY or %APPDATA%\Binary Ninja, + \plugins).
+.PARAMETER IdaPluginsDir
+    IDA's plugins folder (default: the first folder of $env:IDAUSR or %APPDATA%\Hex-Rays\IDA Pro, + \plugins).
+.PARAMETER Yes
+    Never ask: moves a Rikugan 1.x install aside without asking.
+#>
+[CmdletBinding()]
 param(
-    [ValidateSet("ida", "binja", "both", "")]
-    [string]$Target = ""
+    [ValidateSet('', 'both', 'binja', 'ida')][string]$Target = '',
+    [string]$Version = '',
+    [string]$From = '',
+    [string]$BnPluginsDir = '',
+    [string]$IdaPluginsDir = '',
+    [switch]$Yes
 )
 
-$ErrorActionPreference = "Stop"
+# `irm ... | iex` runs this script in the caller's own scope: everything that changes the session (strict mode, error
+# preference) is set inside Invoke-RikuganInstall, so the user's PowerShell is left as it was.
 
-$RepoUrl = "https://github.com/buzzer-re/Rikugan.git"
-$InstallDir = if ($env:RIKUGAN_DIR) { $env:RIKUGAN_DIR } else { Join-Path $HOME ".rikugan" }
-$Branch = if ($env:RIKUGAN_BRANCH) { $env:RIKUGAN_BRANCH } else { "main" }
+function Write-Step([string]$Message) { Write-Host "rikugan-install: $Message" }
 
-# ── Helpers ──────────────────────────────────────────────────────────
-function Write-Info    { param($Msg) Write-Host "[*] $Msg" -ForegroundColor Cyan }
-function Write-Ok      { param($Msg) Write-Host "[+] $Msg" -ForegroundColor Green }
-function Write-Warn    { param($Msg) Write-Host "[!] $Msg" -ForegroundColor Yellow }
-function Write-Err     { param($Msg) Write-Host "[-] $Msg" -ForegroundColor Red }
+function Stop-Install([string]$Message) {
+    Write-Host "rikugan-install: error: $Message" -ForegroundColor Red
+    throw "rikugan-install: $Message"
+}
 
-function Test-UnicodeBannerSupport {
+function Get-Setting([string]$Value, [string]$EnvName, [string]$Default) {
+    if ($Value) { return $Value }
+    $e = [Environment]::GetEnvironmentVariable($EnvName)
+    if ($e) { return $e }
+    return $Default
+}
+
+function Get-Download([string]$Url, [string]$OutFile) {
     try {
-        $consoleEncoding = [Console]::OutputEncoding
-        $outputEncoding = $OutputEncoding
-
-        $isUtf8Console = $consoleEncoding -and $consoleEncoding.WebName -eq "utf-8"
-        $isUtf8Output = $outputEncoding -and $outputEncoding.WebName -eq "utf-8"
-        $hasModernTerminal = [bool]$env:WT_SESSION -or [bool]$env:TERM_PROGRAM
-
-        return $isUtf8Console -and $isUtf8Output -and $hasModernTerminal
-    }
-    catch {
-        return $false
+        $old = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+        $ProgressPreference = $old
+    } catch {
+        Stop-Install "download failed: $Url ($($_.Exception.Message))"
     }
 }
 
-function Show-Banner {
-    $titleLine = if (Test-UnicodeBannerSupport) {
-        "    |            六眼  Rikugan                 |"
+function Get-LatestVersion([string]$Repo) {
+    try {
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing -Headers @{ 'User-Agent' = 'rikugan-install' }
+    } catch {
+        Stop-Install "could not find the latest release of $Repo ($($_.Exception.Message))"
     }
-    else {
-        "    |              Rikugan                     |"
-    }
-
-    Write-Host ""
-    Write-Host "    +==========================================+" -ForegroundColor White
-    Write-Host $titleLine -ForegroundColor White
-    Write-Host "    |     Reverse Engineering AI Agent         |" -ForegroundColor White
-    Write-Host "    |        IDA Pro  .  Binary Ninja          |" -ForegroundColor White
-    Write-Host "    +==========================================+" -ForegroundColor White
-    Write-Host ""
+    $tag = [string]$rel.tag_name
+    if (-not $tag) { Stop-Install "could not find the latest release of $Repo (is it published?)" }
+    return $tag.TrimStart('v')
 }
 
-# ── Detection ────────────────────────────────────────────────────────
-function Test-IDA {
-    # Registry
-    $regPaths = @(
-        "HKCU:\Software\Hex-Rays\IDA",
-        "HKLM:\SOFTWARE\Hex-Rays\IDA"
-    )
-    foreach ($rp in $regPaths) {
-        if (Test-Path $rp) { return $true }
-    }
-    # AppData user dir
-    $idaDir = Join-Path $env:APPDATA "Hex-Rays\IDA Pro"
-    if (Test-Path $idaDir) { return $true }
-    # USERPROFILE\.idapro
-    $idapro = Join-Path $HOME ".idapro"
-    if (Test-Path $idapro) { return $true }
-    # IDA in PATH
-    if (Get-Command "ida64.exe" -ErrorAction SilentlyContinue) { return $true }
-    if (Get-Command "idat64.exe" -ErrorAction SilentlyContinue) { return $true }
-    return $false
+function Test-Checksum([string]$File, [string]$SumFile, [string]$Asset) {
+    $want = ((Get-Content -LiteralPath $SumFile -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+    $got = (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($got -ne $want) { Stop-Install "checksum mismatch for $Asset (expected $want, got $got); nothing was installed" }
 }
 
-function Test-BinaryNinja {
-    # AppData user dir
-    $bnDir = Join-Path $env:APPDATA "Binary Ninja"
-    if (Test-Path $bnDir) { return $true }
-    # Common install locations
-    $installPaths = @(
-        "${env:ProgramFiles}\Vector35\BinaryNinja",
-        "${env:ProgramFiles(x86)}\Vector35\BinaryNinja",
-        "${env:LOCALAPPDATA}\Vector35\BinaryNinja"
-    )
-    foreach ($p in $installPaths) {
-        if (Test-Path $p) { return $true }
-    }
-    return $false
+function Confirm-Step([string]$Question) {
+    if ($Yes) { return $true }
+    return (Read-Host "$Question [y/N]") -match '^(y|yes)$'
 }
 
-function Find-ByteSequenceIndex {
-    param(
-        [byte[]]$Data,
-        [byte[]]$Needle
-    )
+# A Rikugan 1.x file or folder goes to ~\.rikugan-1.x-backup\<host>\<time>\.
+function Move-Aside([string]$Path, [string]$HostName) {
+    $dest = Join-Path $HOME (".rikugan-1.x-backup\$HostName\" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Move-Item -LiteralPath $Path -Destination $dest
+    Write-Step "moved $Path to $dest"
+}
 
-    if (-not $Data -or -not $Needle -or $Needle.Length -eq 0 -or $Needle.Length -gt $Data.Length) {
-        return -1
-    }
-
-    for ($i = 0; $i -le ($Data.Length - $Needle.Length); $i++) {
-        $matched = $true
-        for ($j = 0; $j -lt $Needle.Length; $j++) {
-            if ($Data[$i + $j] -ne $Needle[$j]) {
-                $matched = $false
-                break
-            }
+# The unpacked package of <host>: from the release (verified) or from the -From folder.
+function Get-Package([string]$HostName, [string]$Tmp) {
+    $from = Get-Setting $From 'RIKUGAN_FROM' ''
+    if ($from) {
+        $zip = Get-ChildItem -LiteralPath $from -Filter "rikugan-*-$HostName-windows-x86_64.zip" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if (-not $zip) { Stop-Install "no rikugan-*-$HostName-windows-x86_64.zip in $from (.\build.ps1 makes them)" }
+        $file = $zip.FullName
+        if (Test-Path -LiteralPath "$file.sha256") { Test-Checksum $file "$file.sha256" $zip.Name }
+    } else {
+        $repo = Get-Setting '' 'RIKUGAN_REPO' 'buzzer-re/Rikugan'
+        $base = Get-Setting '' 'RIKUGAN_DOWNLOAD_URL' "https://github.com/$repo/releases/download"
+        if (-not $script:ver) {
+            $script:ver = Get-Setting $Version 'RIKUGAN_VERSION' ''
+            if (-not $script:ver) { $script:ver = Get-LatestVersion $repo }
+            $script:ver = $script:ver.TrimStart('v')
         }
-        if ($matched) {
-            return $i
-        }
+        $asset = "rikugan-$($script:ver)-$HostName-windows-x86_64.zip"
+        $file = Join-Path $Tmp $asset
+        Write-Step "downloading $asset"
+        Get-Download "$base/v$($script:ver)/$asset" $file
+        Get-Download "$base/v$($script:ver)/$asset.sha256" "$file.sha256"
+        Test-Checksum $file "$file.sha256" $asset
     }
-
-    return -1
+    $out = Join-Path $Tmp $HostName
+    Expand-Archive -LiteralPath $file -DestinationPath $out -Force
+    return $out
 }
 
-function Get-IdaUserDir {
-    $candidates = @()
-
-    if ($env:APPDATA) {
-        $candidates += (Join-Path $env:APPDATA "Hex-Rays\IDA Pro")
-    }
-    if ($HOME) {
-        $candidates += (Join-Path $HOME ".idapro")
-    }
-    if ($env:IDAUSR) {
-        $candidates += $env:IDAUSR
-    }
-
-    foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path $candidate)) {
-            return $candidate
-        }
-    }
-
-    if ($env:APPDATA) {
-        return (Join-Path $env:APPDATA "Hex-Rays\IDA Pro")
-    }
-
-    return $null
-}
-
-function Get-IdaInstallDir {
-    if ($env:IDADIR -and (Test-Path $env:IDADIR)) {
-        return $env:IDADIR
-    }
-
-    $regPaths = @(
-        "HKCU:\Software\Hex-Rays\IDA",
-        "HKLM:\SOFTWARE\Hex-Rays\IDA",
-        "HKLM:\SOFTWARE\WOW6432Node\Hex-Rays\IDA"
-    )
-    foreach ($rp in $regPaths) {
+function Install-Files([string]$Package, [string]$Dest) {
+    New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+    foreach ($f in Get-ChildItem -LiteralPath $Package -Recurse -File) {
+        $rel = $f.FullName.Substring($Package.Length).TrimStart('\')
+        $to = Join-Path $Dest $rel
+        New-Item -ItemType Directory -Force -Path (Split-Path $to -Parent) | Out-Null
         try {
-            $location = (Get-ItemProperty -Path $rp -ErrorAction Stop).Location
-            if ($location -and (Test-Path $location)) {
-                return $location
-            }
-        }
-        catch {
+            Copy-Item -LiteralPath $f.FullName -Destination $to -Force
+        } catch {
+            Stop-Install "could not write $to ($($_.Exception.Message)); close the host and run the installer again"
         }
     }
-
-    foreach ($name in @("ida64.exe", "idat64.exe", "ida.exe", "idat.exe")) {
-        $command = Get-Command $name -ErrorAction SilentlyContinue
-        if ($command -and $command.Source) {
-            return (Split-Path -Parent $command.Source)
-        }
-    }
-
-    $installPaths = @(
-        "${env:ProgramFiles}\Hex-Rays\IDA Pro",
-        "${env:ProgramFiles}\Hex-Rays\IDA Professional",
-        "${env:ProgramFiles}\IDA Pro",
-        "${env:ProgramFiles(x86)}\Hex-Rays\IDA Pro",
-        "${env:ProgramFiles(x86)}\Hex-Rays\IDA Professional",
-        "${env:ProgramFiles(x86)}\IDA Pro"
-    )
-    foreach ($path in $installPaths) {
-        if ($path -and (Test-Path $path)) {
-            return $path
-        }
-    }
-
-    return $null
 }
 
-function Get-IdaRegPythonTarget {
-    param([string]$UserDir)
-
-    if (-not $UserDir) {
-        return $null
-    }
-
-    $regFile = Join-Path $UserDir "ida.reg"
-    if (-not (Test-Path $regFile -PathType Leaf)) {
-        return $null
-    }
-
+function Invoke-RikuganInstall {
+    $ErrorActionPreference = 'Stop'
+    Set-StrictMode -Version 2.0
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+    $target = Get-Setting $Target 'RIKUGAN_TARGET' 'both'
+    $script:ver = ''
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ('rikugan-install-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    $installed = $false
     try {
-        $data = [System.IO.File]::ReadAllBytes($regFile)
-    }
-    catch {
-        return $null
-    }
-
-    $needle = [System.Text.Encoding]::ASCII.GetBytes("Python3TargetDLL")
-    $idx = Find-ByteSequenceIndex -Data $data -Needle $needle
-    if ($idx -lt 0) {
-        return $null
-    }
-
-    $keyEnd = $idx
-    while ($keyEnd -lt $data.Length -and $data[$keyEnd] -ne 0) {
-        $keyEnd++
-    }
-
-    if (($keyEnd + 6) -gt $data.Length) {
-        return $null
-    }
-
-    $length = [System.BitConverter]::ToInt32($data, $keyEnd + 1)
-    if ($length -le 0 -or $length -gt 4096) {
-        return $null
-    }
-
-    $valueStart = $keyEnd + 6
-    if (($valueStart + $length) -gt $data.Length) {
-        return $null
-    }
-
-    [byte[]]$valueBytes = $data[$valueStart..($valueStart + $length - 1)]
-    $path = [System.Text.Encoding]::UTF8.GetString($valueBytes).Trim([char]0, ' ')
-    if ($path -match '^(?:[A-Za-z]:\\|\\\\)') {
-        return $path
-    }
-
-    return $null
-}
-
-function Resolve-IdaPythonExecutable {
-    param([string]$TargetPath)
-
-    if (-not $TargetPath) {
-        return $null
-    }
-
-    $target = $TargetPath.Trim().Trim('"').Trim("'")
-    if (-not $target) {
-        return $null
-    }
-
-    if (Test-Path $target -PathType Leaf) {
-        $leaf = [System.IO.Path]::GetFileName($target)
-        if ($leaf -match '^python(?:3|[0-9]+)?\.exe$') {
-            return $target
-        }
-    }
-
-    $candidates = [System.Collections.Generic.List[string]]::new()
-
-    if (Test-Path $target -PathType Container) {
-        $candidates.Add((Join-Path $target "python.exe"))
-        $candidates.Add((Join-Path $target "python3.exe"))
-    }
-    else {
-        $parent = Split-Path -Parent $target
-        $leaf = [System.IO.Path]::GetFileName($target)
-
-        if ($leaf -match '^python([0-9]+)?\.dll$') {
-            $digits = $Matches[1]
-            if ($digits) {
-                $candidates.Add((Join-Path $parent "python$digits.exe"))
-            }
-            $candidates.Add((Join-Path $parent "python.exe"))
-            $candidates.Add((Join-Path $parent "python3.exe"))
-        }
-    }
-
-    foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path $candidate -PathType Leaf)) {
-            return $candidate
-        }
-    }
-
-    if ($leaf -match '^python([0-9]+)\.dll$') {
-        $digits = $Matches[1]
-        if ($digits.Length -ge 2) {
-            $versionName = "python$($digits.Substring(0, 1)).$($digits.Substring(1))"
-            $command = Get-Command $versionName -ErrorAction SilentlyContinue
-            if ($command -and $command.Source) {
-                return $command.Source
+        if ($target -in 'both', 'binja') {
+            $userDir = if ($env:BN_USER_DIRECTORY) { $env:BN_USER_DIRECTORY } else { Join-Path $env:APPDATA 'Binary Ninja' }
+            $plugins = if ($BnPluginsDir) { $BnPluginsDir } else { Join-Path $userDir 'plugins' }
+            if ($BnPluginsDir -or (Test-Path -LiteralPath $userDir)) {
+                Write-Step "Binary Ninja: $plugins"
+                $pkg = Get-Package 'binja' $tmp
+                # 1.x was the folder plugins\rikugan (a Python plugin); 2.x keeps only libomc.dll there
+                $libDir = Join-Path $plugins 'rikugan'
+                if ((Test-Path -LiteralPath $libDir) -and (Get-ChildItem -Force -LiteralPath $libDir | Where-Object { $_.Name -ne 'libomc.dll' })) {
+                    if (-not (Confirm-Step "$libDir holds Rikugan 1.x (or a checkout), which would load next to 2.x. Move it to ~\.rikugan-1.x-backup?")) {
+                        Stop-Install "$libDir is in the way"
+                    }
+                    Move-Aside $libDir 'binaryninja'
+                }
+                Install-Files $pkg $plugins
+                Write-Step "installed $plugins\rikugan.dll"
+                $installed = $true
+            } elseif ($target -eq 'binja') {
+                Stop-Install "no Binary Ninja user folder at $userDir (run Binary Ninja once, or pass -BnPluginsDir)"
+            } else {
+                Write-Step "Binary Ninja: no user folder at $userDir, skipped"
             }
         }
-    }
-
-    return $null
-}
-
-function Get-IdaPython {
-    $userDir = Get-IdaUserDir
-    $pythonTarget = Get-IdaRegPythonTarget -UserDir $userDir
-    $resolved = Resolve-IdaPythonExecutable -TargetPath $pythonTarget
-    if ($resolved) {
-        return $resolved
-    }
-
-    $installDir = Get-IdaInstallDir
-    if (-not $installDir) {
-        return $null
-    }
-
-    $bundledDirs = Get-ChildItem -Path (Join-Path $installDir "python3*") -Directory -ErrorAction SilentlyContinue |
-        Sort-Object FullName -Descending
-    foreach ($dir in $bundledDirs) {
-        foreach ($name in @("python.exe", "python3.exe")) {
-            $candidate = Join-Path $dir.FullName $name
-            if (Test-Path $candidate -PathType Leaf) {
-                return $candidate
+        if ($target -in 'both', 'ida') {
+            $userDir = if ($env:IDAUSR) { ($env:IDAUSR -split ';')[0] } else { Join-Path $env:APPDATA 'Hex-Rays\IDA Pro' }
+            $plugins = if ($IdaPluginsDir) { $IdaPluginsDir } else { Join-Path $userDir 'plugins' }
+            if ($IdaPluginsDir -or (Test-Path -LiteralPath $userDir)) {
+                Write-Step "IDA Pro: $plugins"
+                $pkg = Get-Package 'ida' $tmp
+                $dest = Join-Path $plugins 'rikugan'
+                $loader = Join-Path $plugins 'rikugan_plugin.py'
+                $ours = (Test-Path -LiteralPath (Join-Path $dest 'ida-plugin.json')) -and (Test-Path -LiteralPath (Join-Path $dest 'rikugan.dll'))
+                if ((Test-Path -LiteralPath $loader) -or ((Test-Path -LiteralPath $dest) -and -not $ours)) {
+                    if (-not (Confirm-Step 'IDA has Rikugan 1.x (rikugan_plugin.py / plugins\rikugan), which would load next to 2.x. Move it to ~\.rikugan-1.x-backup?')) {
+                        Stop-Install 'Rikugan 1.x is in the way'
+                    }
+                    if (Test-Path -LiteralPath $loader) { Move-Aside $loader 'ida' }
+                    if ((Test-Path -LiteralPath $dest) -and -not $ours) { Move-Aside $dest 'ida' }
+                }
+                Install-Files $pkg $plugins
+                Write-Step "installed $dest"
+                $installed = $true
+            } elseif ($target -eq 'ida') {
+                Stop-Install "no IDA user folder at $userDir (run IDA once, or pass -IdaPluginsDir)"
+            } else {
+                Write-Step "IDA Pro: no user folder at $userDir, skipped"
             }
         }
-    }
-
-    foreach ($candidate in @(
-        (Join-Path $installDir "python\python.exe"),
-        (Join-Path $installDir "python\python3.exe")
-    )) {
-        if (Test-Path $candidate -PathType Leaf) {
-            return $candidate
-        }
-    }
-
-    $idapyswitch = Join-Path $installDir "idapyswitch.exe"
-    if (Test-Path $idapyswitch -PathType Leaf) {
-        $lines = & $idapyswitch --show-current 2>$null
-        foreach ($line in $lines) {
-            $target = $line.Trim().Trim("'")
-            if ($target -like "Path:*") {
-                $target = $target.Substring(5).Trim()
-            }
-            $resolved = Resolve-IdaPythonExecutable -TargetPath $target
-            if ($resolved) {
-                return $resolved
-            }
-        }
-    }
-
-    return $null
-}
-
-# ── Prerequisites ────────────────────────────────────────────────────
-function Test-Prerequisites {
-    if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
-        Write-Err "git is required but not installed."
-        Write-Err "Install from: https://git-scm.com/download/win"
-        Write-Err "Or: winget install Git.Git"
-        exit 1
+        if (-not $installed) { Stop-Install 'no host found (pass -Target with -BnPluginsDir or -IdaPluginsDir)' }
+        Write-Step 'done. Restart the host, then connect a provider from the model picker (Ctrl+M) or Settings -> Provider.'
+        Write-Step 'Rikugan installs later releases itself, when you agree (Settings -> Behavior -> Updates).'
+    } finally {
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-# ── Clone or update ──────────────────────────────────────────────────
-function Install-Repository {
-    $gitDir = Join-Path $InstallDir ".git"
-    if (Test-Path $gitDir) {
-        Write-Info "Updating existing installation at $InstallDir..."
-        git -C $InstallDir fetch origin $Branch --quiet 2>$null
-        git -C $InstallDir checkout $Branch --quiet 2>$null
-        git -C $InstallDir reset --hard "origin/$Branch" --quiet 2>$null
-        Write-Ok "Updated to latest $Branch"
-    }
-    else {
-        if (Test-Path $InstallDir) {
-            $backup = "${InstallDir}.bak.$(Get-Date -Format 'yyyyMMddHHmmss')"
-            Write-Warn "$InstallDir exists but is not a git repo -- backing up to $backup"
-            Rename-Item $InstallDir $backup
-        }
-        Write-Info "Cloning Rikugan into $InstallDir..."
-        git clone --branch $Branch --depth 1 $RepoUrl $InstallDir --quiet 2>$null
-        Write-Ok "Cloned successfully"
-    }
-}
-
-# ── Run installers ───────────────────────────────────────────────────
-function Install-IDA {
-    $script = Join-Path $InstallDir "install_ida.bat"
-    if (-not (Test-Path $script)) {
-        Write-Err "install_ida.bat not found in $InstallDir"
-        return $false
-    }
-    Write-Info "Running IDA Pro installer..."
-    Write-Host ""
-    $setIdaPython = $false
-    if (-not $env:IDA_PYTHON) {
-        $resolvedIdaPython = Get-IdaPython
-        if ($resolvedIdaPython) {
-            Write-Info "Resolved IDA Python: $resolvedIdaPython"
-            $env:IDA_PYTHON = $resolvedIdaPython
-            $setIdaPython = $true
-        }
-        else {
-            Write-Warn "Could not resolve IDA's configured Python, falling back to installer-side detection."
-        }
-    }
-    Push-Location $InstallDir
-    try {
-        & cmd.exe /c $script
-        $success = $LASTEXITCODE -eq 0
-    }
-    finally {
-        Pop-Location
-        if ($setIdaPython) {
-            Remove-Item Env:IDA_PYTHON -ErrorAction SilentlyContinue
-        }
-    }
-    return $success
-}
-
-function Install-BinaryNinja {
-    $script = Join-Path $InstallDir "install_binaryninja.bat"
-    if (-not (Test-Path $script)) {
-        Write-Err "install_binaryninja.bat not found in $InstallDir"
-        return $false
-    }
-    Write-Info "Running Binary Ninja installer..."
-    Write-Host ""
-    Push-Location $InstallDir
-    try {
-        & cmd.exe /c $script
-        $success = $LASTEXITCODE -eq 0
-    }
-    finally { Pop-Location }
-    return $success
-}
-
-# ── Main ─────────────────────────────────────────────────────────────
-Show-Banner
-Test-Prerequisites
-
-# Auto-detect if no target specified
-if (-not $Target) {
-    $hasIda = Test-IDA
-    $hasBinja = Test-BinaryNinja
-
-    if ($hasIda -and $hasBinja) {
-        $Target = "both"
-        Write-Ok "Detected both IDA Pro and Binary Ninja"
-    }
-    elseif ($hasIda) {
-        $Target = "ida"
-        Write-Ok "Detected IDA Pro"
-    }
-    elseif ($hasBinja) {
-        $Target = "binja"
-        Write-Ok "Detected Binary Ninja"
-    }
-    else {
-        Write-Warn "No IDA Pro or Binary Ninja installation detected."
-        Write-Warn "Installing anyway -- defaulting to both."
-        $Target = "both"
-    }
-}
-
-Write-Info "Target: $Target"
-Write-Info "Install directory: $InstallDir"
-Write-Host ""
-
-Install-Repository
-Write-Host ""
-
-$failed = $false
-
-switch ($Target) {
-    "ida" {
-        if (-not (Install-IDA)) { $failed = $true }
-    }
-    "binja" {
-        if (-not (Install-BinaryNinja)) { $failed = $true }
-    }
-    "both" {
-        if (-not (Install-IDA))   { Write-Warn "IDA installation failed"; $failed = $true }
-        Write-Host ""
-        if (-not (Install-BinaryNinja)) { Write-Warn "Binary Ninja installation failed"; $failed = $true }
-    }
-}
-
-Write-Host ""
-if ($failed) {
-    Write-Warn "Installation completed with errors. Check the output above."
-}
-else {
-    Write-Ok "Rikugan installation complete!"
-}
-Write-Host "  Install location: $InstallDir" -ForegroundColor DarkGray
-Write-Host "  To update later:  cd $InstallDir; git pull" -ForegroundColor DarkGray
-Write-Host ""
+Invoke-RikuganInstall

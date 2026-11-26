@@ -1,10 +1,5 @@
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
 build/
-.eggs/
+dist/
 *.so
 *.dylib
 .DS_Store
@@ -16,3 +11,5 @@ build/
 .claude/
 .desloppify/
 scorecard.png
+__pycache__/
+*.pyc

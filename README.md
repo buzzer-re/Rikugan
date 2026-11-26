@@ -1,109 +1,115 @@
 # Rikugan (六眼)
 
-A reverse-engineering agent for **IDA Pro** and **Binary Ninja** that integrates a multi-provider LLM directly into your analysis UI. This project was vibecoded together with my friend, Claude Code.
+Rikugan is a reverse-engineering agent that lives inside IDA Pro and Binary Ninja. It is a native C++ plugin with its own reversing tools, prompts, modes, skills and chat panel, and since 2.0 its agent runs on [omc](https://github.com/buzzer-re/Oh-My-C).
 
-![alt text](assets/binja_showcase.png)
+![Rikugan in Binary Ninja](assets/binja_showcase.png)
 
-![alt text](assets/ida_showcase.png)
+![Rikugan in IDA Pro](assets/ida_showcase.png)
 
 [Documentation](https://rikugan.reversing.codes/docs.html) | [Architecture](https://rikugan.reversing.codes/ARCHITECTURE.html) | [Issues](https://github.com/buzzer-re/Rikugan/issues)
 
 ## Install
 
-Auto-detects IDA Pro, Binary Ninja, or both.
+The installer downloads the latest release and puts the prebuilt plugin into every host it finds, IDA Pro, Binary Ninja or both. On Linux and macOS:
 
-**Linux / macOS:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash
 ```
 
-**Windows (PowerShell):**
+On Windows, in PowerShell:
+
 ```powershell
 irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex
 ```
 
-***Windows users should also install the latest [Microsoft Visual C++ Redistributable 2015-2022 x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version) before launching IDA. Rikugan uses IDA's bundled PySide6/Shiboken Qt bindings, and an outdated VC++ Runtime can cause it to crash during startup.***
+To build from source, `build.sh` (Linux and macOS) or `build.ps1` (Windows) makes the same packages in `dist/`, and `install.sh --from dist` (`install.ps1 -From dist`) installs them. [DEVELOPMENT.md](DEVELOPMENT.md) lists the toolchains.
 
-For host-specific install, manual setup, and configuration, see the [docs](https://rikugan.reversing.codes/docs.html).
+```bash
+git clone --recursive https://github.com/buzzer-re/Rikugan
+git clone https://github.com/buzzer-re/Oh-My-C ohmyc     # omc, next to Rikugan
+cd Rikugan && ./build.sh && ./install.sh --from dist
+```
+
+## Connecting a model
+
+Open the panel (Ctrl+Shift+I in IDA, the Rikugan icon in Binary Ninja's sidebar) and follow Connect a model. You can sign in with a subscription you already pay for (Claude, ChatGPT/Codex, Gemini, GitHub Copilot and many more), paste an API key, or point Rikugan at a local server such as Ollama, LM Studio or llama.cpp. The model works right away, with no restart, and Ctrl+M switches the model and thinking level later. Settings → Provider also takes API keys, and its + button adds a custom connection to any OpenAI-compatible, Anthropic or Ollama endpoint.
+
+If you already use the omc command-line agent, tick "Also use the logins of the omc command-line agent" and Rikugan shares its logins. Rikugan can also share a Claude Code or Codex CLI login ("Use my Claude Code / Codex login", or the checkbox in Settings → Provider) after you confirm. 
 
 ## Is this another MCP client?
 
-No, Rikugan is an ***agent*** built to live inside your RE host. It does not consume an MCP server to interact with the host database; it has its own agentic loop, context management, role prompt ([source](rikugan/agent/system_prompt.py)), and an in-process tool orchestration layer.
+No. Rikugan is an agent/harness built to live inside your disassembler. It does not reach the database through an MCP server: the agent runs inside the plugin with Rikugan's own role prompt ([source](prompts/system/base.md)) and works on the database through Rikugan's native tools, so there is no external client to switch to.
 
-The agent loop is a generator-based turn cycle: each user message kicks off a stream→execute→repeat pipeline where the LLM response is streamed token-by-token and tool calls are intercepted and dispatched. It supports automatic error recovery, mid-run user questions, plan mode for multi-step workflows, and message queuing — all without leaving the disassembler.
-
-The agent really ***lives*** and ***breathes*** reversing.
-
-- No need to switch to an external MCP client
-- Assistant-first, not designed to do your job (unless you ask it to)
-- Extensible to many LLM providers and local installations (Ollama)
-- Quick to enable — just hit Ctrl+Shift+I and the chat will appear
+Each message runs a full agent loop. The answer streams as the model writes it, and the tools it calls run natively inside IDA or Binary Ninja, in parallel where that is safe. Retries and compaction happen on their own, the agent can stop to ask you a question, plan mode covers multi-step work, and you can queue messages while it runs. Rikugan is an assistant for your own analysis, and it does the whole job only when you ask it to. Press Ctrl+Shift+I and the chat is there.
 
 ## Features
 
-**60+ tools** covering navigation, decompiler, disassembly, cross-references, strings, annotations, types, scripting, and host-specific IL/microcode manipulation. The agent always asks permission before running scripts and will never execute the target binary. Full tool reference in the [docs](https://rikugan.reversing.codes/docs.html).
+Rikugan has more than 60 tools for navigation, the decompiler, disassembly, cross-references, strings, annotations, types and scripting, plus each host's own IL or microcode. It always asks before it runs a script and never runs the target binary. The [docs](https://rikugan.reversing.codes/docs.html) list every tool.
 
-**Exploration** — Inspired by how code agents work, but applied to binaries. The orchestrator maps the binary (imports, exports, strings, key functions), then spawns isolated subagents to analyze in parallel. Each reports back, and the orchestrator synthesizes a complete picture.
+### Exploration
 
-|![alt text](assets/subagents_example_3.png)|
+Rikugan explores a binary the way coding agents explore a codebase. The orchestrator maps the binary first (imports, exports, strings and the functions that matter), then spawns isolated subagents that analyze it in parallel. Each one reports back, and the orchestrator puts their findings together.
+
+|![Three subagents running side by side, with the agents panel open](assets/subagents_example_3.png)|
 |:--:|
-|Orchestrator spawning subagents in parallel|
+|Three subagents map the config, the C2 protocol and the persistence in parallel, followed live in the agents panel (Ctrl+J)|
 
-**Natural Language Patches** (Experimental) — `/modify` lets you describe what you want changed in plain English. Rikugan explores the binary, builds context, and applies the patches.
+### Natural-language patches (experimental)
 
-|![alt text](assets/maze_solve.gif)|
+With `/modify` you describe the change you want in plain English. Rikugan explores the binary for context and applies the patches, then asks whether to keep them.
+
+|![A maze game patched with /modify](assets/maze_solve.gif)|
 |:--:|
 |`/modify make this maze game easy, let me pass through walls`|
 
-**Deobfuscation** (Experimental, Binary Ninja) — The `/deobfuscation` skill activates plan mode to recognize and remove control flow flattening, opaque predicates, MBA expressions, and junk code using IL read/write primitives.
+### Deobfuscation (experimental, Binary Ninja)
 
-|![](assets/cff_remove_example.gif)|
+The `/deobfuscation` skill starts plan mode and uses Binary Ninja's IL read and write primitives to recognize and remove control-flow flattening, opaque predicates, MBA expressions and junk code.
+
+|![Control-flow flattening removed with /deobfuscation](assets/cff_remove_example.gif)|
 |:--:|
-|~3x speed of the workflow, original process took ~4:30 min|
+|~3x speed of the workflow, original process took ~4:30 min (Old Rikugan 1.X version)|
 
-**Coding** — With Filesystem access on, the agent can read, write and edit files, search them, and run shell commands, so a session can produce scripts, notes and patches as well as annotations. File paths are limited to the binary's folder and a scratch folder, and file writes can be undone with `/undo`. Shell commands start there but are not confined to it. It is off by default, and the agent asks once per chat before using it. A hostile sample can try to steer any agent with prompt injection, so weigh that before turning it on for one you don't trust.
+### Goals
 
-**Memory** — Findings are saved to `RIKUGAN.md` next to your database, persisting across sessions.
+`/goal <objective>` keeps Rikugan working on its own, turn after turn, until it has checked that the objective is met. An objective can be to recover a struct and type every function that uses it, or to name a whole subsystem. The panel shows the goal and the time spent on it, with Pause and Clear. Database changes still ask first unless you allowed them for the chat, and in IDA the decompiler redraws as each change lands.
 
-**Skills & MCP** — 12 built-in skills, custom skill support, and MCP server integration. Reuse skills and MCP servers from Claude Code and Codex.
+### Files, the shell and the web
+
+The agent can read, write and edit files, search them, run shell commands, search the web and keep a todo list, so a session can end with scripts, notes and patches next to the annotations. It works in a scratch folder per database and can reach the binary's folder by path. Each kind of access (reading, writing, editing, the shell) asks the first time in a chat, and you can allow it once, allow it for the chat and its subagents, or deny it. Settings can allow files or shell commands without asking. `/undo` reverts database changes but not file changes, and none of these tools run in a sandbox. A hostile sample can try to steer any agent through prompt injection, so think twice before you allow the shell for a sample you don't trust.
+
+### The panel
+
+Every turn shows as a timeline of the model's thinking, its tool calls, subagents with their live progress, and permission and plan cards. Click an address or a symbol to jump there, and undo a database change from its own row. The strip above the timeline shows what Rikugan is doing, its todo list and the goal it works toward. Ctrl+K opens every command, Ctrl+M the model and thinking level, and Ctrl+J the agents, which you can steer or stop. Chats are named after their first exchange, and the colours follow the host's light or dark theme. You can paste or drop images into the message box.
+
+The expand button in the panel's header (in Binary Ninja, also Plugins → Rikugan → Open in Full Window) turns Rikugan into a full-window view, with the chat in a tab beside the disassembly and the chats of every open database listed at its right. The same button puts it back. In Binary Ninja, the sidebar's Open in pane puts the panel beside the disassembly.
+
+### Several databases (Binary Ninja)
+
+Ask Rikugan to open another file and it opens it in a new tab once you agree. A subagent can then work on that tab, or on any other open one, to compare two builds or to look something up in a library. In the full-window view the chat list shows the chats of every tab, so you can move between them.
+
+### Memory
+
+Rikugan saves its findings to `RIKUGAN.md` next to your database, and the next session starts from them.
+
+### Skills and MCP
+
+Rikugan ships with 12 skills, and you can add your own in `~/.rikugan/omc/agent/skills/`. Settings → MCP adds MCP servers. In Binary Ninja, Rikugan can also use Binary Ninja's own MCP server (Plugins → MCP → Start Server). It looks for the server whenever a database shows, so it finds one you start later, and Settings → MCP → Address points it at another address. When the server answers, the panel offers its tools, and the MCP button in the header turns them on and off. While they are on, they take the place of Rikugan's analysis tools for that database, and `/undo` cannot revert their changes. omc's session commands work here too, among them `/btw` for a side question while a turn runs, `/compact`, `/handoff`, `/retry` and `/export`.
 
 ### Profiles
 
-Profiles let you customize the agent to fit your analysis needs. They give you granular control over which data the LLM can read, restrict which tools it can use, and let you define custom rules to filter data.
+Profiles let you shape the agent around your analysis. A profile decides which data the model can read and which tools it can use, including omc's own such as `bash` or `web_search`, and you can write your own rules to filter data. Its IOC filters apply to every tool result the model sees, whether it comes from an analysis tool, a file, the shell, web search or an MCP server. A profile you switch in Settings applies to open chats at once, and a chat in the middle of a run takes it when the run ends.
 
-![alt text](assets/profile.png)
+![A profile in Settings: hidden metadata, IOC filters, custom rules and denied tools](assets/profile.png)
 
-## Recommended Providers
-
-| Provider | Notes |
-|----------|-------|
-| **Claude Opus 4.6** | Best overall. Recommend Claude Pro/Max plan with OAuth over API. |
-| **Claude Sonnet 4.6** | Strong at lower cost. Both Anthropic models use prompt caching. |
-| **MiniMax M2.5 / Highspeed** | On par with Opus in local tests. Generous limits, low cost. |
-| **Gemini 2.5 / 3 / 3.1 Pro** | Solid results. Hallucinates more than Anthropic/MiniMax. |
-| **Kimi 2.5** | Strong coding, but lacks rigor for complex RE tasks. |
-| **LLAMA 70B / GPT 120B OSS** | Interesting but not production-ready for RE. |
-
-Also supports any OpenAI-compatible endpoint and Ollama for local models.
 
 ## Requirements
 
-- IDA Pro 9.0+ with Hex-Rays decompiler or Binary Ninja (UI mode)
-- Python 3.10+
-- At least one LLM provider
-- Windows, macOS, or Linux
-- Windows: latest [Microsoft Visual C++ Redistributable 2015-2022 x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version)
+Rikugan needs IDA Pro 9.2 or later (with Hex-Rays for the decompiler tools) or Binary Ninja in UI mode, and at least one model: an account login, an API key or a local server. It runs on Linux x86_64 with glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36 and newer), Linux arm64 with glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40 and newer), macOS on Apple silicon or Intel, and Windows 10 and 11 x64. On Linux arm64, IDA starts at 9.3, the first version Hex-Rays built for it. On Windows the shell tool uses Git Bash when Git for Windows is installed, and PowerShell otherwise.
 
-> **IDA Pro + Python >= 3.14:** Shiboken has a known UAF bug. Rikugan includes a workaround, but Python 3.10 is still the safest choice. See the [upstream report](https://community.hex-rays.com/t/ida-9-3-b1-macos-arm64-uaf-crash/646).
+CI builds and tests every release on all five platforms. Each package comes with a `-symbols` package for reading crash logs, which Rikugan writes to `~/.rikugan/logs/`.
 
-## Conclusion
+## What changed in 2.0
 
-If you'd asked me last year what I thought about AI doing reverse engineering, I'd probably have said something like "Nah, impossible — it hallucinates, and reverse engineering is not something as simple as writing code." But this year I completely changed my mind when I saw what was achievable. AI is not the ChatGPT from 2023 anymore; it's something entirely different.
+Rikugan 2.0 is a native rewrite for IDA Pro and Binary Ninja on Linux, macOS and Windows, with omc as its new backend, and it updates itself from the GitHub releases. Some things went away with the Python version: Rikugan's own provider layer (omc covers far more providers and logins), encrypted API keys (credentials now sit in Rikugan's settings folder, readable only by you on Linux and macOS), importing Claude Code and Codex skills and MCP servers, the research-note reviewer chain, resuming a cancelled mode, the `allowed_tools` skill setting and undoing file writes. Chats and settings from 1.x are not migrated. The [release notes](docs/releases/v2.0.0.md) list everything that is new.
 
-For that reason, I decided to invest this year in researching this topic. It's amazing what we can build with agentic coding — it's surreal how quickly I'm learning topics that I simply "didn't have time" to study before.
-
-Rikugan is just one of many projects I've built in the last three months. The first version was built in a single night. Within two days it already supported both IDA and Binary Ninja. Within three days, it was essentially what you see here, with only minor tweaks since.
-
-This is a work in progress with many areas for improvement. I took care to ensure this wouldn't be another AI slop project, but I'm certain there is still room to grow. I hope you use it for good. If you find bugs, have suggestions, or want quality-of-life improvements, please open an issue.
-
-That's all — thanks.

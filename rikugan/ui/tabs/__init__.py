@@ -1,1 +1,0 @@
-"""Settings dialog tab widgets."""

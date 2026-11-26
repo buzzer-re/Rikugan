@@ -1,112 +1,83 @@
 # Rikugan (六眼)
 
-> A reverse-engineering AI agent for IDA Pro and Binary Ninja. Rikugan is not an MCP client — it has its own agentic loop, in-process tool orchestration, streaming UI, multi-tab chat, session persistence, and MCP client support. It lives inside the disassembler.
-
-## Key Concepts
-
-- **Agent Loop**: Generator-based turn cycle (`rikugan/agent/loop.py`). User message → skill resolution → system prompt build → stream LLM → intercept tool calls → execute → feed results back → repeat.
-- **Hosts**: IDA Pro (`rikugan_plugin.py`) and Binary Ninja (`rikugan_binaryninja.py`). Host-agnostic core in `rikugan/agent/`, `rikugan/core/`, `rikugan/ui/`, `rikugan/providers/`, `rikugan/mcp/`, `rikugan/skills/`, `rikugan/state/`.
-- **Tools**: 56 tools per host. Defined with the `@tool` decorator in `rikugan/tools/` (IDA) and `rikugan/binja/tools/` (Binary Ninja). Categories: navigation, functions, strings, database, disassembly, decompiler, xrefs, annotations, types, scripting, microcode (IDA) / IL (Binary Ninja).
-- **Skills**: Markdown files with YAML frontmatter in `rikugan/skills/builtins/`. Activated with `/<slug>`. 12 built-in skills.
-- **Exploration Mode**: 4-phase autonomous flow triggered by `/modify <goal>`: EXPLORE → PLAN → EXECUTE → SAVE. Phase 1 runs as a subagent.
-- **Plan Mode**: `/plan <msg>` — generate plan, user approves, execute step by step.
-- **Mutation Tracking**: Every mutating tool call is logged with a reverse operation. `/undo [N]` replays them in reverse.
-- **MCP**: External MCP servers configured via `mcp.json`. Tools bridged into the registry with `mcp_<server>_<tool>` prefix.
-- **Providers**: Anthropic (Claude), OpenAI, Google Gemini, Ollama, MiniMax, OpenAI-compatible endpoints.
-- **Session Persistence**: Per-file auto-save/restore. Multi-tab chat. Session fork (deep copy to new tab).
-- **Context Window**: Auto-compaction at 80% usage threshold.
-- **Persistent Memory**: `RIKUGAN.md` per binary — facts saved by `save_memory` pseudo-tool, loaded into system prompt.
+> A reverse-engineering agent that lives inside IDA Pro (9.2 or later) and Binary Ninja as a native C++ plugin (Linux x86_64/arm64, macOS arm64/x86_64, Windows x64). Its agent — turn loop, every model provider and login, sessions, compaction, retries, skills, MCP, file/shell/search tools — is libomc (oh-my-c), linked in-process (on Windows: libomc.dll beside the plugin). Rikugan adds the host analysis tools, the Qt chat panel, per-database chats, undo, plan/explore/modify/research modes, subagents with host tools, the bulk renamer, analysis profiles, and the RE prompts and skills. Rikugan 1.x was a Python plugin. It remains only in the git history.
 
 ## Documentation
 
-- [Full Architecture Reference](https://buzzer-re.github.io/rikugan/ARCHITECTURE.html): Agent loop internals, TurnEvent system, tool framework, exploration mode, plan mode, subagents, mutation tracking, context window, MCP integration, provider layer, UI layer, thread safety model.
-- [Docs / Getting Started](https://buzzer-re.github.io/rikugan/docs.html): Installation, configuration, usage, skills, MCP setup.
-- [ARCHITECTURE.md](ARCHITECTURE.md): Full technical reference (same content as Architecture page, local copy).
-- [AGENTS.md](AGENTS.md): Developer guide — directory structure, how to add tools, hosts, and skills.
+- [README.md](README.md): install, features, providers.
+- [AGENTS.md](AGENTS.md): developer guide — layout, building, how a chat works, adding tools, threading and security rules.
+- [ARCHITECTURE.md](ARCHITECTURE.md): internals — libomc embedding, threads, chat lifecycle, system prompt, tool pipeline, undo, modes, subagents, bulk renamer, settings, AuthSync, security model.
+- [DEVELOPMENT.md](DEVELOPMENT.md): build trees, building without the hosts, Qt headers, submodules and BN ABI pinning, tests, adding tools/skills/prompts, continuous integration, releases.
+- [prompts/MANIFEST.md](prompts/MANIFEST.md): every model-facing text and its placeholders.
+- [Docs page](https://rikugan.reversing.codes/docs.html) and [Architecture page](https://rikugan.reversing.codes/ARCHITECTURE.html).
+
+## Key Concepts
+
+- **libomc**: the agent runs in-process; Rikugan talks to it with omc's RPC frames (`omc_send` / event callback), one omc session plus one worker thread per chat (`src/common/omc/OmcSession.h`).
+- **Host tools**: Rikugan's tools are registered with omc through `set_host_tools`; omc emits `host_tool_call`, Rikugan answers `host_tool_result`. Mutating and script tools are exclusive (run alone, in order).
+- **Tool pipeline** (`ToolDispatcher::execute`): profile denial → mode phase gate → decompiler requirement → script approval → mutation approval → undo pre-state → run (host main thread when required) → view refresh after a change (`Host::databaseChanged`: IDA re-decompiles its open pseudocode views) → mutation record → result cache → injection-marker strip → IOC filter → artifact cap.
+- **Threads**: the host UI thread never waits; frames reach it through `EventQueue` (one coalesced event per burst); tool calls run on an 8-thread pool; SDK calls are marshalled to the host main thread.
+- **Chats**: per database (`~/.rikugan/sessions/<db id>/chats.json`), resumed from omc session files; at most 4 live omc sessions per process.
+- **Undo**: `/undo [N]` reverses renames, comments and prototypes; type, patch and IL/microcode tools are recorded as irreversible.
+- **Memory**: `RIKUGAN.md` next to the database (`save_memory`), first 200 lines in the system prompt.
+- **Security**: tool output is sanitised (injection markers, optional IOC redaction); scripts always ask; disk and shell tools only after the user allows them; omc's cwd is a scratch dir, project config and project MCP are off.
+- **Updates** (`src/common/update/`): a build configured with `-DRIKUGAN_UPDATES=ON` (`build.sh`, `build.ps1` and the release set it) knows its package name and checks GitHub 20 s after start, then once a day (`~/.rikugan/update.json`), while `check_for_updates` is on (Settings → Behavior). Ctrl+K → Check for updates checks now. A newer release is installed only on the user's Update in the panel: downloaded with the system's curl, checked against its `.sha256`, unpacked with tar (regular files only), required to hold the plugin file with the release's version marker, then swapped in all-or-nothing (Windows renames the loaded DLL aside). The host uses it after a restart. `RIKUGAN_UPDATE_URL` points it at another releases page.
+- **Building without the hosts**: `build.sh --sdk` / `build.ps1 -Sdk` (`-DRIKUGAN_SDK_ONLY=ON`) link stand-ins for the hosts' libraries (`cmake/host_stubs.cmake`, `cmake/host_stubs.py`). The plugin binds to the hosts' real libraries when it loads.
+- **CI and releases**: `.github/workflows/ci.yml` runs `build-tools/ci.sh` (tests, both plugins with `--sdk`, a smoke check of each package, zero compiler warnings) on linux-x86_64, linux-arm64, macos-arm64, macos-x86_64 and windows-x86_64. A tag `v<version>` runs `release.yml`: 20 packages (each host and platform, plus `-symbols` packages), each with its `.sha256`, and `SHA256SUMS` on a draft release that is published once complete. Linux x86_64 packages need glibc 2.35+ and OpenSSL 3, linux-arm64 glibc 2.39+.
 
 ## File Layout
 
 ```
-rikugan/
-├── agent/          # AgentLoop, BackgroundAgentRunner, exploration, plan, subagent, mutation, context window
-├── core/           # Config, constants, errors, host context, logging, thread safety, types
-├── tools/          # IDA tool implementations (@tool decorator, ToolDefinition, ToolRegistry)
-├── binja/tools/    # Binary Ninja tool implementations
-├── ida/            # IDA Pro UI and tool registry
-├── binja/          # Binary Ninja UI and tool registry
-├── providers/      # LLM provider integrations
-├── mcp/            # MCP client (JSON-RPC 2.0, bridge to ToolRegistry)
-├── skills/         # Skill discovery, loading, 12 built-in skills
-├── state/          # SessionState, SessionHistory
-├── ui/             # Shared Qt widgets (PanelCore, ChatView, MutationLogPanel, etc.)
-└── hosts/          # Backward-compat shims
-rikugan_plugin.py           # IDA Pro entry point
-rikugan_binaryninja.py      # Binary Ninja entry point
+CMakeLists.txt     RIKUGAN_HOST = binja | ida | none (tests)
+cmake/             omc.cmake + build_omc.sh / build_omc_win.cmake (libomc), embed.cmake (skills/ + prompts/ into the plugin), host_stubs.cmake + host_stubs.py (RIKUGAN_SDK_ONLY)
+prompts/           model-facing texts (MANIFEST.md)
+skills/            12 built-in skills
+src/common/        omc/ agent/ tools/ host/ security/ config/ ui/ util/ update/
+src/binja/         Plugin.cpp, host/ (BnHost, BnPython), tools/
+src/ida/           sdk/Plugin.cpp, host/ (IdaHost, tools/), sdk/ (SDK subclasses, -fno-rtti)
+tests/native/      QtTest suite against omc's mock model
+tests/ida/         idalib tool test
+third_party/       binaryninja-api, ida-sdk (submodules)
+tools/             fetch_qt.sh / fetch_qt.ps1 (Qt headers matching each host), vsenv.ps1 (MSVC environment)
+build.sh build.ps1 build and package the plugins into dist/ (--sdk / -Sdk: without the hosts)
+install.sh install.ps1  install the latest release (or --version, or dist/) into the hosts' plugins folders
+build-tools/       ci.sh / ci.ps1 (every CI and release step), omc.ref (omc commit), release_notes.sh
+.github/workflows/ ci.yml (five platforms), release.yml (tag v<version> -> GitHub release)
 ```
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/plan <msg>` | Plan mode: generate plan → approve → execute step by step |
-| `/modify <msg>` | Exploration mode: EXPLORE → PLAN → EXECUTE → SAVE |
-| `/explore <msg>` | Explore-only: autonomous read-only binary analysis |
-| `/undo [N]` | Undo last N mutations (default 1) |
-| `/memory` | Show current RIKUGAN.md contents |
-| `/mcp` | Show MCP server health |
-| `/doctor` | Diagnose setup issues |
-| `/<skill-slug>` | Activate a skill (e.g. `/malware-analysis`, `/ctf`) |
+| Input | Description |
+|---|---|
+| `/plan <msg>` | Plan, approve, execute step by step |
+| `/explore <msg>` | Read-only autonomous exploration with findings |
+| `/modify <msg>` | Explore → plan → execute patches → save or discard |
+| `/research <msg>` | Explore, then write Obsidian-style notes next to the database |
+| `/undo [N]` | Undo the last N database changes |
+| `/memory`, `/mcp`, `/doctor` | Show memory, MCP servers, setup diagnosis |
+| `/<skill> args` | Run a skill (omc `/skill:<skill>`); `mode:` skills start their mode |
+| `/compact`, `/retry`, `/model`, `/effort` | omc's commands |
 
 ## Built-in Skills
 
-| Slug | Purpose |
-|------|---------|
-| `/malware-analysis` | Windows PE malware triage, IOCs, MITRE ATT&CK |
-| `/linux-malware` | ELF malware, packing, persistence |
-| `/deobfuscation` | String decryption, CFF, opaque predicates, MBA |
-| `/vuln-audit` | Buffer overflows, format strings, integer bugs |
-| `/driver-analysis` | Windows kernel drivers, DispatchTable, IOCTL |
-| `/ctf` | CTF challenge solving |
-| `/generic-re` | General-purpose binary analysis |
-| `/ida-scripting` | IDAPython API reference |
-| `/binja-scripting` | Binary Ninja Python API reference |
-| `/modify` | Exploration mode skill for binary modification |
-| `/smart-patch-ida` | IDA-specific binary patching workflow |
-| `/smart-patch-binja` | Binary Ninja-specific patching workflow |
+`/malware-analysis`, `/linux-malware`, `/deobfuscation` (plan mode), `/vuln-audit`, `/driver-analysis`, `/ctf`, `/generic-re`, `/ida-scripting`, `/binja-scripting`, `/modify` (exploration mode), `/smart-patch-ida`, `/smart-patch-binja`. User skills: `~/.rikugan/omc/agent/skills/<slug>/SKILL.md`.
 
-## Adding Tools
+## Adding a Tool
 
-```python
-from typing import Annotated
-from rikugan.tools.base import tool
-
-@tool(category="navigation", mutating=False)
-def my_tool(address: Annotated[str, "Target address (hex)"]) -> str:
-    """Tool description."""
-    ...
+```cpp
+registry.add(rk::ToolSpec{
+    "jump_to", "navigation", "Jump to the specified address.",
+    {rk::ToolParam{"address", rk::ToolParam::String, "Target address (hex string, e.g. '0x401000')"}},
+    rk::MainThread, 20000,
+    [this](rk::ToolCall& call) {
+        const uint64_t ea = call.address("address");
+        ...
+        return rk::ToolResult::ok(QStringLiteral("Jumped to %1").arg(rk::hex(ea)));
+    }});
 ```
 
-Register by adding the module to the host's `create_default_registry()` in `rikugan/ida/tools/registry.py` or `rikugan/binja/tools/registry.py`.
+Added in the host's `registerTools()` (`src/binja/tools/`, `src/ida/host/tools/`). Every `Mutating` tool must be reversible in `MutationLog` or listed as known irreversible.
 
-## Adding Skills
+## Adding a Skill
 
-Create `rikugan/skills/builtins/<slug>/SKILL.md`:
-
-```markdown
----
-name: My Skill
-description: One-line description
-tags: [analysis]
-allowed_tools: [decompile_function, rename_function]
----
-Task: <instruction for the agent>
-```
-
-## Known Broken IDA Tools
-
-| Tool | Error |
-|------|-------|
-| `create_struct` | `ida_struct` removed in IDA 9.x — needs `ida_typeinf` migration |
-| `import_c_header` | `idc` not imported in handler |
-| `set_function_prototype` | `idc` not imported in handler |
-| `apply_type_to_variable` | Decompiler guard fires incorrectly |
+`skills/<slug>/SKILL.md` with frontmatter `name: <slug>`, `description:`, optional `mode: plan | exploration`, then the instructions. Rebuild: skills are embedded in the plugin.

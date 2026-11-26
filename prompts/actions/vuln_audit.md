@@ -1,0 +1,1 @@
+Audit the function {{func_name}} at {{address}} for security vulnerabilities. Check for buffer overflows, format strings, integer overflows, use-after-free, command injection, and other memory-safety issues. List each finding with severity and evidence.

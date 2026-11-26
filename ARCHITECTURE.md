@@ -1,1154 +1,500 @@
-# ARCHITECTURE.md — Rikugan Agent Internals
+# ARCHITECTURE.md — Rikugan Internals
 
-This document describes the internal architecture of the Rikugan agent in full technical detail. It is intended for engineers who need to understand, modify, or extend the system.
+Rikugan 2.x is a native C++20 / Qt Widgets plugin for IDA Pro (9.2 or later) and Binary Ninja (Linux, macOS, Windows). The
+agent — turn loop, providers and logins, session files, compaction, retries, skills, MCP and the file/shell/search
+tools — is **libomc** ([oh-my-c](https://github.com/buzzer-re/Oh-My-C)), linked into the plugin. Rikugan supplies the
+reverse-engineering half: host analysis tools, the chat panel, per-database chats, undo, modes, subagents with host
+tools, the bulk renamer, analysis profiles, prompts and skills. (Rikugan 1.x was a Python plugin; it remains in the
+git history.)
 
----
+Build, layout and coding rules: [AGENTS.md](AGENTS.md). Contributor workflow: [DEVELOPMENT.md](DEVELOPMENT.md).
+Every model-facing text and its placeholders: [prompts/MANIFEST.md](prompts/MANIFEST.md).
 
-## Table of Contents
-
-1. [High-Level Overview](#high-level-overview)
-2. [The Agentic Loop](#the-agentic-loop)
-3. [TurnEvent System](#turnevent-system)
-4. [Tool Framework](#tool-framework)
-5. [Pseudo-Tools](#pseudo-tools)
-6. [Skill System](#skill-system)
-7. [Exploration Mode](#exploration-mode)
-8. [Plan Mode](#plan-mode)
-9. [Subagents](#subagents)
-10. [Mutation Tracking and Undo](#mutation-tracking-and-undo) (see also [Files and Shell](#files-and-shell))
-11. [Context Window Management](#context-window-management)
-12. [Persistent Memory](#persistent-memory)
-13. [Session Management](#session-management)
-14. [MCP Integration](#mcp-integration)
-15. [Provider Layer](#provider-layer)
-16. [System Prompt Architecture](#system-prompt-architecture)
-17. [UI Layer](#ui-layer)
-18. [Thread Safety Model](#thread-safety-model)
-19. [Error Handling and Retry](#error-handling-and-retry)
-20. [Logging](#logging)
-21. [Commands Reference](#commands-reference)
-22. [Data Flow Diagrams](#data-flow-diagrams)
-
----
-
-## High-Level Overview
-
-Rikugan is a **generator-based agentic loop** embedded inside IDA Pro and Binary Ninja. The agent runs in a background thread and communicates with the Qt UI via a stream of `TurnEvent` objects. All host API calls (IDA/BN) are marshalled to the main thread via `@idasync`.
+## 1. Layers
 
 ```
-User Input
-    │
-    ▼
-┌──────────────────────────────────────────┐
-│            SessionControllerBase          │
-│  (creates AgentLoop, manages tabs/state) │
-└───────────────┬──────────────────────────┘
-                │
-                ▼
-┌──────────────────────────────────────────┐
-│  BackgroundAgentRunner (threading.Thread) │
-│  ┌────────────────────────────────────┐  │
-│  │          AgentLoop.run()           │  │
-│  │  ┌──────────────────────────────┐  │  │
-│  │  │ while has_tool_calls:        │  │  │
-│  │  │   stream LLM response       │  │  │
-│  │  │   parse tool calls          │  │  │
-│  │  │   execute tools             │  │  │
-│  │  │   feed results back         │  │  │
-│  │  │   yield TurnEvents ─────────┼──┼──┼──→ Queue → UI poll
-│  │  └──────────────────────────────┘  │  │
-│  └────────────────────────────────────┘  │
-└──────────────────────────────────────────┘
+IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
+  dock widget, HT_UI/HT_IDB hooks     sidebar widget, UIContextNotification, PluginCommands
+            \                          /
+             PanelCore (src/common/ui)  — one per process, shows the current DbContext
+                        |
+   DbContext (one per open database): Host, ToolRegistry, ResultCache, ChatIndex
+                        |
+   ChatSession (UI thread) ── ChatContext (shared with tool workers) ── MutationLog
+                        |
+   OmcSession: one omc_session_t + its worker thread  ── omc RPC frames ──  libomc
+                        |                                                   (agent loop, providers,
+   SessionListener ── ToolDispatcher (8 workers) ── Host (main-thread calls)  sessions, MCP, skills)
 ```
 
-Key files:
-- `rikugan/agent/loop.py` — `AgentLoop` + `BackgroundAgentRunner`
-- `rikugan/agent/turn.py` — `TurnEvent` / `TurnEventType`
-- `rikugan/tools/base.py` — `@tool` decorator, `ToolDefinition`
-- `rikugan/tools/registry.py` — `ToolRegistry`
-- `rikugan/ui/panel_core.py` — `RikuganPanelCore` (Qt UI)
-- `rikugan/ui/session_controller_base.py` — `SessionControllerBase`
-
----
-
-## The Agentic Loop
-
-**File**: `rikugan/agent/loop.py`
-
-### `AgentLoop.run(user_message) -> Generator[TurnEvent]`
-
-The entry point is `AgentLoop.run()`, a Python generator. It yields `TurnEvent` objects that the UI consumes. The loop proceeds as follows:
-
-1. **Command Detection** — The message is checked for command prefixes:
-   - `/plan <msg>` → plan mode
-   - `/modify <msg>` → exploration mode (4-phase, with patching)
-   - `/explore <msg>` → exploration mode (explore-only, read-only)
-   - `/memory` → show RIKUGAN.md contents
-   - `/undo [N]` → undo last N mutations
-   - `/mcp` → show MCP server health
-   - `/doctor` → diagnose setup issues
-
-2. **Skill Resolution** — `_resolve_skill()` checks if the message starts with a skill slug (e.g., `/malware-analysis`). If matched, the skill's body is prepended to the system prompt and `allowed_tools` is enforced.
-
-3. **System Prompt Build** — `build_system_prompt()` assembles the prompt from host-specific base + binary context + cursor position + tool list + skill + persistent memory (RIKUGAN.md).
-
-4. **Turn Loop** — The core loop:
-   ```
-   while True:
-       yield TURN_START
-       stream = provider.chat_stream(messages, tools, system)
-       text, tool_calls = _stream_llm_turn(stream)  # yields TEXT_DELTA events
-       yield TEXT_DONE
-       if no tool_calls:
-           break  # LLM is done
-       results = _execute_tool_calls(tool_calls)  # yields TOOL_RESULT events
-       append results to messages
-       yield TURN_END
-   ```
-
-5. **Context Compaction** — At the start of each turn, `ContextWindowManager.should_compact()` is checked. If the context is above 80% of the window, messages are compacted (old middle messages summarized, head + tail preserved).
-
-6. **Cancellation** — `_check_cancelled()` is called at multiple points. It raises `CancellationError` which is caught at the top level and yields a `CANCELLED` event.
-
-### `_stream_llm_turn()`
-
-Consumes the provider's `chat_stream()` generator. Each `StreamChunk` is processed:
-
-- `chunk.text` → yields `TEXT_DELTA` events, accumulates full text
-- `chunk.is_tool_call_start` → yields `TOOL_CALL_START`, starts accumulating tool call
-- `chunk.tool_args_delta` → yields `TOOL_CALL_ARGS_DELTA`, accumulates JSON args
-- `chunk.is_tool_call_end` → yields `TOOL_CALL_DONE`, finalizes the `ToolCall`
-- `chunk.usage` → yields `USAGE_UPDATE`, updates context manager
-
-Returns `(full_text, List[ToolCall])`.
-
-### `_execute_tool_calls()`
-
-Takes a list of `ToolCall` objects and executes each one. For each call:
-
-1. **Pseudo-tool check** — Handled inline with `continue` (see [Pseudo-Tools](#pseudo-tools))
-2. **Approval gate** — `execute_python` requires user approval unless previously allowed
-3. **Pre-state capture** — For mutating tools, `capture_pre_state()` calls getter tools to record the current state before mutation
-4. **Execution** — `ToolRegistry.execute(name, args)` dispatches to the handler
-5. **Mutation recording** — If `defn.mutating`, `build_reverse_record()` creates a `MutationRecord` and appends to `session.mutation_log`. File tools append their own record. Either way a `MUTATION_RECORDED` event is yielded
-6. **Error handling** — `ToolError` and general `Exception` are caught and returned as error results
-7. **Result** — Each result becomes a `ToolResult` and yields a `TOOL_RESULT` event
-
-### `BackgroundAgentRunner`
-
-Wraps the generator in a `threading.Thread`. Events are forwarded to a `queue.Queue` that the UI polls at 50ms intervals via `QTimer`.
-
-```python
-class BackgroundAgentRunner:
-    def start(self, user_message):
-        self._thread = Thread(target=self._run, args=(user_message,))
-        self._thread.start()
-
-    def _run(self, message):
-        for event in self.agent_loop.run(message):
-            self._event_queue.put(event)
-
-    def get_event(self, timeout=0):
-        return self._event_queue.get(timeout=timeout)
-```
-
----
-
-## TurnEvent System
-
-**File**: `rikugan/agent/turn.py`
-
-All communication from the agent loop to the UI goes through `TurnEvent` objects. Each event has a `type` (enum) and optional payload fields.
-
-### Event Types
-
-| Type | Description | Key Fields |
-|------|-------------|------------|
-| `TEXT_DELTA` | Streaming text token | `text` |
-| `TEXT_DONE` | Full assistant text complete | `text` |
-| `TOOL_CALL_START` | LLM requested a tool call | `tool_call_id`, `tool_name` |
-| `TOOL_CALL_ARGS_DELTA` | Streaming tool arguments | `tool_call_id`, `tool_args` |
-| `TOOL_CALL_DONE` | Tool call arguments finalized | `tool_call_id`, `tool_name`, `tool_args` |
-| `TOOL_RESULT` | Tool execution result | `tool_call_id`, `tool_name`, `tool_result`, `tool_is_error` |
-| `TURN_START` | New turn begins | `turn_number` |
-| `TURN_END` | Turn complete | `turn_number` |
-| `ERROR` | Error occurred | `error` |
-| `CANCELLED` | User cancelled | — |
-| `USAGE_UPDATE` | Token usage update | `usage` (TokenUsage) |
-| `USER_QUESTION` | Agent asks user a question | `text`, `metadata.options` |
-| `PLAN_GENERATED` | Plan mode: plan ready | `plan_steps` |
-| `PLAN_STEP_START` | Plan mode: executing step | `plan_step_index`, `text` |
-| `PLAN_STEP_DONE` | Plan mode: step complete | `plan_step_index`, `text` |
-| `TOOL_APPROVAL_REQUEST` | Script approval needed | `tool_call_id`, `tool_name`, `tool_args`, `text` |
-| `EXPLORATION_PHASE_CHANGE` | Phase transition | `metadata.from_phase`, `metadata.to_phase` |
-| `EXPLORATION_FINDING` | Discovery logged | `text`, `metadata.category`, `metadata.address`, `metadata.relevance` |
-| `PATCH_APPLIED` | Binary patch applied | `text`, `metadata.address`, `metadata.original`, `metadata.new` |
-| `PATCH_VERIFIED` | Patch verified | `text`, `metadata.address`, `metadata.success` |
-| `SAVE_APPROVAL_REQUEST` | Save gate reached | `text`, `metadata.patch_count`, `metadata.total_bytes` |
-| `SAVE_COMPLETED` | Patches saved to file | `text`, `metadata.patch_count` |
-| `SAVE_DISCARDED` | Patches discarded | `text`, `metadata.rolled_back` |
-| `MUTATION_RECORDED` | Mutation logged for undo | `tool_name`, `text`, `metadata.reversible`, `metadata.reverse_tool` |
-| `MUTATION_UNDONE` | A record left the mutation log | `text` |
-
-Each event type has a static factory method on `TurnEvent` for clean construction (e.g., `TurnEvent.text_delta("hello")`).
-
----
-
-## Tool Framework
-
-**Files**: `rikugan/tools/base.py`, `rikugan/tools/registry.py`
-
-### `@tool` Decorator
-
-Tools are defined with the `@tool` decorator on plain functions:
-
-```python
-@tool(category="annotations", mutating=True)
-def rename_function(
-    old_name: Annotated[str, "Current function name"],
-    new_name: Annotated[str, "New name to assign"],
-) -> str:
-    """Rename a function in the database."""
-    # ... implementation
-```
-
-The decorator:
-1. Inspects the function signature using `typing.get_type_hints()`
-2. Extracts parameter descriptions from `Annotated` metadata
-3. Generates a `ToolDefinition` with JSON schema
-4. Wraps the handler with `@idasync` for IDA thread-safety
-5. Attaches the definition as `func._tool_definition`
-
-### `ToolDefinition`
-
-```python
-@dataclass
-class ToolDefinition:
-    name: str
-    description: str
-    parameters: List[ParameterSchema]
-    category: str = "general"
-    requires_decompiler: bool = False
-    mutating: bool = False              # marks tool as modifying the database
-    timeout: Optional[float] = None     # per-tool timeout in seconds
-    handler: Optional[Callable] = None
-    internal: bool = False              # hidden from the model; only Rikugan calls it
-    result_limit: Optional[int] = None  # characters allowed, if it bounds its own output
-    long_running: bool = False          # runs on its own executor
-```
-
-Key flags:
-- `mutating=True` — Triggers pre-state capture and mutation recording for undo
-- `requires_decompiler=True` — Tool is excluded if decompiler is unavailable
-- `timeout` — Per-tool timeout; wrapped in `ThreadPoolExecutor` during execution
-
-### `ToolRegistry`
-
-Central registry for all tool definitions. Core methods:
-- `register(defn)` / `register_module(module)` — Registration
-- `execute(name, args)` — Dispatches to handler with argument coercion and timeout
-- `get(name)` → `ToolDefinition` — Lookup
-- `to_provider_format()` → list of JSON schemas for LLM
-
-Argument coercion in `execute()`:
-- Hex strings (`"0x401000"`) → `int` for integer parameters
-- `"true"`/`"false"` strings → `bool`
-- `0`/`1` integers → `bool`
-
-Timeout wrapping:
-```python
-context = contextvars.copy_context()   # carries the active chat onto the worker
-executor = _long_running_executor if defn.long_running else _executor
-future = executor.submit(lambda: context.run(handler, **arguments))
-result = future.result(timeout=timeout)  # default 30s
-```
-
-### Tool Categories
-
-Each host provides ~56 tools organized by category:
-
-| Category | Examples |
-|----------|----------|
-| Navigation | `get_cursor_position`, `jump_to`, `get_name_at` |
-| Functions | `list_functions`, `search_functions`, `get_function_info` |
-| Strings | `list_strings`, `search_strings` |
-| Database | `list_segments`, `list_imports`, `list_exports`, `read_bytes` |
-| Disassembly | `read_disassembly`, `read_function_disassembly` |
-| Decompiler | `decompile_function`, `get_pseudocode` |
-| Xrefs | `xrefs_to`, `xrefs_from`, `function_xrefs` |
-| Annotations | `rename_function`, `set_comment`, `set_type` |
-| Types | `create_struct`, `modify_struct`, `set_function_prototype` |
-| Scripting | `execute_python` (requires approval) |
-| Microcode (IDA) | `get_microcode`, `nop_microcode` |
-| IL (BN) | `get_il`, `get_il_block`, `nop_instructions`, `redecompile_function` |
-| IL Analysis (BN) | `get_cfg`, `track_variable_ssa` |
-| IL Transform (BN) | `il_replace_expr`, `il_set_condition`, `il_nop_expr`, `il_remove_block`, `patch_branch`, `write_bytes`, `install_il_workflow` |
-| Filesystem | `read_file`, `write_file`, `edit_file`, `search_files`, `run_shell` (see [Files and Shell](#files-and-shell)) |
-
----
-
-## Pseudo-Tools
-
-Pseudo-tools are tool schemas injected into the LLM's tool list but handled directly in `_execute_tool_calls()` rather than dispatched through the registry. They use a `continue` statement to skip normal execution.
-
-### `exploration_report`
-
-Used during exploration mode to log structured findings:
-
-```json
-{
-  "category": "function_purpose|hypothesis|data_structure|constant|string_ref|import_usage|patch_result",
-  "summary": "Description of the finding",
-  "address": 4198400,
-  "function_name": "main",
-  "relevance": "high|medium|low",
-  "original_hex": "74 05",   // for patch_result only
-  "new_hex": "75 05"         // for patch_result only
-}
-```
-
-When `category="patch_result"`, the handler also creates a `PatchRecord` and appends it to `state.patches_applied` for the save gate.
-
-### `phase_transition`
-
-Requests a phase change in exploration mode. Validates via `ExplorationState.can_transition_to()`.
-
-### `save_memory`
-
-Persists a fact to `RIKUGAN.md` in the IDB/BNDB directory:
-```json
-{"fact": "sub_401230 is the snake initializer", "category": "function_purpose"}
-```
-
-### `spawn_subagent`
-
-Creates an isolated `SubagentRunner` with its own `SessionState`:
-```json
-{"task": "Analyze the main function", "max_turns": 5}
-```
-
----
-
-## Skill System
-
-**Files**: `rikugan/skills/loader.py`, `rikugan/skills/registry.py`
-
-### Skill Format
-
-Skills are Markdown files with YAML frontmatter:
-
-```markdown
----
-name: Malware Analysis
-description: Windows PE malware analysis workflow
-tags: [malware, windows]
-allowed_tools: [decompile_function, list_imports, search_strings]
-mode: exploration   # optional: exploration, plan
----
-Task: Analyze this binary as potential malware.
-
-## Approach
-1. Check imports for suspicious APIs...
-```
-
-### Frontmatter Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | str | Display name |
-| `description` | str | One-line description |
-| `tags` | list | Categorization tags |
-| `allowed_tools` | list | Tool whitelist (empty = all tools) |
-| `mode` | str | `"exploration"` activates exploration mode, `"plan"` activates plan mode |
-
-### Discovery
-
-`SkillRegistry.discover()` scans:
-1. Built-in skills: `rikugan/skills/builtins/*/SKILL.md`
-2. User skills: `~/.idapro/rikugan/skills/*/SKILL.md` (IDA) or `~/.binaryninja/rikugan/skills/*/SKILL.md` (BN)
-
-Reference files in `references/*.md` subdirectories are automatically appended to the skill body.
-
-### Skill Activation
-
-When a user types `/<slug>`, `_resolve_skill()` in `loop.py`:
-1. Finds the matching `SkillDefinition`
-2. Prepends the skill body to the system prompt
-3. If `allowed_tools` is set, filters the tool list
-4. If `mode: exploration`, activates exploration mode
-
-### Built-in Skills (12)
-
-| Slug | Purpose |
-|------|---------|
-| `/malware-analysis` | Windows PE malware triage |
-| `/linux-malware` | ELF malware analysis |
-| `/deobfuscation` | String decryption, CFF, opaque predicates |
-| `/vuln-audit` | Buffer overflow, format string, integer bugs |
-| `/driver-analysis` | Windows kernel driver analysis |
-| `/ctf` | CTF challenge solving |
-| `/generic-re` | General reverse engineering |
-| `/ida-scripting` | IDAPython API reference |
-| `/binja-scripting` | Binary Ninja Python API reference |
-| `/modify` | Exploration mode: autonomous binary modification |
-| `/smart-patch-ida` | IDA-specific binary patching |
-| `/smart-patch-binja` | Binary Ninja-specific binary patching |
-
----
-
-## Exploration Mode
-
-**Files**: `rikugan/agent/exploration_mode.py`, `rikugan/agent/loop.py` (`_run_exploration_mode()`)
-
-Exploration mode is a **4-phase autonomous agent flow** for binary modification:
+- **Host** (`src/common/host/Host.h`) is everything shared code needs from one open database: paths, a stable
+  database id (IDA netnode `$ rikugan`, BN metadata `rikugan_db_id`), cursor, navigation, `runOnMainThread`,
+  decompiler presence, binary summary, `registerTools`, the host's own Python, byte read/write. `IdaHost` and
+  `BnHost` implement it. Host code never leaks into `src/common`.
+- **DbContext** (`agent/DbContext.h`) is created on the UI thread when the panel first shows a database: it registers
+  the host's analysis tools and Rikugan's chat tools, and owns the chat index of that database.
+- **PanelCore** (`ui/PanelCore.h`) is the panel: a header (chat switcher, Ctrl+K command palette, new chat, overflow
+  menu), the activity strip (what the chat does now, agents, todo, goal, mode), the transcript, the agents panel
+  (Ctrl+J), the composer (slash palette, model picker on Ctrl+M, queued prompts) and the status line; the bulk
+  renamer page, the login sheet, Get Started (shown while no model can answer: sign in, API key, local server or
+  the omc agent's logins, then the model) and Settings. The hosts feed it the current database, cursor moves and
+  context-menu actions (`agent/Actions.h`: Explain, Rename, Deobfuscate, Find vulnerabilities, Suggest types,
+  Annotate, Clean microcode/IL, Xref analysis, Send to Rikugan, Smart Patch on BN, Send to Bulk Rename).
+- **Theme** (`ui/Theme.h`) derives every colour from the host's palette (IDA's and Binary Ninja's light and dark
+  themes, switched at runtime). The tool-kind, status, address, symbol and code colours come from the host's theme
+  when it names them (`setHostColors`: Binary Ninja's `getThemeColor`), else from Rikugan's defaults, all
+  contrast-corrected against the host background. The panel's stylesheet is scoped to `#rk_root`.
+- **Transcript** (`ui/transcript/`). `TranscriptModel` reduces a chat's frames, its replayed transcript and its cards
+  into flat rows: timeline nodes (you, a rikugan step, permission, phase, notices) and step rows (thinking, text, tool
+  calls with kind, address/symbol chips, Undo chip and status, a task card per batch of subagents). Consecutive calls
+  of one tool fold into a group row with their count. Streamed text is revealed a few characters per display frame
+  (a burst lands within about 100 ms), one repaint per growing row per frame. `TranscriptView` is a virtualized
+  `QListView` whose delegate paints rows from `QTextDocument`s cached per row revision and width; pending cards are
+  live widgets in their rows.
+
+## 2. Embedding libomc
+
+- `cmake/build_omc.sh` builds omc's objects with omc's own Makefile and prelinks them into one relocatable object
+  whose only globals are the `omc_*` API (`ld -r` + `objcopy --keep-global-symbols`, `-exported_symbols_list` on
+  macOS). omc's internals cannot collide with the host process; the plugin modules export only their entry points
+  (`rk_export_only`).
+- **Windows.** The hosts are MSVC programs (Qt, C++ ABI), while omc builds with MinGW-w64, so libomc stays a DLL:
+  `cmake/build_omc_win.cmake` runs omc's `make WINDOWS=1` (through WSL or MSYS2) or takes a prebuilt `libomc.dll`
+  (`OMC_LIB_DIR`, e.g. omc's Windows release), makes an MSVC import library from `libomc.def` and copies the DLL next
+  to the modules. Only the C API crosses the boundary. The plugins delay-load the DLL (`/DELAYLOAD:libomc.dll`) because
+  neither host searches the plugin's folder for dependencies: `rk::loadOmcLibrary` (`omc/OmcLibrary.h`) loads it by
+  full path at plugin init (IDA: `plugins\rikugan\libomc.dll`; Binary Ninja: `plugins\rikugan\libomc.dll` beside
+  `plugins\rikugan.dll`, since it loads every top-level DLL as a plugin), checks `omc_api_version`, and keeps it
+  loaded for the life of the process. libomc's C runtime is msvcrt.dll with its own copy of the environment, so
+  every variable omc reads (`OMC_CONFIG_DIR` …) is set through `rk::setEnv`, which also calls msvcrt's `_putenv_s`.
+  In library mode omc installs no crash handler; it adds a console control handler (inert in a GUI host), starts
+  Winsock and sets a 1 ms timer resolution.
+- The C API Rikugan calls (`OMC_API_VERSION` 2): `omc_session_new/free`, `omc_send`, `omc_abort`, `omc_free`,
+  `omc_version`, `omc_api_version`, and `omc_set_result_filter`, which hands Rikugan the text of every tool result
+  (omc's built-ins and MCP tools included) before the model, the session file and the events see it. A libomc of
+  another API version is refused at load.
+- The whole conversation with omc is its RPC protocol: JSON frames sent with `omc_send` and received through one event
+  callback per session. Rikugan uses `prompt`, `get_state`, `get_messages`, `get_last_assistant_text`, `set_model`,
+  `fork`, `set_event_filter`, `set_host_tools`, login/account commands, and the control frames `host_tool_result`,
+  `host_tool_update`, `extension_ui_response`.
+- **Host tools.** `set_host_tools` gives omc the JSON schemas of the visible `ToolSpec`s. When the model calls one,
+  omc emits `host_tool_call` and waits for a `host_tool_result` with the same id; `host_tool_cancel` aborts it.
+  Mutating, script and `Exclusive` tools are marked exclusive: omc runs them alone and in message order, the rest may
+  run in parallel.
+- **Event filter.** Each session subscribes to the frames the UI needs (turn/message/tool execution, compaction,
+  retry, queue, model and thinking changes, notices) with `messageUpdates:"delta"`; `agent_end` is not requested.
+- **AgentHome** (`omc/AgentHome.cpp`) runs once at plugin init, before the first session: it points
+  `OMC_CONFIG_DIR` at `~/.rikugan/omc`, disables local model discovery unless enabled, sets a CA bundle for hosts
+  that bundle their own libcrypto, and writes `omc/agent/config.yml` (approval mode `yolo` because Rikugan gates
+  tools itself; sleep prevention, cache warming, skill-description compression, omc memory and project MCP off),
+  `models.yml` from the custom endpoints, omc's project prompt from `prompts/omc/`, and the built-in skills.
+- **ServiceSession** is a tool-less, in-memory omc session per process for Settings (model lists, login, logout,
+  accounts). Login dialogs arrive as `extension_ui_request` frames. omc refuses to open a session without a model, and
+  Settings must work before any login exists, so it opens on `rikugan-service/settings`: a placeholder provider that
+  `models.yml` always declares without a key, which omc never counts as available or picks as a default.
+
+## 3. Threads
+
+| Thread | Runs | Never |
+|---|---|---|
+| Host UI / main thread | Qt widgets, `ChatSession`, `PanelCore`, IDA SDK calls, BN UI calls (`jump_to`) | waits on omc, a session worker or a tool worker (only exception: plugin shutdown after `Host::closing` is set) |
+| Session worker (one per `OmcSession`) | `omc_session_new/free`, every non-control `omc_send` (prompts, `compact`, `fork` block for up to a minute), mode jobs | runs on the UI thread |
+| omc event threads | the event callback: peek `"type"`, answer request waiters, queue the raw frame | blocks |
+| `ToolDispatcher` pool (8 workers, process-wide) | host tool calls through the pipeline; `Blocking` tools (`ask_user`, `spawn_subagent`) get their own thread | — |
+| Host main thread via marshalling | `MainThread` tools, pre-state readers, binary summary | — |
+
+- **Control frames** (`host_tool_result`, `host_tool_update`, `extension_ui_response`) and `omc_abort` may be sent from
+  any thread; omc handles them inline without queueing behind a running turn.
+- **Main-thread marshalling.** `onMain(host, access, f)` runs `f` inline on the main thread, otherwise posts a
+  `MainThreadCall` (IDA: `execute_sync` with `MFF_NOWAIT` and `MFF_READ`/`MFF_WRITE`, from `src/ida/sdk/`; BN:
+  `ExecuteOnMainThread`) and waits. When `Host::closing` is set, queued calls are abandoned and the caller gets
+  "Rikugan is shutting down"; a call never runs against an abandoned caller's stack. Exceptions thrown on the main
+  thread are rethrown on the worker.
+- **EventQueue** (`omc/EventQueue.h`): omc threads `push()` raw frames; the first push into an empty queue posts one
+  `DrainEvent` to the chat's QObject, which drains everything queued so far. One coalesced `postEvent` per burst, no
+  timers, nothing while idle. Other cross-thread UI updates use `QMetaObject::invokeMethod(rk::uiAnchor(), ...,
+  QueuedConnection)` guarded by `QPointer`.
+- **Cards.** Approvals, `ask_user` and mode decisions go through the chat's `ChatUi` bridge:
+  the asking worker blocks on a condition until the user answers or the call's `CancelToken` fires; the UI thread only
+  shows the card.
+- **Unload** (`util/ModuleLifetime.h`). IDA unloads `rikugan.so` / `.dll` at exit with its Qt event loop still
+  running, so no plugin thread, posted event or timer may outlive it. Background threads start through `spawnThread`;
+  results from workers are posted to `uiAnchor()`, a plugin-owned QObject that also parents module-wide timers.
+- **Shutdown (IDA).** `~RikuganPlugmod` sets `Host::closing`, deletes the panel synchronously (and with it every
+  event posted to its widgets and chats), drops the database, closes the widget, runs `ServiceSession::shutdown` and
+  `ToolDispatcher::shutdown`, then `shutdownModule(5000)`: joins the spawned threads and deletes the anchor. Closing
+  a database sets `Host::closing` first so queued main-thread work cannot touch it. Binary Ninja never unloads
+  plugins; the thread registry is never destroyed, so exiting with threads still running does not terminate.
+- **IDA events.** HT_UI and HT_IDB number their events independently (HT_UI 0 is `ui_range`, HT_IDB 0 is
+  `closebase`), so the plugin listens to each with its own listener; one shared switch closed the database whenever
+  the disassembly range changed.
+- **Crashes** (`util/CrashGuard.h`). Installed at plugin init: a fault whose instruction is in Rikugan or libomc
+  (Windows: a first-chance vectored handler; Linux/macOS: SIGSEGV/SIGBUS/SIGILL/SIGFPE checked with `dladdr`) or a
+  `std::terminate` on a Rikugan thread (every thread calls `crash::guardThread()`) writes
+  `~/.rikugan/logs/crash-log-<YYYYMMDD-HHMMSS>-<pid>.log` (reason, address as module + offset, thread, versions,
+  the faulting thread's stack), then saves a recovery copy of each open database beside that database
+  (`<db>.rikugan-recovered.i64` / `.bndb`; the database file itself keeps its last save) on the host main thread,
+  which never waits on Rikugan's threads (30 s deadline), and passes the crash on to the previous handler. Faults in
+  host code are left alone. The next start reports logs not seen yet in the host's log. IDA removes the handlers at
+  unload.
+
+## 4. Chat lifecycle
 
 ```
-EXPLORE ──→ PLAN ──→ EXECUTE ──→ SAVE
+composer -> CommandRouter::submit -> ChatSession::sendPrompt -> worker: OmcSession::prompt
+  prompt -> (omc agent loop: model, host_tool_call ...) -> prompt_result -> get_last_assistant_text
+  prompt -> (an omc command that runs without the agent: /compact ...) -> response agentInvoked:false (no prompt_result)
+omc frames -> SessionListener -> EventQueue -> ChatSession::frame -> TranscriptModel -> TranscriptView
 ```
 
-### Phase 1: EXPLORE
-
-The agent autonomously investigates the binary to understand the user's goal.
-
-- Triggered by `/modify <goal>` or `/explore <goal>` or skills with `mode: exploration`
-- Uses all analysis tools + `exploration_report` pseudo-tool + `phase_transition` pseudo-tool
-- Findings are accumulated in a `KnowledgeBase`:
-  - `relevant_functions` — discovered functions with addresses and summaries
-  - `findings` — structured findings (function_purpose, hypothesis, data_structure, etc.)
-  - `hypotheses` — extracted from findings with `category="hypothesis"`
-- Turn limit: 30 turns (`max_explore_turns`)
-- For `/modify`: Phase 1 runs as a **subagent** (isolated context window)
-- For `/explore`: Phase 1 runs inline (explore-only, no patching phases follow)
-- System addendum: `EXPLORATION_SYSTEM_ADDENDUM` guides the agent's strategy
-
-### Phase Transition Gate
-
-To move from EXPLORE → PLAN, `KnowledgeBase.has_minimum_for_planning` must be true:
-- At least 1 relevant function
-- At least 1 hypothesis
-- At least 1 hypothesis with `relevance="high"`
-
-If the gate fails, the agent receives a gap description and continues exploring.
-
-### Phase 2: PLAN
-
-The agent synthesizes findings into a concrete modification plan.
-
-- Receives `PLAN_SYNTHESIS_PROMPT` with `KnowledgeBase.to_summary()`
-- Outputs a numbered list of changes, each with target address, current/proposed behavior, patch strategy
-- Parsed into `ModificationPlan` with `PlannedChange` objects
-- Addresses extracted from step text via regex
-- User must approve the plan before execution proceeds
-- Approved plans are persisted to `RIKUGAN.md` for cross-session reference
-
-### Phase 3: EXECUTE
-
-The agent applies patches in-memory for each planned change.
-
-- Iterates over `ModificationPlan.changes`
-- Each step uses `EXECUTE_STEP_PROMPT` with the change description
-- Activates the platform-specific patching skill:
-  - IDA Pro → `smart-patch-ida`
-  - Binary Ninja → `smart-patch-binja`
-- After each patch, the agent calls `exploration_report(category="patch_result")` with `original_hex`/`new_hex`
-- This creates a `PatchRecord` in `state.patches_applied`
-- Turn limit: 20 turns (`max_execute_turns`)
-
-### Phase 4: SAVE
-
-User approval gate before persisting changes.
-
-- Emits `SAVE_APPROVAL_REQUEST` with patch count, total bytes, verification status, per-patch details
-- User responds "Save All" or "Discard All"
-- **Save**: emits `SAVE_COMPLETED`
-- **Discard**: rolls back patches by writing `PatchRecord.original_bytes` back via `execute_python`, emits `SAVE_DISCARDED`
-
-### ExplorationState
-
-```python
-@dataclass
-class ExplorationState:
-    phase: ExplorationPhase
-    knowledge_base: KnowledgeBase
-    modification_plan: Optional[ModificationPlan]
-    patches_applied: List[PatchRecord]
-    explore_turns: int
-    execute_turns: int
-    total_turns: int        # monotonic counter for UI
-    max_explore_turns: int  # default 30
-    max_execute_turns: int  # default 20
-    explore_only: bool      # True for /explore (no patching)
-```
-
-### `/explore` vs `/modify`
-
-| Aspect | `/explore` | `/modify` |
-|--------|-----------|-----------|
-| Phases | EXPLORE only | EXPLORE → PLAN → EXECUTE → SAVE |
-| Subagent | No (inline) | Yes (Phase 1 in subagent) |
-| Patching | No | Yes |
-| Knowledge base | Accumulated, returned to caller | Accumulated, passed to Phase 2 |
-
----
-
-## Plan Mode
-
-**Files**: `rikugan/agent/plan_mode.py`, `rikugan/agent/loop.py`
-
-Plan mode is a simpler two-step workflow: **plan first, then execute**.
-
-Triggered by `/plan <message>`.
-
-### Flow
-
-1. **Plan Generation** — LLM receives `_PLAN_GENERATION_PROMPT` and outputs a numbered list
-2. **Plan Parsing** — `parse_plan()` extracts numbered steps from the text
-3. **User Approval** — `PLAN_GENERATED` event; user approves or rejects
-4. **Step Execution** — For each step:
-   - Emit `PLAN_STEP_START`
-   - Run a full turn cycle with `_STEP_EXECUTION_PROMPT`
-   - Emit `PLAN_STEP_DONE`
-
-Plan mode is orthogonal to exploration mode. `/plan` does not enter exploration phases.
-
----
-
-## Subagents
-
-**File**: `rikugan/agent/subagent.py`
-
-Subagents are isolated `AgentLoop` instances with their own `SessionState`. They keep the parent's context window clean from verbose tool output.
-
-### `SubagentRunner`
-
-```python
-class SubagentRunner:
-    def run_task(self, task, max_turns=20) -> Generator[TurnEvent, None, str]:
-        # General-purpose: returns final text
-        loop = AgentLoop(provider, tools, config, fresh_session)
-        for event in loop.run(augmented_task):
-            yield event
-        return final_text
-
-    def run_exploration(self, user_goal, max_turns=30) -> Generator[TurnEvent, None, KnowledgeBase]:
-        # Phase 1 specific: returns KnowledgeBase
-        loop = AgentLoop(provider, tools, config, fresh_session)
-        for event in loop.run(f"/explore {user_goal}"):
-            yield event
-        return loop.last_knowledge_base
-```
-
-### `spawn_subagent` Pseudo-Tool
-
-The LLM can also spawn subagents via the `spawn_subagent` pseudo-tool:
-
-```json
-{"task": "Analyze the main function", "max_turns": 5}
-```
-
-The parent loop creates a `SubagentRunner`, delegates all events to the UI, and receives only the compact text summary.
-
-### Knowledge Base Transfer
-
-When a subagent running in explore mode finishes:
-1. `_clear_exploration_state()` saves the `KnowledgeBase` to `_last_knowledge_base`
-2. The parent accesses it via the `last_knowledge_base` property
-3. The parent populates its own `ExplorationState.knowledge_base` from the subagent's results
-4. Phases 2-4 proceed in the parent with a clean context window
-
----
-
-## Mutation Tracking and Undo
-
-**File**: `rikugan/agent/mutation.py`
-
-Every mutating tool call (`defn.mutating=True`) is recorded on `SessionState.mutation_log` for undo support. The log lives on the session because an `AgentLoop` is built per user message, and `/undo` is itself a user message, so a log owned by the loop would always be empty by the time it was read. `AgentLoop._mutation_log` is a property delegating to it, and subagents share the same list. It is not persisted: a reverse call only means something against a live database.
-
-### `MutationRecord`
-
-```python
-@dataclass
-class MutationRecord:                    # rikugan/core/types.py
-    tool_name: str                       # e.g., "rename_function"
-    arguments: dict[str, Any]            # original arguments
-    reverse_tool: str                    # tool to call for undo
-    reverse_arguments: dict[str, Any]    # arguments for undo
-    timestamp: float
-    description: str                     # human-readable
-    reversible: bool = True
-    irreversible_reason: str = ""        # shown in /undo's reply and the panel tooltip
-```
-
-### `build_reverse_record()`
-
-`_REVERSE_BUILDERS` generates reverse operations for tools where that is possible, and `_KNOWN_IRREVERSIBLE` lists the rest. `tests/agent/test_mutation_contract.py` fails for any mutating tool in neither.
-
-| Tool | Reverse Strategy |
-|------|-----------------|
-| `rename_function` | Restore the name read through `read_function_name` |
-| `rename_variable` | Swap `old_name` ↔ `new_name` |
-| `rename_address` | Restore the name read through `get_name_at`. An address that had none is recorded as non-reversible |
-| `set_comment`, `set_function_comment` | Write back the comment read through `read_comment` / `read_function_comment`, in the same slot. Writing an empty one is how both hosts remove it |
-| `set_pseudocode_comment` | The same, through `get_pseudocode_comment` (IDA only) |
-| `set_function_prototype` | Write back the type read through `read_function_prototype`. A function with none is recorded as non-reversible |
-| Everything in `_KNOWN_IRREVERSIBLE` | **Not reversible** (`reversible=False`) |
-
-`tests/agent/test_mutation_contract.py` also derives arguments from each tool's real parameters, and checks that every getter and reverse call is one that tool accepts, in both hosts. `tests/agent/test_undo_against_hosts.py` runs each round trip through the real tools over a fake database.
-
-### `capture_pre_state()`
-
-Calls getter tools before the mutation. The `read_*` readers are `internal`, so they add nothing to the tool list sent to the model, and return raw values, since `/undo` passes them straight back to the setter. If a read fails, it records `pre["_capture_failed"]`, and the mutation is logged as non-reversible with that reason rather than failing at undo time. A reader's "there is nothing" message must not be taken for a value: `get_name_at` says "No name at 0x...", which would otherwise become the name.
-
-`set_type`, `propagate_type` and `apply_type_to_variable` need a type-at-address reader that neither host has, so they stay non-reversible.
-
-### `/undo [N]`
-
-The `/undo` command runs on a new loop over the same session:
-1. Parses the count (default 1)
-2. Takes records from the end of the log, newest first
-3. A non-reversible record is dropped with its reason
-4. Otherwise calls the reverse tool. On success the record is popped. On `ToolError` it **stays and undo stops**: the mutation is still applied, and carrying on would reverse older ones out of order
-5. `UndoNoLongerPossible` means a retry cannot help (a file changed since, a discarded backup), so the record is dropped and older undos continue
-6. Yields `MUTATION_UNDONE` for each record that left, then a summary
-
-Analysis tools report failure by returning text rather than raising, so `mutation_succeeded()` recognises how each reversible tool opens its message when it worked, and anything else counts as failed. It applies both ways: a reversal that failed keeps its record, and a mutation that failed adds none. A new reversible tool has to open with one of `_SUCCESS_PREFIXES`.
-
-### UI Integration
-
-- `MutationLogPanel` (in a horizontal `QSplitter` alongside the chat) lists the **active chat's** log. There is one panel per window and one log per chat, so `RikuganPanelCore._sync_mutation_panel()` reads the log rather than accumulating events, on `MUTATION_RECORDED`, `MUTATION_UNDONE`, a tab switch, a database change and the end of a turn. The last catches silent subagents, whose events do not arrive
-- "Undo Last" button submits `/undo 1` through the agent loop
-
----
-
-## Files and Shell
-
-**Files**: `rikugan/core/workspace.py`, `rikugan/core/artifacts.py`, `rikugan/core/chat_context.py`, `rikugan/tools/filesystem.py`, `rikugan/tools/file_search.py`, `rikugan/tools/shell.py`
-
-Registered in both hosts, category `filesystem`. Neither host marshals this category onto its main thread. Per-chat state is `SessionState.files` (`FileAccess`), shared with subagents: the workspace, artifact store, read ledger and consent answer. Handlers find their chat through a context variable, which `AgentLoop._run_tool` sets and the registry carries onto the worker thread.
-
-### Workspace
-
-`SessionControllerBase.start_agent` builds a `Workspace` on the UI thread each turn, since IDA's path queries are main-thread only and a Binary Ninja view can change path. Roots are the binary's directory, `<config>/scratch/<db_instance_id>/` (addressed as `scratch/`) and `filesystem_extra_roots`. A binary directory that is the user's home or an ancestor of it is not used. See the [safety rules in AGENTS.md](AGENTS.md#filesystem-and-shell-safety).
-
-### Editing
-
-| Rule | Why |
-|------|-----|
-| Read before write | A session ledger of `path -> st_mtime_ns`. Refuses a file not read, or changed since. Prevents clobbering content the model never saw |
-| Exact match only | No regex, normalization or fuzzy application. A tool that sometimes guesses right is worse than one that fails loudly |
-| Unique by default | More than one match fails and lists every line number, or `replace_all` |
-| One diagnosis on failure | Names copied line numbers or differing whitespace, without applying anything |
-| Line endings kept | A CRLF file's strings are matched as CRLF, since `read_file` hides the `\r` |
-| Atomic | Temp file plus `os.replace()`, keeping the mode |
-
-### Undo for files
-
-Each change copies the old file to `scratch/.backups/` (capped at 200 files / 100 MB, oldest dropped) and appends a `MutationRecord` whose reverse is `restore_file_backup`, an `internal` tool: an agent able to call it could silently revert the user's edits. Restoring also restores the backup's mtime, which is what the previous edit recorded, so a chain of edits undoes one at a time. A file changed since is left alone and reported. What `run_shell` does is not undoable.
-
-### Oversized output
-
-`format_large_result` renders anything over budget (20,000 characters) as numbered head and tail, 60/40, with a notice directly under the title:
-
-```
-=== build.log ===
-⟦Showing lines 1-246 and 9936-10181 of 10181; 9,689 middle lines (1.8MB) elided. Continue with read_file("artifact://64", offset=247)⟧
-```
-
-The rest goes to an in-memory `ArtifactStore` (2 MB each, 8 MB per chat, 32 artifacts, least recently used dropped, ids never reused). Past 2 MB only both ends are saved, the notice says so, and a read landing in that gap says so too. The notice comes first because old tool results are later cut to their first 500 characters. These tools' results also get more room in `SessionState._truncate_results`: without it the model could not hold more than about 600 lines of a file.
-
-### Search and shell
-
-`search_files` uses ripgrep when `shutil.which("rg")` finds it and a Python scan otherwise, with the same rows from both. It names the engine in its result, because their regex dialects differ. Neither follows symlinks, and a search that stops early says why.
-
-`scratch/` means the agent's scratch directory only to the file tools. A shell would read it as a folder inside its working directory, so a file just written looks missing, and `mkdir scratch` leaves a stray folder beside the sample. `run_shell` therefore refuses that use before anything runs, unless such a folder exists, and exports `$SCRATCH`. `write_file` and the system prompt state the real paths.
-
-`run_shell` runs with `shell=True`, no stdin, its own process group and a timeout clamped to 240 s. Timeout and Stop kill the group. Its tool timeout is longer than that, since the registry's cannot stop a thread and would orphan the process. Capture keeps the head and tail of each stream and keeps draining past the limit, so a chatty command cannot block on a full pipe.
-
----
-
-## Context Window Management
-
-**File**: `rikugan/agent/context_window.py`
-
-### `ContextWindowManager`
-
-Tracks token usage and compacts the conversation when approaching limits.
-
-```python
-class ContextWindowManager:
-    max_tokens: int           # from config (default 128000)
-    compaction_threshold: 0.8 # compact when usage > 80%
-
-    def should_compact() -> bool
-    def compact_messages(messages) -> List[Message]
-    def estimate_tokens(text) -> int  # ~3.5 chars/token heuristic
-```
-
-### Compaction Strategy
-
-When `should_compact()` returns True:
-1. Keep the first message (system/initial)
-2. Keep the last 4 messages (recent context)
-3. Summarize all middle messages into one `[Context summary]` message
-
-### Per-Message Truncation
-
-`SessionState._truncate_results()` caps tool results to prevent individual messages from consuming too much context. Truncated results include `[...N chars omitted]` markers.
-
-### Integration with AgentLoop
-
-At the top of each turn in `run()`:
-```python
-if self._context_manager.should_compact():
-    messages = self._context_manager.compact_messages(messages)
-```
-
----
-
-## Persistent Memory
-
-**Files**: `rikugan/agent/system_prompt.py`, `rikugan/agent/loop.py`
-
-### RIKUGAN.md
-
-A per-binary Markdown file stored alongside the IDB/BNDB. It acts as cross-session memory.
-
-- **Location**: `<idb_directory>/RIKUGAN.md`
-- **Loading**: First 200 lines loaded into the system prompt at the start of every session
-- **Writing**: Via the `save_memory` pseudo-tool or plan persistence
-
-### `save_memory` Pseudo-Tool
-
-The LLM can persist facts:
-```json
-{"fact": "sub_401230 is the snake initializer, length at +0x1A", "category": "function_purpose"}
-```
-
-Categories: `function_purpose`, `architecture`, `naming_convention`, `prior_analysis`, `general`.
-
-### Plan Persistence
-
-Approved plans from exploration mode are saved to RIKUGAN.md with a timestamp, preserving analysis context across sessions.
-
-### `/memory` Command
-
-Shows the current contents of RIKUGAN.md in the chat.
-
----
-
-## Session Management
-
-**Files**: `rikugan/state/session.py`, `rikugan/state/history.py`, `rikugan/ui/session_controller_base.py`
-
-### `SessionState`
-
-```python
-@dataclass
-class SessionState:
-    id: str                        # unique hex ID
-    created_at: float
-    messages: List[Message]        # full conversation history
-    total_usage: TokenUsage        # cumulative token usage
-    last_prompt_tokens: int        # most recent prompt size
-    current_turn: int
-    is_running: bool
-    provider_name: str
-    model_name: str
-    idb_path: str
-    metadata: Dict[str, str]
-```
-
-Key methods:
-- `add_message(msg)` — Appends and updates token tracking
-- `get_messages_for_provider(context_window)` — Returns sanitized, trimmed messages
-- `_sanitize()` — Patches orphaned `tool_use` blocks with synthetic error results
-- `_truncate_results()` — Caps tool result sizes
-- `_trim_to_budget()` — Drops oldest messages if over budget
-
-### Multi-Tab Sessions
-
-`SessionControllerBase` manages multiple sessions:
-
-```python
-class SessionControllerBase:
-    _sessions: Dict[str, SessionState]  # tab_id → session
-    _active_tab_id: str
-
-    def create_tab() -> str
-    def close_tab(tab_id)
-    def switch_tab(tab_id)
-    def fork_session(source_tab_id) -> Optional[str]  # deep copy
-```
-
-### Session Fork
-
-`fork_session()` creates a deep copy of a session's messages and state into a new tab. The forked session gets `metadata["forked_from"]` set to the source session ID. Useful for branching analysis from a checkpoint.
-
-### Persistence
-
-`SessionHistory` handles save/restore:
-- Sessions are JSON-serialized to `<config_dir>/rikugan/sessions/`
-- Auto-saved after each agent turn (if `checkpoint_auto_save` is enabled)
-- Restored per-file when the same IDB/BNDB is reopened
-- Full round-trip: messages, token usage, tool calls, tool results all preserved
-
----
-
-## MCP Integration
-
-**Files**: `rikugan/mcp/client.py`, `rikugan/mcp/bridge.py`, `rikugan/mcp/manager.py`
-
-### Architecture
-
-```
-mcp.json config → MCPManager → MCPClient (per server) → subprocess (stdio)
-                      ↓
-                 MCPBridge → ToolRegistry
-```
-
-### MCPClient
-
-Communicates with an MCP server subprocess via JSON-RPC 2.0 + Content-Length framing.
-
-Key features:
-- **Heartbeat**: Background thread pings the server every 30s. Marks `_healthy=False` on failure
-- **`is_healthy` property**: Returns False if heartbeat failed or process died
-- **Per-request timeout**: Configurable default (from `MCP_DEFAULT_TIMEOUT`)
-- **Tool discovery**: `tools/list` RPC call at startup populates `_tools`
-
-### MCPBridge
-
-Converts MCP tool schemas to `ToolDefinition` objects and registers them in the `ToolRegistry` with the prefix `mcp_<server>_<tool>`.
-
-### `/mcp` Command
-
-Shows the health status of all configured MCP servers (running, healthy, tool count).
-
----
-
-## Provider Layer
-
-**Files**: `rikugan/providers/base.py`, `rikugan/providers/registry.py`, `rikugan/providers/*.py`
-
-### `LLMProvider` ABC
-
-```python
-class LLMProvider(ABC):
-    def chat(self, messages, tools, temperature, max_tokens, system) -> Message
-    def chat_stream(self, messages, tools, ...) -> Generator[StreamChunk]
-    def list_models() -> List[ModelInfo]
-```
-
-### Providers
-
-| Provider | File | Notes |
-|----------|------|-------|
-| Anthropic (Claude) | `anthropic_provider.py` | OAuth auto-detection, prompt caching |
-| OpenAI | `openai_provider.py` | Standard OpenAI SDK |
-| Gemini | `gemini_provider.py` | google-genai SDK |
-| Ollama | `ollama_provider.py` | Local inference |
-| OpenAI-Compatible | `openai_compat.py` | Custom API base |
-
-### Prompt Caching (Anthropic)
-
-`cache_control: {"type": "ephemeral"}` is set on:
-1. The system prompt (stable across turns)
-2. The last tool result message
-3. The last user message
-
-This enables Anthropic's server-side prompt caching for 2-10x cost reduction on long conversations.
-
-### Retry Logic
-
-In `_stream_llm_turn()`:
-- `RateLimitError` triggers exponential backoff (1s, 2s, 4s) up to 3 retries
-- `ProviderError` with `retryable=True` follows the same pattern
-- User sees "Rate limited, retrying in Ns..." via `TEXT_DELTA` events
-
----
-
-## System Prompt Architecture
-
-**Files**: `rikugan/agent/system_prompt.py`, `rikugan/agent/prompts/`
-
-### Prompt Structure
-
-```
-┌─────────────────────────────┐
-│  Host-specific base prompt  │ ← ida.py or binja.py
-│  (tool usage guidelines,    │
-│   discipline, safety)       │
-├─────────────────────────────┤
-│  Persistent Memory          │ ← RIKUGAN.md (first 200 lines)
-├─────────────────────────────┤
-│  Current Binary info        │ ← binary name, arch, entry point
-├─────────────────────────────┤
-│  Current Position           │ ← address + function name
-├─────────────────────────────┤
-│  Available Tools            │ ← comma-separated tool names
-├─────────────────────────────┤
-│  Active Skill               │ ← skill body (if any)
-├─────────────────────────────┤
-│  Exploration Addendum       │ ← only during exploration mode
-└─────────────────────────────┘
-```
-
-### Shared Prompt Sections (`prompts/base.py`)
-
-- `DISCIPLINE_SECTION` — "Do exactly what was asked"
-- `RENAMING_SECTION` — Renaming/retyping guidelines
-- `ANALYSIS_SECTION` — Analysis approach
-- `SAFETY_SECTION` — Safety guidelines
-- `TOKEN_EFFICIENCY_SECTION` — Prefer search over listing
-- `CLOSING_SECTION` — Final reminders
-
----
-
-## UI Layer
-
-**Files**: `rikugan/ui/panel_core.py`, `rikugan/ui/chat_view.py`, `rikugan/ui/message_widgets.py`
-
-### `RikuganPanelCore`
-
-The main Qt widget. Layout:
-
-```
-┌─────────────────────────────────────────────┐
-│ Tab Bar (+ button, close buttons)           │
-├────────────────────────┬────────────────────┤
-│                        │                    │
-│   QTabWidget           │  MutationLogPanel  │
-│   (ChatView per tab)   │  (toggle-able)     │
-│                        │                    │
-├────────────────────────┴────────────────────┤
-│ [InputArea] [Send] [Stop] [New] [Export]    │
-│             [Settings] [Mutations]          │
-├─────────────────────────────────────────────┤
-│ ContextBar (model name, token count)        │
-└─────────────────────────────────────────────┘
-```
-
-### Event Polling
-
-A `QTimer` fires every 50ms, calling `_poll_events()`:
-1. Dequeues up to 20 events from `BackgroundAgentRunner`
-2. Routes each to `ChatView.handle_event()`
-3. Checks for `USER_QUESTION` / `SAVE_APPROVAL_REQUEST` to enable input
-4. Updates token display on `USAGE_UPDATE`
-5. Refreshes `MutationLogPanel` on `MUTATION_RECORDED` and `MUTATION_UNDONE`
-
-### Tool review
-
-`ToolCallWidget` builds its expanded view on first open, since most cards are never opened. `tool_review.build_review()` turns a call's JSON into what it means, and `ToolReviewView` renders it, also on `ToolApprovalWidget`:
-
-| Tool | Shown as |
-|------|----------|
-| `write_file` | Highlighted file contents, by extension |
-| `edit_file` | Line diff, with `-`/`+` in the gutter and tinted lines |
-| `execute_python`, `run_shell` | Highlighted code |
-| `read_file`, `search_files` | What it covers: range, glob, mode |
-| Anything else | The raw arguments |
-
-Results lose the sanitizer's wrapper (`unwrap_tool_result`), which is for the model. `code_view.scan_line()` is free of Qt, so its behaviour is tested directly. It reads each line with one pattern, so the token that starts first wins, and carries state across lines for docstrings and block comments. Layout needs real Qt, which `tests/tools/test_tool_review.py::TestUnderRealQt` runs in a subprocess, because the rest of the suite has stubs where Qt should be.
-
-### `ChatView`
-
-Scrollable chat area. Renders `TurnEvent` → widget:
-
-| Event | Widget |
-|-------|--------|
-| `TEXT_DELTA` / `TEXT_DONE` | `AssistantMessageWidget` (Markdown rendered) |
-| `TOOL_CALL_*` | `ToolCallWidget` (collapsible, syntax-highlighted) |
-| `TOOL_RESULT` | Updates `ToolCallWidget` result section |
-| `TURN_START` | `ThinkingWidget` (animated dots) |
-| `ERROR` | `ErrorMessageWidget` |
-| `PLAN_GENERATED` | `PlanView` (step list with status indicators) |
-| `TOOL_APPROVAL_REQUEST` | `ToolApprovalWidget` (Allow/Deny buttons) |
-| `EXPLORATION_PHASE_CHANGE` | `ExplorationPhaseWidget` |
-| `EXPLORATION_FINDING` | `ExplorationFindingWidget` |
-
-Tool call batching: consecutive calls to the same tool are merged into a `ToolBatchWidget` to reduce visual noise. A preview budget of 3 tool previews per turn prevents UI clutter.
-
-### `MutationLogPanel`
-
-Side panel showing mutation history:
-- `MutationEntryWidget` per mutation — shows timestamp, description, reversibility indicator, tool badge
-- "Undo Last" button emits `undo_requested` signal → submits `/undo 1`
-- Count label updates dynamically
-
----
-
-## Thread Safety Model
-
-### Background Thread
-
-`BackgroundAgentRunner` runs the agent loop in a daemon thread. All `TurnEvent` objects are passed to the UI via `queue.Queue`.
-
-### IDA API Marshalling
-
-IDA Pro requires all API calls on the main thread. The `@idasync` decorator in `core/thread_safety.py` marshalls calls:
-- If already on main thread: execute directly
-- If on background thread: schedule via `ida_kernwin.execute_sync()` and wait
-
-Binary Ninja tools run directly — BN's API is thread-safe.
-
-### User Answer/Approval Queues
-
-Two `queue.Queue(maxsize=1)` instances replace the old `threading.Event` + mutable field pattern:
-- `_user_answer_queue` — For `USER_QUESTION` responses (plan approval, save gate, etc.)
-- `_tool_approval_queue` — For `execute_python` approval
-
-The agent waits with `queue.get(timeout=0.5)` in a loop, checking for cancellation between attempts. The UI thread calls `put()`. No race condition possible.
-
----
-
-## Error Handling and Retry
-
-### Exception Hierarchy (`core/errors.py`)
-
-```
-RikuganError
-├── AgentError          — loop-level errors
-├── CancellationError   — user cancelled
-├── ProviderError       — LLM API errors
-│   └── RateLimitError  — HTTP 429
-├── ToolError           — tool execution errors
-├── ToolValidationError — argument validation
-├── MCPError            — MCP protocol errors
-│   ├── MCPConnectionError
-│   └── MCPTimeoutError
-└── SkillError          — skill loading errors
-```
-
-### Retry Logic
-
-In `_stream_llm_turn()`:
-```python
-for attempt in range(max_retries):
-    try:
-        yield from stream
-        break
-    except RateLimitError as e:
-        wait = e.retry_after or (2 ** attempt)
-        yield TEXT_DELTA(f"Rate limited, retrying in {wait}s...")
-        time.sleep(wait)
-```
-
-### Consecutive Error Tracking
-
-`_consecutive_errors` counts sequential tool failures. After 3 consecutive errors, `_tools_disabled_for_turn` is set — the LLM receives tools as unavailable for the current turn, forcing it to respond with text instead of looping on broken calls.
-
----
-
-## Logging
-
-**File**: `rikugan/core/logging.py`
-
-### Log Outputs
-
-1. **IDA Output Window** — `IDAHandler`, INFO level, `[Rikugan] LEVEL: message`
-2. **Debug File** — `_FlushFileHandler`, DEBUG level, flushed + fsynced after every write
-   - Location: `<config_dir>/rikugan/rikugan_debug.log`
-   - Survives crashes (fsync)
-3. **Structured JSON** — `_JSONFormatter`, INFO level, JSONL format
-   - Location: `<config_dir>/rikugan/rikugan_structured.jsonl`
-   - Append mode, machine-parseable
-
-### JSON Log Format
-
-```json
-{"ts": 1709500000.123, "level": "INFO", "thread": "Thread-1", "msg": "Subagent started"}
-```
-
----
-
-## Commands Reference
-
-| Command | Description |
-|---------|-------------|
-| `/plan <msg>` | Enter plan mode: generate plan, then execute step-by-step |
-| `/modify <msg>` | Enter exploration mode: EXPLORE → PLAN → EXECUTE → SAVE |
-| `/explore <msg>` | Enter explore-only mode: autonomous read-only analysis |
-| `/memory` | Show current RIKUGAN.md contents |
-| `/undo [N]` | Undo last N mutations (default 1) |
-| `/mcp` | Show MCP server health status |
-| `/doctor` | Diagnose provider, API key, tools, skills, config issues |
-| `/<skill-slug>` | Activate a skill (e.g., `/malware-analysis`, `/ctf`) |
-
----
-
-## Data Flow Diagrams
-
-### Normal Turn
-
-```
-User "Explain main()"
-  │
-  ├─→ SessionState.add_message(USER)
-  ├─→ build_system_prompt()
-  ├─→ provider.chat_stream(messages, tools, system)
-  │     ├─→ TEXT_DELTA "The main function..."
-  │     ├─→ TOOL_CALL_START "decompile_function"
-  │     ├─→ TOOL_CALL_DONE
-  │     └─→ USAGE_UPDATE
-  ├─→ ToolRegistry.execute("decompile_function", {"name": "main"})
-  │     └─→ TOOL_RESULT "int main() { ... }"
-  ├─→ SessionState.add_message(TOOL)
-  ├─→ provider.chat_stream(messages + tool_result)
-  │     ├─→ TEXT_DELTA "This function initializes..."
-  │     └─→ TEXT_DONE
-  └─→ TURN_END
-```
-
-### Exploration Mode (`/modify`)
-
-```
-User "/modify Change score from 100 to 999"
-  │
-  ├─→ Phase 1: EXPLORE (subagent)
-  │     ├─→ SubagentRunner.run_exploration()
-  │     │     ├─→ [subagent uses tools, logs findings]
-  │     │     ├─→ exploration_report → KnowledgeBase
-  │     │     └─→ phase_transition("plan") → KnowledgeBase returned
-  │     └─→ Parent receives KnowledgeBase summary (~1-2KB)
-  │
-  ├─→ Phase 2: PLAN
-  │     ├─→ PLAN_SYNTHESIS_PROMPT + KB summary → LLM
-  │     ├─→ Parse plan → ModificationPlan
-  │     └─→ User approves plan
-  │
-  ├─→ Phase 3: EXECUTE
-  │     ├─→ For each PlannedChange:
-  │     │     ├─→ EXECUTE_STEP_PROMPT → LLM
-  │     │     ├─→ Smart patch skill activated
-  │     │     ├─→ execute_python (with approval) → patch bytes
-  │     │     ├─→ redecompile_function → verify
-  │     │     └─→ exploration_report(category="patch_result") → PatchRecord
-  │     └─→ All patches applied
-  │
-  └─→ Phase 4: SAVE
-        ├─→ SAVE_APPROVAL_REQUEST → User
-        ├─→ "Save All" → write to file → SAVE_COMPLETED
-        └─→ "Discard All" → restore original bytes → SAVE_DISCARDED
-```
-
-### Mutation Tracking
-
-```
-LLM calls rename_function(old="sub_401000", new="main")
-  │
-  ├─→ capture_pre_state() → {} (no pre-state needed for renames)
-  ├─→ ToolRegistry.execute("rename_function", {...})
-  ├─→ build_reverse_record() → MutationRecord(
-  │     reverse_tool="rename_function",
-  │     reverse_args={"old_name": "main", "new_name": "sub_401000"})
-  ├─→ session.mutation_log.append(record)
-  └─→ MUTATION_RECORDED event → UI (MutationLogPanel)
-
-User "/undo" (a new AgentLoop over the same session)
-  │
-  ├─→ ToolRegistry.execute("rename_function", {"old_name": "main", "new_name": "sub_401000"})
-  ├─→ Pop the record from session.mutation_log
-  ├─→ MUTATION_UNDONE event → UI (MutationLogPanel)
-  └─→ TEXT_DONE "Undid 1 mutation(s)."
-```
+- A chat is a `ChatEntry` in `<sessions>/<db id>/chats.json` (id, omc session file, title, timestamps, fork parent).
+  The omc session file is written lazily by omc after the first answer. The title starts as the first prompt; omc
+  names the session after its first exchange (as omc and omp do: a short side request, then a `notice` with level
+  `title`) and the chat takes that name unless the user renamed it (`title_by_user`; the name is then set on the
+  session when it opens, so omc does not rename it). Sessions that are not chats are named when they open.
+- `<sessions>/<db id>/database.json` records the host and the file the database came from (`RecentSessions`,
+  rewritten when Binary Ninja saves it elsewhere). With no database open, a host that gives the panel a file opener
+  (`PanelCore::setFileOpener`, Binary Ninja) lists "Open a binary…" and that host's newest chats. Picking a chat
+  opens its file, or focuses the tab that already shows it, and selects that chat. A binary that was never saved as
+  a database has no stored id, so the panel tells the host which id to take for that file (`expectSession`).
+- The omc session opens lazily (`ensureOpen`) with: cwd = `~/.rikugan/scratch/<db id>/`, session dir =
+  `<sessions>/<db id>/`, `resume` = the chat's session file, the configured model and thinking level, the system
+  prompt, the omc built-in allow-list and the host tools. On resume the transcript is replayed from `get_messages`
+  (context blocks stripped).
+- **Ownership.** Chats live in `ui/ChatHub` (one per process, under the module anchor), keyed by database. A panel
+  attaches to the chats of the database it shows and detaches when it turns to another one, so a chat keeps running
+  while the user looks at another file, and IDA's dock can close and reopen without touching it. The host closes a
+  database's chats when it closes that database (`ChatHub::closeDatabase`), and all of them at unload (`closeAll`).
+  Closing a chat cancels its mode job and every subagent it started. Host-call cancels are keyed by session and call
+  id (omc numbers calls per session), so one chat's Stop never reaches another chat's tool.
+- **Subagent conversations.** Every subagent frame is kept in `SubagentRegistry` (`appendFrame`, until "Clean"
+  removes the agent). "Open chat" builds a `TranscriptModel` from them (`observeFrames`: the frames so far, then each
+  new one, posted to the UI once per burst), so the transcript shows the agent's run like a chat. The composer
+  steers it, and the chat switcher lists each chat's agents under it.
+- **A message typed during a subagent.** `ChatContext::steerPending` counts the user's messages the agent has not
+  taken. A subagent started by `spawn_subagent` or `ask_database` stops when one arrives and its call returns what it
+  had so far, marked as cut short, so the agent reads the message at its next step (omc only hands steering over
+  between tool calls). Mode subagents and manual ones keep going.
+- **Live-session limit:** at most 4 chat sessions are open per process. `ChatSession::touch` keeps an LRU; idle chats
+  beyond the limit close and resume from their session file on demand.
+- A message typed while the chat works is steered into the running agent (omc `steer`), which reads it at its next
+  turn. It shows as queued until omc's `queue_update` says the agent took it. Commands that run a job of their own
+  (modes, `/undo`, `/doctor`, a new goal) wait in the queue and go through `CommandRouter` when the run ends; anything
+  the run did not take goes out as the next prompt. Stop aborts the turn and drops both. When a run ends, cards still
+  open are answered "cancelled" so nothing keeps the composer locked.
+- A queued message's **Send now** stops the run and sends that message first, the rest after it.
+- **Other databases** (`agent/Databases.h`, Binary Ninja): every `DbContext` registers itself. `list_databases`
+  lists them, `open_database` opens a file in a new tab (`databases::setTabOpener`: `UIContext::openFilename`, then
+  waits for that file's `OnAfterOpenFile`; the user approves the path first), and `ask_database` runs a subagent on
+  another database with that database's tools in a read-only phase and its own undo list. They are offered only where
+  the host can open another tab, and not to subagents.
+- A session omc refused to start (no model yet) is opened again on the next prompt, so a model connected afterwards
+  works without restarting the host. Logins and keys reach omc at once: Rikugan makes it re-read `auth.json`.
+- Each typed prompt gets a `<rikugan_context>` block (cursor address, function) unless `auto_context` is off or the
+  profile hides metadata; text starting with `/` is sent bare so omc recognises its commands.
+- After each prompt the worker runs `AuthSync::run()` and posts `rikugan_prompt_done` with the cached state (model,
+  context usage).
+- Fork asks omc to `fork` and creates a new `ChatEntry` pointing at the copy. Changing the model sends `set_model`,
+  the thinking level `set_thinking_level`.
+- Compaction, retries and context limits are omc's (`/compact`, `/retry`, automatic compaction and retry frames are
+  shown in the chat). A command omc runs itself without the agent (`/compact`) answers the prompt with
+  `agentInvoked:false` and sends no `prompt_result`; that answer ends the prompt.
+- **What the user typed.** omc records more user messages than the user typed (goal context, async results, agent
+  steering, `[SYSTEM]` notes). `typedUserText` (`agent/ChatExport.h`) decides which ones are the user's and how they
+  read (a skill as `/<slug> args`); the live transcript, the replayed one and the Markdown export all use it.
+- **Settings changes** reach open chats (`ChatHub::settingsChanged` → `ChatSession::settingsChanged`): an idle chat
+  takes the active profile at once and closes its session, so the next prompt reopens it with the new system prompt,
+  tools and MCP servers; a busy one does the same when its run ends (tool workers read the profile while it runs).
+- **Panels and the full window.** A panel shows one database at a time. Binary Ninja: the sidebar widget, a pane
+  ("Open in pane") or the full-window tab; IDA: the dock. The header's expand button (`PanelCore::setWindowToggle`)
+  moves the chat into a window-sized tab (Binary Ninja: its own tab, one per window, and the Rikugan sidebar closes;
+  IDA: the dock tabbed beside the disassembly) and back. The full-window panel shows `ChatManager` at its right: the
+  chats of every database in `databases::all()`, with what each is doing, a "+ New chat" link per database and "Open
+  a binary…". Choosing a chat turns the panel to its database (`setDatabase`, then that chat). It refreshes once per
+  burst of `ChatHub::chatsChanged` / `databasesChanged`, only while shown. Binary Ninja registers the database of
+  every open tab when the full-window tab opens and of each file opened while it exists.
+
+### Commands
+
+| Input | Handled by |
+|---|---|
+| `/plan`, `/explore`, `/modify`, `/research` | `ModeDriver` |
+| `/undo [N]` | `MutationLog::undo` on a spawned thread (a tool row's Undo chip sends it) |
+| `/memory`, `/mcp`, `/doctor`, `/rename` | `CommandRouter` (local output) |
+| `/goal <objective>` / `pause` / `resume` / `drop` / `show` | omc's goal mode; the prompt waits for `session_settled` |
+| `/btw <question>` | omc's side question, answered beside the running turn |
+| `/export` | omc's `export_html`, next to the database (scratch dir without one) |
+| `/agents`, `/login`, `/logout`, `/new`, `/fork`, `/todo`, `/model` | `rikugan_ui_action` for the panel |
+| `/<skill> args` | omc's `/skill:<skill>`; skills with `mode: plan` / `mode: exploration` start `/plan` / `/modify` with the skill body |
+| `/compact`, `/handoff`, `/retry`, `/effort`, `/fast`, `/advisor`, `/model <id>` | passed to omc |
+| omc commands unsafe in a host process (`/move`, `/wt`, `/quit` ...) | refused with the reason |
+| any other `/command` | refused |
+
+## 5. System prompt
+
+`buildSystemPrompt` (`agent/SystemPrompt.cpp`) assembles the prompt once per omc session from embedded
+`prompts/system/**` files (order and placeholders in `prompts/MANIFEST.md`):
+
+1. `base.md` with the host's `intro`, `tool_usage` and `capabilities`.
+2. `memory.md`: the first 200 lines of `<database dir>/RIKUGAN.md` through `sanitizeMemory` (20,000-char cap).
+3. `current_binary.md`: the host's `get_binary_info` text through `sanitizeBinaryContext` (skipped when the profile
+   hides binary metadata).
+4. `available_tools.md`: visible host tools plus omc built-ins.
+5. `filesystem.md` / `shell.md` for omc's disk tools and `bash` (scratch dir, binary dir, notes dir; each kind asks the
+   user once per chat).
+6. `databases.md` when the chat can open other databases (Binary Ninja), `host_mcp.md` when the database uses
+   Binary Ninja's own MCP tools.
+7. Profile sections: singular analysis, custom instructions, restricted functions, active profile and IOC filters.
+
+Skills are listed to the model by omc itself. Mode instructions (`modes/*/explore.md`) travel in the mode's prompts
+(or a subagent's task addendum); the `<rikugan_context>` block (`contextPrefix`) is prepended to each user prompt.
+
+## 6. Tools
+
+### Kinds
+
+- **Host analysis tools** — `rk::ToolSpec`s added in `Host::registerTools` (`src/binja/tools/`,
+  `src/ida/host/tools/`, SDK-subclassing ones in `src/ida/sdk/`). Name, description and parameters are the
+  model-facing contract, kept 1:1 with the 1.x tools.
+- **Chat tools** (`agent/ChatTools.cpp`) — `ask_user`, `save_memory`, `spawn_subagent` (depth 0 only),
+  `exploration_report` and `research_note` (only while a mode shows them), and on Binary Ninja `list_databases`,
+  `open_database`, `ask_database` (depth 0 only).
+- **omc built-ins** — `read`, `write`, `edit`, `ast_edit`, `grep`, `glob`, `bash`, `web_search` and `todo` (not for
+  subagents). MCP tools come from omc too. omc asks before each disk or shell call (`tools.approval: prompt` in the
+  managed `config.yml`); `Permissions` (`agent/Permissions.h`) intercepts that question: a kind the chat (or a global
+  setting) already allows is answered at once, otherwise the transcript shows a permission card (Allow once / Allow
+  for this chat / Deny). A chat's subagents share its permissions.
+- **Binary Ninja's MCP tools** (`agent/HostMcp.cpp`, `binja/host/BnHostMcp.cpp`) — the `bn_*` tools of Binary
+  Ninja's own MCP server. Rikugan probes it with an MCP handshake whatever `ui.mcp.enabled` says, at the address in
+  Settings → MCP → Address (`binja_mcp_url`) or else Binary Ninja's `ui.mcp.port` / `ui.mcp.endpoint` (default
+  `127.0.0.1:24642/mcp`). `HostMcpBar` probes when a database or the panel shows, then after 2, 5, 10 and 30 s and
+  every 60 s until the server answers once for that database (not after an explicit no; one probe at a time, off the
+  UI thread). Server tool descriptions are clipped to 140 characters (60 per parameter). The tools are offered per
+  database once the user agrees (the panel's offer line or
+  the header's MCP button, remembered as `hostMcp` in the database's `database.json`). They are host tools with
+  the server's own schema (`ToolSpec::inputSchema`, flag `External`). One whose name does not end in a reading
+  verb (`_list`, `_get`, `_info`, `_decompile` ...) is `Mutating`, because the server sends no `readOnlyHint`.
+  While they are on, Rikugan's own host tools are hidden for that database (`chatToolVisible`) and the chat tools
+  stay. The server's active view is global, so `HostMcp::call` serializes calls and first selects the chat's view
+  (`bn_binary_view_set_active`, found by file session id). The view switching and file open/save/close tools are
+  hidden. `McpClient` speaks streamable HTTP over plain sockets (JSON or event-stream replies, chunked bodies). It
+  starts a new session when the server forgot the old one, and Stop cancels it. A system-prompt change needs a new
+  omc session, so toggling closes the database's idle sessions (they resume on demand). A busy one gets
+  `set_host_tools` at once and closes when its run ends.
+
+Flags (`tools/Tool.h`): `Mutating`, `MainThread` (IDA: every tool; BN: UI and mutating tools), `RequiresDecompiler`,
+`Cacheable`, `Script`, `Internal` (undo pre-state readers, never shown), `Exclusive`, `Blocking`, `External`
+(served by another program: Binary Ninja's MCP tools).
+
+### Pipeline (`ToolDispatcher::execute`)
+
+1. Unknown or `Internal` tool → error.
+2. Tool denied by the active profile → error.
+3. Mode phase gate: a read-only phase refuses `Mutating` and `Script` tools.
+4. `RequiresDecompiler` without a decompiler → error.
+5. `Script` tools always ask (Allow / Always allow for this chat / Deny).
+6. `approve_mutations` asks before each `Mutating` tool that is not a `Script` (Allow / Allow for this chat / Deny): a
+   script's own card, which shows its code, is its approval. The chat-wide answers, for scripts and for database
+   changes, are shared with the chat's subagents both ways.
+7. Undo pre-state captured for reversible mutations (internal readers via `runDirect`).
+8. Result cache lookup (`list_functions`, `list_strings`, `get_binary_info`, `decompile_function`, `function_xrefs`;
+   64-entry LRU per database, flushed by any successful mutation).
+9. Run — on the host main thread for `MainThread` tools. `ToolError` becomes `Error: <message>`; other exceptions
+   become `Unexpected error: ...` and are logged. A successful `Mutating` tool then calls `Host::databaseChanged`
+   (also called after `/undo`). IDA re-decompiles its open pseudocode views there, because Hex-Rays does not redraw
+   them for a change made outside them. Binary Ninja's views redraw on their own.
+10. Mutation record pushed to the chat's `MutationLog`.
+11. `stripInjectionMarkers`, then the profile's IOC filter. omc's own tools (files, shell, web, MCP servers) get the
+    same through `omc_set_result_filter` (`SessionListener::filterToolResult`).
+12. Artifact cap (`capResult`): over the tool's limit, the model gets the head (60%) and tail (40%) plus the path of
+    a file in `<scratch>/artifacts/` with the whole text, which omc's `read` can page.
+
+Partial output goes out as `host_tool_update`. The queue is bounded; overflow and shutdown answer with an error.
+
+## 7. Undo
+
+`MutationLog` (one per chat, in memory, shared with the chat's subagents):
+
+- Reversible: `rename_function`, `rename_variable`, `set_comment`, `set_function_comment`, `set_pseudocode_comment`,
+  `rename_address`, `set_function_prototype`. Their pre-state (old name, comment, prototype) is read before the call;
+  a reversible tool's success text starts with "Renamed", "Named" or "Set ".
+- Known irreversible (recorded as such, `/undo` reports "Cannot undo"): `execute_python`, type creation/application
+  tools, byte patches, IL/microcode transforms, optimizer/workflow installs, `redecompile_function`, and every
+  `Mutating` tool of Binary Ninja's MCP server. A change that cannot be undone shows no Undo chip and is not counted
+  as undoable.
+- `/undo N` pops newest first on a non-UI thread; a reverse that can never succeed (`UndoNoLongerPossible`) is dropped,
+  any other failure stops and keeps the record. The result cache is flushed after a successful undo.
+- File changes made through omc's disk tools are not undone.
+
+## 8. Modes
+
+`ModeDriver::start` runs one busy job on the chat's session worker. It sends prompts in sequence, sets the phase in
+`ChatContext` (read-only phases refuse mutations), shows mode-only tools with `set_host_tools` between prompts, counts
+`turn_start` frames to cap each phase (aborting the turn on overflow), and asks through decision cards.
+
+| Mode | Phases |
+|---|---|
+| `/plan` | plan (text-only, read-only) → approve / regenerate with feedback / cancel → execute each step (10 turns each) |
+| `/explore` | explore (read-only, `exploration_report` shown, capped by `exploration_turn_limit`) → summary injected |
+| `/modify` | explore as a subagent → plan synthesis from the knowledge base → approval → execute (≤ 20 changes, 10 turns each) → save card: Save keeps patches, Discard writes the original bytes back |
+| `/research` | explore → document (`research_note`, 15 turns) → index: Obsidian-style notes under `<database dir>/notes/<genre>/` plus `index.md` |
+
+Moving from explore to plan in `/modify` needs a `function_purpose` finding with an address and a high-relevance
+hypothesis. `ModeState` holds findings, functions, patches and notes; it is shared with the mode's subagents.
+
+A cancelled mode leaves `exploration_report` / `research_note` shown until the next prompt finishes, with a
+`ModeState` whose `cancelledNotice` they answer with ("the run was cancelled; nothing recorded"), so a "continue"
+after Stop does not end in an unknown-tool error. The next mode run clears it.
+
+## 9. Subagents
+
+omc's own `task` subagents cannot see host tools, so Rikugan runs its own (`agent/Subagents.cpp`): `runSubagent` opens
+a separate omc session (session dir `<sessions>/<db id>/subagents/`) with the parent's database, tools, approvals,
+profile and mutation log, at depth + 1 (no further `spawn_subagent`). The task is framed by `prompts/agents/
+subagent.md` plus an optional preset addendum (`network_recon`, `report_writer`) and perks. A turn cap aborts runaway
+runs. `SubagentRegistry` tracks every subagent of the process with its live progress (current tool, tool count,
+tokens, a log of up to 200 entries) for the transcript's task cards and the agents panel (tree, log, Stop, Steer,
+send the summary to the chat, "+ New agent").
+
+## 10. Bulk renamer
+
+`BulkRenamerEngine` (`agent/BulkRenamer.h`), driven by the bulk renamer page and the "Send to Bulk Rename"
+action:
+
+- **Quick:** pending functions are decompiled one by one (plus `read_disassembly` at the start), cut to 6,000 chars
+  each, packed into batches of `bulk_renamer_batch_size` functions and ≤ 180,000 prompt chars, and sent as one prompt
+  each to a tool-less, session-less omc worker session. Up to `bulk_renamer_max_concurrent` workers run at once.
+  Replies are `0x<addr> <name>` lines.
+- **Deep:** one subagent per function (10 turns), answered with `RENAME: 0x<addr> <name>`.
+- Pause, resume, cancel (aborts in-flight sessions) and Undo All (restores the original names). Each batch or function
+  is a subagent of category `bulk_rename`.
+- A rename the host answers with failure text ("No function at …", "Failed to rename") counts as failed
+  (`MutationLog::mutationSucceeded`), not done, and Undo All skips it.
+
+## 11. Settings and files
+
+`RikuganConfig` (`~/.rikugan/config.json`, `RIKUGAN_HOME` overrides the root) is shared by both hosts. The Settings
+dialog has five tabs:
+
+- **Provider** — one provider at a time, as in Rikugan 1.x: the provider list is omc's `get_login_providers` plus the
+  custom connections; its account status, Log in (the same login sheet as the panel's "Connect a provider") / Log
+  out and API key (written to `auth.json`); then its models
+  (from `get_available_models`, which lists credentialed models only) and thinking level. Custom connections (+/−)
+  hold base URL, API type, key, model ids and optionally the context window and maximum output (0: omc's default),
+  written to `models.yml` (`contextWindow` / `maxTokens` per model). Below: "Also use the logins of the omc
+  command-line agent" (AuthSync) and local model discovery. omc's setup errors are reworded for Rikugan
+  (`omc/UserErrors.h`) here and in the chat.
+- **Behavior** — auto context, restore chats on start, don't auto-load chats, session storage dir, exploration turn
+  limit, quiet retries, allow file access / shell commands without asking, approve mutations, bulk renamer batch
+  size and concurrency, and Updates: check for updates once a day (`check_for_updates`), Check now and the last
+  outcome (packaged builds only, greyed out in a tree configured without `RIKUGAN_UPDATES`).
+- **Skills** — enable/disable built-ins (removed from omc's skill dir when disabled), list user skills.
+- **MCP** — servers in omc's `mcp.json`; on Binary Ninja, the address of its own MCP server (`binja_mcp_url`).
+- **Profiles** — built-in `default` and `private`, custom profiles: denied tools (Rikugan's and omc's built-ins) and
+  functions, hide binary metadata, IOC filter categories, custom regex rules, custom instructions, singular analysis.
+
+Saving the dialog applies to open chats (see Chat lifecycle → Settings changes).
+
+| Path | Content |
+|---|---|
+| `~/.rikugan/config.json` | Rikugan settings |
+| `~/.rikugan/omc/agent/` | `auth.json` (0600), `models.yml`, `mcp.json`, `skills/`, managed `config.yml` |
+| `~/.rikugan/sessions/<db id>/` | omc session files, `chats.json`, `database.json`, `subagents/` |
+| `~/.rikugan/scratch/<db id>/` | session cwd, `artifacts/`, files the agent writes |
+| `~/.rikugan/logs/` | crash logs, `crash-log-<YYYYMMDD-HHMMSS>-<pid>.log` |
+| `~/.rikugan/update.json` | when the updater last checked for a release |
+| `<database dir>/RIKUGAN.md` | persistent memory (`save_memory`, `/memory`) |
+| `<database dir>/notes/` | `/research` notes |
+
+Built-in skills are embedded in the plugin (`cmake/embed.cmake`) and synced into `omc/agent/skills/<slug>/` with a
+`.rikugan-builtin` version marker; a user folder of the same name is never overwritten.
+
+**AuthSync** ("Use my omc logins") merges Rikugan's `auth.json` (R) with standalone omc's (O, `~/.omc/agent/`):
+providers only in O are copied to R; for an OAuth login in both, the one that expires later wins on both sides; API keys
+in both keep R's; R-only entries never go to O; nothing is deleted. Writes are atomic and 0600, and omc reloads
+credentials when R changed. It runs after each prompt, after a login and when Settings closes.
+
+**ExternalLogins** ("Use my Claude Code / Codex login", `omc/ExternalLogins.h`, asked once with the providers'
+policy links) shares the subscription logins of Claude Code (`~/.claude/.credentials.json`, the macOS keychain item
+"Claude Code-credentials" when there is no file) and the Codex CLI (`~/.codex/auth.json`) as R's `anthropic` and
+`openai-codex` OAuth credentials: imported when R has none; for the same account the later expiry wins on both sides
+(refresh tokens are single-use, so a token omc refreshed is written back to the tool's file or keychain item, other
+fields kept); an API key or another account's login in R is left alone. It runs at start, after each prompt and when
+turned on.
+
+**Updates** (`update/Update.h`, `update/Updater.h`, `ui/console/UpdateBar.h`). A release package (built with
+`RIKUGAN_UPDATES`, which gives it its package name such as `binja-linux-x86_64`) checks the GitHub releases 20 s after
+the host starts and then every hour, when a day has passed since the last check and `check_for_updates` is on. Ctrl+K
+and Settings check at once. The check is a `curl -I` on `<releases>/latest`: the page it lands on, `tag/v<version>` on
+the same site, names the release, and the package URL follows from it. A newer version shows in each panel's update
+line (Update, Release notes, Later). Update runs on a worker thread: the package and its `.sha256` downloaded with the
+system's curl (https only), the hash checked, the archive unpacked with tar into a scratch folder (regular files
+only), the package required to hold the plugin's own file (`util/ModulePath.h`) at the same relative path, and that
+file's `RIKUGAN-VERSION:` marker required to say the release's version. Then every file is staged next to its target
+as `.rikugan-new`, the old ones renamed to `.rikugan-old-<stamp>` and the new ones moved in. Any failure puts the old
+files back. On Linux and macOS the running host keeps its mapped copy. On Windows the loaded DLL can be renamed but not
+deleted, so the next start removes the leftovers. The host loads the new version after a restart. `Updater` lives on
+the UI thread and only posts results back to `uiAnchor()`. `RIKUGAN_UPDATE_URL` replaces the releases page (the tests
+serve one locally).
+
+## 12. Security model
+
+Rikugan processes adversarial binaries; strings, names and code from the sample reach the model and the UI.
+
+- **Injection.** Every tool result (host tools in `ToolDispatcher`; omc's file, shell, web and MCP tools through
+  `omc_set_result_filter`) passes `stripInjectionMarkers` (zero-width characters, role markers, chat
+  template delimiters, the Anthropic magic string, instruction-override phrases, homoglyph-normalised), then the
+  profile's IOC filter. Memory and binary context in the system prompt are sanitised and capped; the cursor function
+  name in the context block is stripped too. The system prompt's data-integrity section tells the model that tool
+  output is data, not instructions.
+- **Scripts.** `execute_python` (and any `Script` tool) always asks first, showing the code. It runs in the host's own
+  Python (IDAPython; BN's scripting instance driven line by line) after `prompts/python/guard_prelude.py`: an AST
+  blocklist and restricted builtins. The agent never runs the target binary.
+- **Disk and shell.** omc's file and shell tools ask before their first use in a chat, per kind (read, write, edit,
+  shell); "Allow for this chat" covers the chat and its subagents, and Settings can allow files or shell commands
+  without asking. They are not sandboxed.
+- **Process isolation of omc settings.** The session cwd is Rikugan's scratch dir, never the sample's directory;
+  project context files, rules and project MCP are off, so a sample tree cannot inject settings or start processes.
+  omc commands that would `chdir` the host process are refused.
+- **Credentials** live in `~/.rikugan/omc/agent/auth.json` (0600), written atomically; models.yml with endpoint keys
+  is 0600. On Windows the files inherit the user profile's ACL (the user, SYSTEM and administrators).
+
+**Residual risks.** Sanitisation is pattern-based and cannot catch every phrasing of an injection. With shell access
+granted, an injected instruction can reach `bash` with the user's privileges, and file changes are not undoable. The
+guard prelude is a blocklist inside the host's Python, not a sandbox: an approved script can do anything the host
+can. MCP servers the user configures run as the user. Binary Ninja's own MCP tools are not undoable: their
+changes stay unless the user reverts them in Binary Ninja. "Allow for this chat" on a script or database-change card
+removes that prompt for the rest of the chat.
+
+## 13. Tests
+
+- `tests/native/` (QtTest, `build/none`): omc's mock model (`../ohmyc/tests/e2e/mock_openai.py`) in a temporary home;
+  the omc bridge and managed config, AuthSync merge and Claude Code / Codex login sharing, the chat core with
+  `FakeHost` (host tool round trip, exclusivity and order, cancellation, undo, artifacts, transcript replay, local
+  commands such as `/compact`), disk/shell permissions and the profile's filtering of omc's tools, other databases,
+  Binary Ninja's MCP client (handshake, retries, description clipping, address override), the crash guard (in a child
+  process), sanitisation and IOC filters, modes (cancelled-mode tools included), the bulk renamer, settings, the
+  updater (a local release server: newer, corrupt, wrong-version and plugin-less packages, an unwritable folder, a
+  developer build), the transcript reducer and widgets offscreen (cards, chat manager, image paste).
+- `tests/ida/` (`build/ida/rikugan_ida_tooltest`): every model-visible IDA tool against a fresh idalib database of
+  `/bin/ls` (Windows: `notepad.exe`) with the cases in `tool_cases.json`, then `/undo` of a rename.
+
+## 14. Builds, CI and releases
+
+Each host links its own Qt and its own libraries at load time, so a plugin can be built where the host is not
+installed. `-DRIKUGAN_SDK_ONLY=ON` (`build.sh --sdk`, `build.ps1 -Sdk`) does that through `cmake/host_stubs.cmake`: it
+links a probe of the plugin (`<module>_probe`) with the host's symbols left unresolved (ELF `-z,defs
+--warn-unresolved-symbols`, Mach-O `-undefined,dynamic_lookup` read back with `nm -m`, MSVC `/FORCE:UNRESOLVED`), and
+`cmake/host_stubs.py` turns what it needed into stand-in libraries under the hosts' real names (`libbinaryninjaui.so.1`,
+`@rpath/libbinaryninjaui.1.dylib`, an import library on Windows, `libQt6Core.so.6` ...). Binary Ninja's core comes from
+the API's own stubs. IDA's libraries come from the SDK, and IDA's namespaced Qt (`QT::`, `_QT` in C names) is matched
+against the exports of the official Qt of the same version, so a symbol IDA would not have fails the build. The
+plugin's NEEDED list is the same as a build against the installed hosts.
+
+CI (`.github/workflows/ci.yml`) and releases (`release.yml`) run `build-tools/ci.sh` (`ci.ps1` for the MSVC steps) on
+Linux x86_64 and arm64, macOS arm64 and x86_64 and Windows x64: omc at `build-tools/omc.ref`, the native suite, both
+plugins without the hosts, zero compiler warnings, and a smoke check of each package (allowed libraries only, no RPATH,
+no debug info, only the host entry points exported, the Windows zip layout). Packages are stripped, with the debug
+information in `-symbols` packages. A tag `v<version>` that matches CMakeLists.txt and ida-plugin.json builds the 20
+packages onto a draft release, adds `SHA256SUMS` and publishes it once all are there. `install.sh` / `install.ps1` and
+the updater install from those assets.

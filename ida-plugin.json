@@ -2,30 +2,22 @@
   "IDAMetadataDescriptorVersion": 1,
   "plugin": {
     "name": "Rikugan",
-    "entryPoint": "rikugan_plugin.py",
-    "version": "1.4.0",
-    "description": "Agentic LLM reverse-engineering companion embedded directly in IDA Pro. Supports multi-provider LLMs (Anthropic, OpenAI, Google Gemini, Ollama), 60+ native tools, exploration mode with parallel subagents, natural-language binary patching, skills, and MCP server integration.",
+    "entryPoint": "rikugan",
+    "version": "2.0.0",
+    "description": "Agentic LLM reverse-engineering companion embedded directly in IDA Pro. A native plugin whose agent is libomc (oh-my-c): every provider and login omc supports, 60+ native analysis tools, plan/explore/modify/research modes, subagents, bulk renaming, skills and MCP.",
     "license": "MIT",
     "categories": [
-      "analysis",
+      "collaboration-and-productivity",
       "ui-ux-and-visualization"
     ],
     "platforms": [
-      "windows-x86_64",
       "linux-x86_64",
+      "linux-aarch64",
       "macos-x86_64",
-      "macos-arm64"
+      "macos-aarch64",
+      "windows-x86_64"
     ],
-    "idaVersions": ["9.0", "9.1", "9.2"],
-    "pythonDependencies": [
-      "anthropic>=0.39.0",
-      "openai>=1.50.0",
-      "google-genai>=1.0.0",
-      "mcp>=1.0.0",
-      "ida-domain>=0.1.0",
-      "tomli>=2.0.0",
-      "cryptography>=43.0.0"
-    ],
+    "idaVersions": ">=9.2",
     "keywords": [
       "ai",
       "llm",
@@ -44,7 +36,8 @@
     },
     "authors": [
       {
-        "name": "buzzer-re"
+        "name": "buzzer-re",
+        "email": "22428720+buzzer-re@users.noreply.github.com"
       }
     ]
   }

@@ -1,0 +1,6 @@
+[submodule "third_party/binaryninja-api"]
+	path = third_party/binaryninja-api
+	url = https://github.com/Vector35/binaryninja-api
+[submodule "third_party/ida-sdk"]
+	path = third_party/ida-sdk
+	url = https://github.com/HexRaysSA/ida-sdk

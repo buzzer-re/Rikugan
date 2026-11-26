@@ -1,1 +1,0 @@
-"""Qt-based user interface."""

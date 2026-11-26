@@ -1,67 +1,43 @@
 # Rikugan (六眼)
 
-> An agentic AI reverse-engineering assistant that runs natively inside IDA Pro and Binary Ninja.
+> A reverse-engineering agent that runs natively inside IDA Pro and Binary Ninja.
 
-Rikugan is a plugin that embeds a full agentic LLM loop — with its own tool framework, skills system, context management, and chat UI — directly inside your disassembler. It is not an MCP client or a wrapper; it runs in-process with access to the host's scripting API.
+Rikugan is a native C++ plugin. Its agent — turn loop, model providers and logins, sessions, compaction, retries, skills and MCP — is libomc (oh-my-c), linked in-process; Rikugan adds the host analysis tools, the chat panel, per-database chats, undo, modes, subagents, the bulk renamer, analysis profiles, and RE prompts and skills. It is not an MCP client: the agent talks to the database through Rikugan's own tools. Rikugan 1.x was a Python plugin; it remains only in the git history.
 
 ## Pages
 
-- [Home](index.html): Overview, feature highlights, skills list, and provider support.
-- [Documentation](docs.html): Installation, configuration, usage guide, commands reference, skills, MCP setup, custom skills, and full tool listing.
-- [Architecture](ARCHITECTURE.html): Internal design — agentic loop, TurnEvent system, tool framework, subagents, mutation tracking, and thread safety.
+- [Home](index.html): overview, features, skills, providers.
+- [Documentation](docs.html): installation and supported platforms, models and accounts, settings, updates, usage, commands, modes, skills, MCP, memory, profiles, tool reference.
+- [Architecture](ARCHITECTURE.html): libomc embedding, threads, chat lifecycle, system prompt, tool pipeline, undo, modes, subagents, bulk renamer, settings and files, updates, security model, tests, building without the hosts, CI and releases.
 
 ## Key Facts
 
-- **Hosts**: IDA Pro 9.0+ and Binary Ninja (UI mode). Windows, macOS, Linux.
-- **LLM Providers**: Anthropic (Claude), OpenAI, Google Gemini, Ollama (local), any OpenAI-compatible endpoint.
-- **Tools**: 50 shared tools + 6 IDA-only microcode tools + 13 Binary Ninja-only IL tools = 69 total.
-- **Skills**: 12 built-in skills including malware analysis, deobfuscation, vuln audit, CTF solving, driver analysis, and binary patching. Custom skills supported via SKILL.md files.
-- **Agentic loop**: Generator-based turn cycle — User Message → LLM Stream → Tool Execution → Yield TurnEvents → Next Turn.
-- **Exploration Mode** (`/modify <goal>`): 4-phase autonomous binary modification: EXPLORE → PLAN → EXECUTE → SAVE, with user approval gates.
-- **Plan Mode** (`/plan <msg>`): Generate a numbered plan, get user approval, execute step-by-step.
-- **Mutation Undo** (`/undo [N]`): Every rename, comment, type change, or prototype modification is tracked with a reverse operation.
-- **Script Approval**: `execute_python` always shows the full code for user approval before running. Scripts are limited to the disassembler's scripting API.
-- **MCP Client**: Connects external MCP servers via stdio + JSON-RPC 2.0 with Content-Length framing. Heartbeat monitoring detects dead servers.
-- **Persistent Memory**: `RIKUGAN.md` next to the IDB/BNDB persists findings across sessions. First 200 lines injected into system prompt.
-- **Multi-Tab Chat**: Multiple independent sessions per file with fork support and auto-save/restore.
-- **Context Management**: Auto-compaction at 80% of configured context window threshold.
-
-## Config Defaults
-
-- `max_tokens`: 16384
-- `temperature`: 0.2
-- `context_window`: 200000
-- `max_tool_result_chars`: 8000
-
-## Built-in Skills
-
-/malware-analysis, /linux-malware, /deobfuscation, /vuln-audit, /driver-analysis, /ctf, /generic-re, /ida-scripting, /binja-scripting, /modify, /smart-patch-ida, /smart-patch-binja
-
-## MCP Config Format
-
-```json
-{
-  "mcpServers": {
-    "server-name": {
-      "command": "python",
-      "args": ["-m", "my_mcp_server"],
-      "env": {},
-      "enabled": true
-    }
-  }
-}
-```
-
-Tools from MCP servers appear with the prefix `mcp_<server>_<tool>`.
+- **Hosts**: IDA Pro 9.2 or later (Hex-Rays for the decompiler tools; 9.3 or later on Linux arm64) and Binary Ninja (UI mode). Linux x86_64 and arm64, macOS arm64 and x86_64, Windows 10/11 x64.
+- **Models**: every provider and login libomc supports (Claude, ChatGPT/Codex, Gemini, Copilot, API keys …), any OpenAI-compatible endpoint, local servers (Ollama, LM Studio, llama.cpp).
+- **Tools**: 50 shared analysis tools, plus 12 Binary Ninja IL tools or 8 IDA microcode/pseudocode tools; chat tools (ask_user, save_memory, spawn_subagent, exploration_report, research_note; in Binary Ninja list_databases, open_database (opens a new tab) and ask_database); read/write/edit/grep/glob/bash/web_search/todo, each disk or shell kind asking once per chat.
+- **Full window**: the header's expand button moves the chat into a window-sized tab with a list of every open database's chats; one click switches between them (IDA and Binary Ninja).
+- **Binary Ninja MCP**: once Binary Ninja's own MCP server answers (Rikugan keeps probing; Settings → MCP → Address overrides where), the panel offers its tools (`bn_*`) per database. The header's MCP button switches a database between them and Rikugan's analysis tools. Their changes are not in `/undo`.
+- **Skills**: 12 built-in; custom skills in `~/.rikugan/omc/agent/skills/<slug>/SKILL.md`.
+- **Modes**: `/plan`, `/explore`, `/modify` (explore → plan → execute → save), `/research` (notes next to the database).
+- **Undo**: `/undo [N]` reverses renames, comments and prototypes.
+- **Script approval**: `execute_python` always asks; it runs in the host's own Python behind a guard.
+- **Memory**: `RIKUGAN.md` next to the database, first 200 lines in the system prompt.
+- **Profiles**: IOC redaction and denied tools apply to every tool result, omc's file, shell, web and MCP tools included.
+- **Updates**: a release package checks GitHub once a day (Settings → Behavior → "Check for updates once a day", config key `check_for_updates`, on by default) and offers a newer release in the panel (Update, Release notes, Later). Ctrl+K → Check for updates checks now. Update downloads the package for this host and platform, checks it against its `.sha256`, requires regular files only and the plugin file with the release's version, then swaps the files all at once (or not at all). The host uses it after a restart. A plugin built straight with CMake never updates. `RIKUGAN_UPDATE_URL` points the updater at another releases page.
+- **Files**: settings in `~/.rikugan/config.json`; logins, MCP servers and skills in `~/.rikugan/omc/agent/`; chats in `~/.rikugan/sessions/`, the last update check in `~/.rikugan/update.json`.
 
 ## Installation
 
-Clone the repo, then run the platform installer:
-- `./install_ida.sh` (Linux/macOS) or `install_ida.bat` (Windows)
-- `./install_binaryninja.sh` (Linux/macOS) or `install_binaryninja.bat` (Windows)
+```bash
+curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash          # Linux, macOS
+```
 
-Installers create plugin links, install Python dependencies, and initialize the Rikugan config directory.
+```powershell
+irm https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.ps1 | iex                  # Windows
+```
+
+The installers download the latest release's prebuilt plugin for each host found (`--version X.Y.Z` / `-Version` installs another release), check it against its `.sha256` and unpack it into the host's plugins folder. Releases are built for Linux x86_64 (glibc 2.35+ and OpenSSL 3: Ubuntu 22.04+, Debian 12+, Fedora 36+), Linux arm64 (glibc 2.39+: Ubuntu 24.04+, Debian 13+, Fedora 40+), macOS arm64 and x86_64, and Windows 10/11 x64. To build from source: `./build.sh` (Linux, macOS) or `.\build.ps1` (Windows) write the same packages to `dist/`, and `./install.sh --from dist` / `.\install.ps1 -From dist` installs them. `./build.sh --sdk` / `.\build.ps1 -Sdk` builds both plugins with neither host installed, as CI (on the five platforms, for every pull request and every push to `main`) and the releases do. Binary Ninja plugins are tied to its API version: after a Binary Ninja update, install the matching release or rebuild.
 
 ## Source
 
-https://github.com/buzzer-re/rikugan
+https://github.com/buzzer-re/Rikugan
