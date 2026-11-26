@@ -44,12 +44,12 @@ EXT=$([ "$OS" = Darwin ] && echo dylib || echo so)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-ask() {  # ask <question>: true when the user agrees (always with --yes; never without a terminal)
+ask() {  # ask <question>: true unless the user says no (always with --yes; never without a terminal)
     [ "$YES" = 1 ] && return 0
     [ -r /dev/tty ] || return 1
     local a
-    read -r -p "$1 [y/N] " a </dev/tty || return 1
-    case "$a" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+    read -r -p "$1 [Y/n] " a </dev/tty || return 1
+    case "$a" in n|N|no|NO|No) return 1 ;; *) return 0 ;; esac
 }
 
 # fetch <host>: prints the path of the verified package for this platform

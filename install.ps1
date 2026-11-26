@@ -85,7 +85,7 @@ function Test-Checksum([string]$File, [string]$SumFile, [string]$Asset) {
 
 function Confirm-Step([string]$Question) {
     if ($Yes) { return $true }
-    return (Read-Host "$Question [y/N]") -match '^(y|yes)$'
+    return (Read-Host "$Question [Y/n]") -notmatch '^\s*(n|no)\s*$'
 }
 
 # A Rikugan 1.x file or folder goes to ~\.rikugan-1.x-backup\<host>\<time>\.
