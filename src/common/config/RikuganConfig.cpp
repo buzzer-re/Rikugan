@@ -33,6 +33,7 @@ void RikuganConfig::clamp() {
     explorationTurnLimit = std::clamp(explorationTurnLimit, 5, 200);
     bulkRenamerBatchSize = std::clamp(bulkRenamerBatchSize, 1, 100);
     bulkRenamerMaxConcurrent = std::clamp(bulkRenamerMaxConcurrent, 1, 16);
+    smoothStreamingMs = std::clamp(smoothStreamingMs, 16, 1000);
     for (CustomEndpoint& e : customEndpoints) {
         e.contextWindow = std::max(e.contextWindow, 0);
         e.maxTokens = std::max(e.maxTokens, 0);
@@ -65,6 +66,8 @@ RikuganConfig RikuganConfig::load() {
     str("session_storage_dir", c.sessionStorageDir);
     integer("exploration_turn_limit", c.explorationTurnLimit);
     boolean("silent_retry_mode", c.silentRetryMode);
+    boolean("smooth_streaming", c.smoothStreaming);
+    integer("smooth_streaming_ms", c.smoothStreamingMs);
     boolean("check_for_updates", c.checkForUpdates);
     c.disabledSkills = toStrings(o.value(QStringLiteral("disabled_skills")));
     str("active_profile", c.activeProfile);
@@ -113,6 +116,8 @@ bool RikuganConfig::save() const {
         {"session_storage_dir", c.sessionStorageDir},
         {"exploration_turn_limit", c.explorationTurnLimit},
         {"silent_retry_mode", c.silentRetryMode},
+        {"smooth_streaming", c.smoothStreaming},
+        {"smooth_streaming_ms", c.smoothStreamingMs},
         {"disabled_skills", fromStrings(c.disabledSkills)},
         {"active_profile", c.activeProfile},
         {"custom_profiles", c.customProfiles},

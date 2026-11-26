@@ -39,6 +39,10 @@ struct RikuganConfig {
     QString sessionStorageDir;  // empty: ~/.rikugan/sessions
     int explorationTurnLimit = 100;
     bool silentRetryMode = false;
+    // Streamed text: each burst spread over smoothStreamingMs instead of shown as it arrives. Off by default: a fast
+    // (local) model sends text faster than any pacing, and paced text then trails behind the model.
+    bool smoothStreaming = false;
+    int smoothStreamingMs = 100;
     QStringList disabledSkills;
     QString activeProfile = QStringLiteral("default");
     QJsonObject customProfiles;  // name -> AnalysisProfile object (Profile.h)

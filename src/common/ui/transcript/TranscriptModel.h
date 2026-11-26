@@ -3,9 +3,10 @@
 // (you, the rikugan step, permission, phase, notices ...) and the rows of a step at depth 1 (thinking, text, tool
 // calls, a task card for its subagents). Built from the chat's frames, its replayed transcript and its cards.
 //
-// Streaming touches only the tail item. Deltas do not land at once: they are revealed a few characters per display
-// frame (all of a burst within ~100 ms), one dataChanged per growing row per frame, so text flows instead of jumping
-// by chunks. The end of a block shows the rest at once. Timers run only while something streams. UI thread only.
+// Streaming touches only the tail item, one dataChanged per growing row per display frame. A delta lands as it
+// arrives, or, with Settings › Behavior › "Smooth streamed text" on, is revealed a few characters per frame (all of a
+// burst within the chosen time) so text flows instead of jumping by chunks. The end of a block shows the rest at once.
+// Timers run only while something streams. UI thread only.
 #include <QAbstractListModel>
 #include <QHash>
 #include <QJsonArray>

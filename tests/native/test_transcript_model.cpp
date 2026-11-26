@@ -2,12 +2,14 @@
 // tool rows that survive providers reusing call ids, hidden internal prompts (alike live, on replay and in the
 // Markdown export), cards that block the composer, cancellation, /btw answers and the goal shown in the activity strip.
 #include <QFile>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
 
 #include "TestEnv.h"
 #include "common/agent/ChatExport.h"
+#include "common/config/RikuganConfig.h"
 #include "common/ui/transcript/TranscriptModel.h"
 
 using namespace rk::ui;
@@ -55,9 +57,33 @@ class TranscriptModelTest : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
-    // a burst of deltas flows in over a few frames: one repaint per frame (not per delta), all text shown soon,
-    // and the end of the message shows whatever still waits
-    void streamingRevealsTextOverFrames() {
+    // by default a burst of deltas is in the row at once: one repaint for the burst (not per delta), none after it
+    void streamingShowsTextAsItArrives() {
+        TranscriptModel m;
+        m.applyFrame(message("message_start", "assistant"));
+        m.applyFrame(delta("text_delta", "x"));
+        const int row = firstRow(m, ItemKind::Text);
+        QVERIFY(row >= 0);
+        QCOMPARE(m.at(row).text, QString("x"));
+        QTest::qWait(50);
+        QSignalSpy changed(&m, &QAbstractItemModel::dataChanged);
+        for (int i = 0; i < 50; ++i) m.applyFrame(delta("text_delta", "y"));
+        QCOMPARE(m.at(row).text, QString("x") + QString(50, 'y'));
+        QCOMPARE(changed.count(), 0);  // nothing repaints per delta
+        QTRY_COMPARE_WITH_TIMEOUT(changed.count(), 1, 500);
+        QTest::qWait(100);
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(m.rowCount(), row + 1);
+    }
+
+    // smoothing on: a burst flows in over the chosen time, one repaint per frame, and the end of the message shows
+    // whatever still waits
+    void smoothStreamingRevealsTextOverFrames() {
+        rk::RikuganConfig& cfg = rk::RikuganConfig::instance();
+        const rk::RikuganConfig saved = cfg;
+        auto restore = qScopeGuard([&] { cfg = saved; });
+        cfg.smoothStreaming = true;
+        cfg.smoothStreamingMs = 100;
         TranscriptModel m;
         m.applyFrame(message("message_start", "assistant"));
         m.applyFrame(delta("text_delta", "x"));
@@ -66,12 +92,18 @@ private Q_SLOTS:
         QTRY_COMPARE_WITH_TIMEOUT(m.at(row).text, QString("x"), 500);
         QSignalSpy changed(&m, &QAbstractItemModel::dataChanged);
         for (int i = 0; i < 50; ++i) m.applyFrame(delta("text_delta", "y"));
-        QCOMPARE(changed.count(), 0);  // nothing repaints per delta
+        QCOMPARE(m.at(row).text, QString("x"));  // nothing shown yet
+        QCOMPARE(changed.count(), 0);
         QTRY_COMPARE_WITH_TIMEOUT(m.at(row).text, QString("x") + QString(50, 'y'), 500);
         QVERIFY2(changed.count() >= 2 && changed.count() <= 8, qPrintable(QString::number(changed.count())));
         QCOMPARE(m.rowCount(), row + 1);
 
+        // a longer time: still revealing well after the default 100 ms would have shown it all
+        cfg.smoothStreamingMs = 800;
         for (int i = 0; i < 40; ++i) m.applyFrame(delta("text_delta", "z"));
+        QTest::qWait(200);
+        QVERIFY(m.at(row).text.size() < 1 + 50 + 40);
+        QVERIFY(m.at(row).text.size() > 1 + 50);
         m.applyFrame(message("message_end", "assistant"));
         QCOMPARE(m.at(row).text, QString("x") + QString(50, 'y') + QString(40, 'z'));
     }

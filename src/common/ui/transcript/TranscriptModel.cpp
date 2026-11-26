@@ -8,6 +8,7 @@
 #include "common/agent/ChatSession.h"
 #include "common/agent/DbContext.h"
 #include "common/agent/Subagents.h"
+#include "common/config/RikuganConfig.h"
 #include "common/omc/UserErrors.h"
 #include "common/tools/MutationLog.h"
 #include "common/tools/ToolRegistry.h"
@@ -18,8 +19,7 @@ namespace rk::ui {
 namespace {
 
 constexpr int kFlushMs = 16;
-constexpr int kRevealMs = 16;     // one display frame
-constexpr int kRevealFrames = 6;  // a burst is all on screen this many frames after it came
+constexpr int kRevealMs = 16;  // one display frame
 
 QString str(const QJsonObject& o, const char* k) { return o.value(QLatin1String(k)).toString(); }
 
@@ -347,10 +347,20 @@ quint64 TranscriptModel::textItem(ItemKind kind, qint64 now) {
 
 void TranscriptModel::stream(quint64 id, const QString& delta) {
     if (delta.isEmpty()) return;
+    const RikuganConfig& cfg = RikuganConfig::instance();
+    // as it arrives (still one repaint per frame); text already waiting to be revealed keeps its order
+    if (!cfg.smoothStreaming && !backlog_.contains(id)) {
+        if (TranscriptItem* item = itemById(id)) {
+            item->text += delta;
+            touch(rowOfId(id), true);
+        }
+        return;
+    }
     Backlog& b = backlog_[id];
     b.rest += delta;
-    // the waiting text goes out evenly over the next frames; a bigger burst speeds it up
-    b.perFrame = std::max<qsizetype>(b.perFrame, (b.rest.size() + kRevealFrames - 1) / kRevealFrames);
+    // the waiting text goes out evenly over the chosen time; a bigger burst speeds it up
+    const qsizetype frames = std::max(1, cfg.smoothStreamingMs / kRevealMs);
+    b.perFrame = std::max<qsizetype>(b.perFrame, (b.rest.size() + frames - 1) / frames);
     if (!reveal_.isActive()) reveal_.start();
 }
 

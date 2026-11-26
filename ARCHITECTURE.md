@@ -47,8 +47,9 @@ IDA (src/ida/sdk/Plugin.cpp)        Binary Ninja (src/binja/Plugin.cpp)
 - **Transcript** (`ui/transcript/`). `TranscriptModel` reduces a chat's frames, its replayed transcript and its cards
   into flat rows: timeline nodes (you, a rikugan step, permission, phase, notices) and step rows (thinking, text, tool
   calls with kind, address/symbol chips, Undo chip and status, a task card per batch of subagents). Consecutive calls
-  of one tool fold into a group row with their count. Streamed text is revealed a few characters per display frame
-  (a burst lands within about 100 ms), one repaint per growing row per frame. `TranscriptView` is a virtualized
+  of one tool fold into a group row with their count. Streamed text shows as it arrives, one repaint per growing row
+  per frame; with `smooth_streaming` on it is revealed a few characters per frame, a burst within
+  `smooth_streaming_ms` (default 100). `TranscriptView` is a virtualized
   `QListView` whose delegate paints rows from `QTextDocument`s cached per row revision and width; pending cards are
   live widgets in their rows.
 

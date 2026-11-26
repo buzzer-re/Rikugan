@@ -25,6 +25,8 @@ private:
     QLineEdit* sessionStorage_ = nullptr;
     QSpinBox* exploreTurns_ = nullptr;
     QCheckBox* silentRetry_ = nullptr;
+    QCheckBox* smoothStreaming_ = nullptr;
+    QSpinBox* smoothMs_ = nullptr;
     QCheckBox* filesystem_ = nullptr;
     QCheckBox* shell_ = nullptr;
     QCheckBox* approveMutations_ = nullptr;

@@ -72,6 +72,24 @@ BehaviorTab::BehaviorTab(const RikuganConfig& cfg, QWidget* parent) : QWidget(pa
         tr("When enabled, rate-limit retries show a subtle text indicator instead of red error messages."));
     form->addRow(silentRetry_);
 
+    auto* smoothRow = new QHBoxLayout;
+    smoothStreaming_ = new QCheckBox(tr("Smooth streamed text over"));
+    smoothStreaming_->setChecked(cfg.smoothStreaming);
+    smoothStreaming_->setToolTip(tr("On: each piece of text the model sends is revealed gradually over this time, so "
+                                    "it flows instead of jumping. Off: text shows as soon as it arrives, which suits "
+                                    "fast local models."));
+    smoothRow->addWidget(smoothStreaming_);
+    smoothMs_ = new QSpinBox;
+    smoothMs_->setRange(16, 1000);
+    smoothMs_->setSingleStep(10);
+    smoothMs_->setSuffix(tr(" ms"));
+    smoothMs_->setValue(cfg.smoothStreamingMs);
+    smoothMs_->setEnabled(cfg.smoothStreaming);
+    smoothRow->addWidget(smoothMs_);
+    smoothRow->addStretch(1);
+    connect(smoothStreaming_, &QCheckBox::toggled, smoothMs_, &QSpinBox::setEnabled);
+    form->addRow(smoothRow);
+
     filesystem_ = new QCheckBox(tr("Allow file access without asking (read, write, edit)"));
     filesystem_->setChecked(cfg.autoAllowFiles);
     filesystem_->setToolTip(
@@ -162,6 +180,8 @@ void BehaviorTab::apply(RikuganConfig& c) const {
     c.sessionStorageDir = sessionStorage_->text().trimmed();
     c.explorationTurnLimit = exploreTurns_->value();
     c.silentRetryMode = silentRetry_->isChecked();
+    c.smoothStreaming = smoothStreaming_->isChecked();
+    c.smoothStreamingMs = smoothMs_->value();
     c.autoAllowFiles = filesystem_->isChecked();
     c.autoAllowCommands = shell_->isChecked();
     c.approveMutations = approveMutations_->isChecked();
