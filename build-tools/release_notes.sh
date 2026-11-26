@@ -42,9 +42,8 @@ On Windows, in PowerShell:
 | \`rikugan-$V-ida-macos-x86_64.tar.gz\`, \`rikugan-$V-binja-macos-x86_64.tar.gz\` | IDA Pro 9.2+, Binary Ninja | macOS on Intel |
 | \`rikugan-$V-ida-windows-x86_64.zip\`, \`rikugan-$V-binja-windows-x86_64.zip\` | IDA Pro 9.2+, Binary Ninja | Windows 10 and 11, x64 |
 
-Each package holds only the files that go into the host's plugins folder. The \`-symbols\` packages hold the debug
-information the plugins were stripped of (a \`.debug\` file, a \`.dSYM\` bundle or a \`.pdb\`), which you need only to
-read the \`module+offset\` lines of a crash log. \`SHA256SUMS\` lists every file. To check and install a package by hand:
+Each package holds only the files that go into the host's plugins folder. \`SHA256SUMS\` lists every package. To check
+and install a package by hand:
 
 \`\`\`sh
 sha256sum -c SHA256SUMS --ignore-missing      # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing

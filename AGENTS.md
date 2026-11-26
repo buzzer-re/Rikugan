@@ -96,8 +96,8 @@ cmake -S . -B build/ida   -G Ninja -DRIKUGAN_HOST=ida   -DCMAKE_PREFIX_PATH=~/Qt
   updates (Settings greys the option out).
 - CI (`.github/workflows/ci.yml`) runs `build-tools/ci.sh` on Linux x86_64/arm64, macOS arm64/x86_64 and Windows x64:
   tests, both plugins without the hosts and a smoke check of each package, with zero compiler warnings. A tag
-  `v<version>` runs `release.yml`: the same builds, 20 packages (with `-symbols` packages) and `SHA256SUMS` on a draft
-  release that is published once complete. A manual run of it is a dry run on a draft it deletes.
+  `v<version>` runs `release.yml`: the same builds, 10 packages and `SHA256SUMS` on a draft release that is published
+  once complete. A manual run of it is a dry run on a draft it deletes.
 
 ## How a Chat Works
 

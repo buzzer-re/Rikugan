@@ -109,7 +109,6 @@ Windows also `OMC_LIB_DIR` (a prebuilt libomc: a folder with `libomc.dll` and `l
 | `rikugan-<v>-binja-<os>-<arch>.tar.gz` | `librikugan.so` / `librikugan.dylib` |
 | `rikugan-<v>-ida-windows-x86_64.zip` | `rikugan\ida-plugin.json`, `rikugan\rikugan.dll`, `rikugan\libomc.dll` |
 | `rikugan-<v>-binja-windows-x86_64.zip` | `rikugan.dll`, `rikugan\libomc.dll` (Binary Ninja loads every DLL at the top of `plugins\` as a plugin) |
-| `rikugan-<v>-<host>-<os>-<arch>-symbols.tar.gz` / `.zip` | the debug information the plugin was stripped of: a `.debug` file (Linux, gnu-debuglink), a `.dSYM` (macOS), a `.pdb` (Windows) |
 
 `<os>-<arch>` is `linux-x86_64`, `linux-arm64`, `macos-arm64`, `macos-x86_64`. Each asset has a `<asset>.sha256`
 (`<hash>  <asset>`). `install.sh` / `install.ps1` download `v<version>/<asset>` and its `.sha256` from the GitHub
@@ -262,9 +261,9 @@ uses the `gh` CLI the runners ship with.
 3. Write `docs/releases/vx.y.z.md`, what changed. `build-tools/release_notes.sh x.y.z` previews the whole release text
    (that file, then the install section and the asset table).
 4. `git tag vx.y.z && git push origin vx.y.z`. `.github/workflows/release.yml` checks that the tag matches both
-   versions (`build-tools/ci.sh tag-check`), builds the two plugins on the five platforms and uploads 20 packages
-   (package and `-symbols` package per host and platform), each with its `.sha256`, to a draft release. It then adds
-   `SHA256SUMS`, checks that all 20 are there and publishes the release as the latest. Until then nothing is public.
+   versions (`build-tools/ci.sh tag-check`), builds the two plugins on the five platforms and uploads 10 packages
+   (one per host and platform), each with its `.sha256`, to a draft release. It then adds `SHA256SUMS`, checks that
+   all 10 are there and publishes the release as the latest. Until then nothing is public.
 5. The installers and every installed Rikugan's updater fetch the new packages from the latest release.
 
 To try the release workflow without publishing, run it by hand (Actions › Release › Run workflow): the same builds go

@@ -76,27 +76,17 @@ function Get-Version {
     return $m.Matches[0].Groups[1].Value
 }
 
-# dist\rikugan-<version>-<host>-windows-x86_64<suffix>.zip from a staged folder, with its .sha256
-function New-Package([string]$HostName, [string]$Staged, [string]$Suffix = '') {
+# dist\rikugan-<version>-<host>-windows-x86_64.zip from a staged folder, with its .sha256
+function New-Package([string]$HostName, [string]$Staged) {
     $dist = Join-Path $Root 'dist'
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
-    $asset = "rikugan-$(Get-Version)-$HostName-windows-x86_64$Suffix.zip"
+    $asset = "rikugan-$(Get-Version)-$HostName-windows-x86_64.zip"
     $zip = Join-Path $dist $asset
     Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue
     [IO.Compression.ZipFile]::CreateFromDirectory($Staged, $zip)
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$zip.sha256", "$hash  $asset`n")
     Write-Host "Packaged dist\$asset"
-}
-
-# rikugan-<version>-<host>-windows-x86_64-symbols.zip: the plugin's PDB, to read a crash log's module+offset lines
-# (next to rikugan.dll, it also names the functions in Rikugan's own crash logs)
-function New-SymbolsPackage([string]$HostName, [string]$BuildDir) {
-    $stage = Join-Path $Root "build\package\$HostName-symbols"
-    Remove-Item -Recurse -Force -LiteralPath $stage -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    Copy-Item (Join-Path $BuildDir 'rikugan.pdb') $stage
-    New-Package $HostName $stage '-symbols'
 }
 
 function New-Stage([string]$HostName) {
@@ -149,7 +139,6 @@ if ($Target -in 'both', 'binja') {
         Copy-Item (Join-Path $dir 'rikugan.dll') $stage
         Copy-Item (Join-Path $dir 'libomc.dll') (Join-Path $stage 'rikugan')
         New-Package 'binja' $stage
-        New-SymbolsPackage 'binja' $dir
         $built = $true
     } elseif ($Target -eq 'binja') {
         throw 'Binary Ninja not found (pass -BnInstallDir): its plugin links against the installed core and UI.'
@@ -164,7 +153,6 @@ if ($Target -in 'both', 'ida') {
     $stage = New-Stage 'ida'
     Copy-Item (Join-Path $Root 'ida-plugin.json'), (Join-Path $dir 'rikugan.dll'), (Join-Path $dir 'libomc.dll') (Join-Path $stage 'rikugan')
     New-Package 'ida' $stage
-    New-SymbolsPackage 'ida' $dir
     $built = $true
 }
 

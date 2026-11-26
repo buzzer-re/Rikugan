@@ -494,7 +494,7 @@ plugin's NEEDED list is the same as a build against the installed hosts.
 CI (`.github/workflows/ci.yml`) and releases (`release.yml`) run `build-tools/ci.sh` (`ci.ps1` for the MSVC steps) on
 Linux x86_64 and arm64, macOS arm64 and x86_64 and Windows x64: omc at `build-tools/omc.ref`, the native suite, both
 plugins without the hosts, zero compiler warnings, and a smoke check of each package (allowed libraries only, no RPATH,
-no debug info, only the host entry points exported, the Windows zip layout). Packages are stripped, with the debug
-information in `-symbols` packages. A tag `v<version>` that matches CMakeLists.txt and ida-plugin.json builds the 20
-packages onto a draft release, adds `SHA256SUMS` and publishes it once all are there. `install.sh` / `install.ps1` and
+no debug info, only the host entry points exported, the Windows zip layout). Packages are stripped. A tag `v<version>`
+that matches CMakeLists.txt and ida-plugin.json builds the 10 packages onto a draft release, adds `SHA256SUMS` and
+publishes it once all are there. `install.sh` / `install.ps1` and
 the updater install from those assets.

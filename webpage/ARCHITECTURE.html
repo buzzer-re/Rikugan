@@ -888,8 +888,8 @@ omc frames -&gt; SessionListener -&gt; EventQueue -&gt; ChatSession::frame -&gt;
   <h3>Releases</h3>
   <ul>
     <li>Pushing a tag <code>v&lt;version&gt;</code> runs <code>.github/workflows/release.yml</code>. The tag must match <code>project(rikugan VERSION ...)</code> in <code>CMakeLists.txt</code> and <code>version</code> in <code>ida-plugin.json</code> (<code>ci.sh tag-check</code>).</li>
-    <li>The five runners build both plugins and upload 20 packages (5 platforms &times; 2 hosts &times; package and <code>-symbols</code> package), each with its <code>.sha256</code>, to a draft release. The publish job adds <code>SHA256SUMS</code> over every file, checks that all 20 are there, and only then publishes the release as Latest.</li>
-    <li>Packages are stripped. The <code>-symbols</code> packages hold the debug information (a <code>.debug</code> file with a gnu-debuglink on Linux, a <code>.dSYM</code> on macOS, a <code>.pdb</code> on Windows) for reading a crash log's <code>module+offset</code> lines.</li>
+    <li>The five runners build both plugins and upload 10 packages (5 platforms &times; 2 hosts), each with its <code>.sha256</code>, to a draft release. The publish job adds <code>SHA256SUMS</code> over every package, checks that all 10 are there, and only then publishes the release as Latest.</li>
+    <li>Packages are stripped of their debug information.</li>
     <li>The release text is <code>docs/releases/v&lt;version&gt;.md</code> when it exists (what changed), then an install section and an asset table from <code>build-tools/release_notes.sh</code>, which previews it locally.</li>
     <li>A manual run (Actions &rarr; Release &rarr; Run workflow) is a dry run: the same builds go to a draft named <code>v&lt;version&gt;-dry-run-&lt;run id&gt;</code>, which the cleanup job deletes. No tag is made and nothing is published.</li>
     <li><code>install.sh</code> / <code>install.ps1</code> and the <a href="#updates">updater</a> download these packages from the latest release.</li>

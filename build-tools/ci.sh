@@ -121,7 +121,7 @@ check_linux() {
     echo "$needed" | grep -vqE '^(libbinaryninjacore\.so\.1|libbinaryninjaui\.so\.1|libQt6(Core|Gui|Widgets)\.so\.6|libida\.so|libssl\.so\.3|libcrypto\.so\.3|libz\.so\.1|libstdc\+\+\.so\.6|libm\.so\.6|libgcc_s\.so\.1|libc\.so\.6|ld-linux[-a-z0-9_.]*\.so\.[0-9])$' &&
         fail "$1 needs a library outside the host, libc, libstdc++, OpenSSL 3 and zlib"
     ! readelf -d "$1" | grep -qE '\((RPATH|RUNPATH)\)' || fail "$1 has an RPATH: it must find nothing outside the host"
-    ! readelf -S "$1" | grep -q '\.debug_info' || fail "$1 still carries its debug information (the -symbols package has it)"
+    ! readelf -S "$1" | grep -q '\.debug_info' || fail "$1 still carries its debug information"
     exports=$(nm -D --defined-only "$1" | awk '{print $3}' | sort | tr '\n' ' ')
     glibc=$(objdump -T "$1" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
     echo "  exports $exports; newest glibc symbol $glibc"
@@ -157,12 +157,6 @@ smoke() {
         tmp=$(mktemp -d)
         tar -xzf "$pkg" -C "$tmp"
         echo "ci: $(basename "$pkg"): $(cd "$tmp" && find . -type f | sed 's|^\./||' | tr '\n' ' ')"
-        case "$pkg" in
-            *-symbols.tar.gz)  # the debug information the shipped plugin was stripped of
-                [ -n "$(find "$tmp" -maxdepth 1 \( -name '*.debug' -o -name '*.dSYM' \))" ] || fail "$pkg holds no debug information"
-                rm -rf "$tmp"
-                continue ;;
-        esac
         if [ "$OS" = Darwin ]; then
             check_macos "$(ls "$tmp"/*.dylib)" "$host"
         else

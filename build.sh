@@ -72,8 +72,7 @@ archive() {
 }
 
 # package <host> <module>: dist/rikugan-<version>-<host>-<plat>.tar.gz holding the module without its debug
-# information (what installs), and rikugan-<version>-<host>-<plat>-symbols.tar.gz with that information (to read a
-# crash log's module+offset lines: Linux, a .debug file the module points to; macOS, a .dSYM bundle).
+# information
 package() {
     local stage="build/package/$1" name
     name=$(basename "$2")
@@ -81,15 +80,10 @@ package() {
     mkdir -p "$stage"
     cp "$2" "$stage/$name"
     if [ "$OS" = Darwin ]; then
-        dsymutil "$2" -o "$stage/$name.dSYM"
         strip -S "$stage/$name"  # the debug map only: crash stacks still name functions
         codesign --force --sign - "$stage/$name"  # stripping invalidates the linker's ad hoc signature (arm64 needs one)
-        archive "rikugan-$VERSION-$1-$PLAT-symbols.tar.gz" "$stage" "$name.dSYM"
     else
-        objcopy --only-keep-debug "$stage/$name" "$stage/$name.debug"
         strip --strip-debug "$stage/$name"
-        (cd "$stage" && objcopy --add-gnu-debuglink="$name.debug" "$name")
-        archive "rikugan-$VERSION-$1-$PLAT-symbols.tar.gz" "$stage" "$name.debug"
     fi
     archive "rikugan-$VERSION-$1-$PLAT.tar.gz" "$stage" "$name"
 }

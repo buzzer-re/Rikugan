@@ -107,7 +107,7 @@ Profiles let you shape the agent around your analysis. A profile decides which d
 
 Rikugan needs IDA Pro 9.2 or later (with Hex-Rays for the decompiler tools) or Binary Ninja in UI mode, and at least one model: an account login, an API key or a local server. It runs on Linux x86_64 with glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36 and newer), Linux arm64 with glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40 and newer), macOS on Apple silicon or Intel, and Windows 10 and 11 x64. On Linux arm64, IDA starts at 9.3, the first version Hex-Rays built for it. On Windows the shell tool uses Git Bash when Git for Windows is installed, and PowerShell otherwise.
 
-CI builds and tests every release on all five platforms. Each package comes with a `-symbols` package for reading crash logs, which Rikugan writes to `~/.rikugan/logs/`.
+CI builds and tests every release on all five platforms.
 
 ## What changed in 2.0
 

@@ -1,7 +1,7 @@
 # Release: pushing a tag v<version> (CMakeLists.txt and ida-plugin.json must say the same version) publishes a GitHub
 # release with both plugins for every platform: rikugan-<version>-<ida|binja>-<linux|macos|windows>-<arch>.tar.gz/.zip,
-# each with its .sha256, the -symbols packages with the debug information the plugins were stripped of, and SHA256SUMS
-# over all of them. install.sh / install.ps1 and Rikugan's own updater install from these assets.
+# each with its .sha256, and SHA256SUMS over all of them. install.sh / install.ps1 and Rikugan's own updater install from
+# these assets.
 # The release stays a draft until every asset is uploaded.
 #
 # Run it by hand (Actions > Release > Run workflow) for a dry run: the same builds, uploaded to a draft named
@@ -161,9 +161,9 @@ jobs:
           gh release download "$TAG" --pattern '*.sha256'
           cat ./*.sha256 | sed 's/ [*]/  /' | sort -k2 > SHA256SUMS
           cat SHA256SUMS
-          # every platform's two plugins and their symbols: 5 platforms x 2 hosts x 2 packages
+          # every platform's two plugins: 5 platforms x 2 hosts
           n=$(wc -l < SHA256SUMS)
-          [ "$n" = 20 ] || { echo "expected 20 packages, the draft has $n" >&2; exit 1; }
+          [ "$n" = 10 ] || { echo "expected 10 packages, the draft has $n" >&2; exit 1; }
           gh release upload "$TAG" SHA256SUMS
       - name: Publish
         if: github.event_name == 'push'
