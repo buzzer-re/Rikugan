@@ -20,6 +20,8 @@
 #include <cstdio>
 #endif
 
+#include "common/util/SystemTool.h"
+
 namespace rk::update {
 
 namespace {
@@ -35,17 +37,6 @@ constexpr Qt::CaseSensitivity kPathCase = Qt::CaseInsensitive;
 #else
 constexpr Qt::CaseSensitivity kPathCase = Qt::CaseSensitive;
 #endif
-
-// A tool the system ships: the System32 copy on Windows (curl.exe and tar.exe since Windows 10), /usr/bin's elsewhere.
-QString systemTool(const char* name) {
-#ifdef _WIN32
-    const QString sys = QDir(qEnvironmentVariable("SystemRoot", QStringLiteral("C:/Windows"))).filePath(QStringLiteral("System32/%1.exe").arg(QLatin1String(name)));
-#else
-    const QString sys = QStringLiteral("/usr/bin/%1").arg(QLatin1String(name));
-#endif
-    if (QFileInfo(sys).isExecutable()) return sys;
-    return QStandardPaths::findExecutable(QString::fromLatin1(name));
-}
 
 bool run(const char* tool, const QStringList& args, int timeoutMs, QString* error, QByteArray* out = nullptr) {
     const QString exe = systemTool(tool);
