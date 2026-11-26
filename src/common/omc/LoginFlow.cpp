@@ -5,8 +5,10 @@
 #include <QJsonObject>
 #include <QMetaObject>
 #include <QPointer>
+#include <QUrlQuery>
 
 #include "common/config/Paths.h"
+#include "common/mcp/McpClient.h"
 #include "common/omc/AgentHome.h"
 #include "common/omc/AuthSync.h"
 #include "common/omc/OmcSession.h"
@@ -50,6 +52,17 @@ bool needsTerminal(const QString& error) {
     return error.contains(QLatin1String("not supported in RPC mode")) || error.contains(QLatin1String("terminal UI"));
 }
 
+// The authorize URL's redirect_uri when it is a callback server on this machine, else an invalid URL.
+QUrl localCallback(const QUrl& authorize) {
+    QUrl cb(QUrlQuery(authorize).queryItemValue(QStringLiteral("redirect_uri"), QUrl::FullyDecoded));
+    const QString host = cb.host();
+    if (cb.scheme() != QLatin1String("http") || cb.port() <= 0 ||
+        (host != QLatin1String("localhost") && host != QLatin1String("127.0.0.1")))
+        return {};
+    cb.setHost(QStringLiteral("127.0.0.1"));  // omc listens on IPv4 only; "localhost" may resolve to ::1 first
+    return cb;
+}
+
 }  // namespace
 
 LoginFlow::LoginFlow(QObject* parent) : QObject(parent) {}
@@ -61,6 +74,7 @@ void LoginFlow::start(const QString& providerId) {
     const int gen = ++generation_;
     running_ = true;
     sawUrlWithoutLaunch_ = false;
+    callback_.clear();
     inputId_.clear();
     OmcOptions o;
     o.cwd = paths::scratchDir(QStringLiteral("_login"));
@@ -93,9 +107,11 @@ void LoginFlow::onRequest(const QJsonObject& f) {
     if (!running_) return;
     const QString method = f.value(QStringLiteral("method")).toString();
     if (method == QLatin1String("open_url")) {
+        const QString url = f.value(QStringLiteral("url")).toString();
         const QString launch = f.value(QStringLiteral("launchUrl")).toString();
         sawUrlWithoutLaunch_ = launch.isEmpty();
-        Q_EMIT openUrl(f.value(QStringLiteral("url")).toString(), launch, f.value(QStringLiteral("instructions")).toString());
+        callback_ = localCallback(QUrl(url));
+        Q_EMIT openUrl(url, launch, f.value(QStringLiteral("instructions")).toString());
     } else if (method == QLatin1String("notify")) {
         const QString msg = f.value(QStringLiteral("message")).toString();
         // a pasted authorization code can't be delivered over RPC: the login would only time out
@@ -123,6 +139,53 @@ void LoginFlow::answerInput(const QString& value) {
     inputId_.clear();
 }
 
+void LoginFlow::submitCode(const QString& text) {
+    if (!acceptsPastedCode()) return;
+    const QString t = text.trimmed();
+    QString code, state;
+    if (t.contains(QLatin1String("code="))) {  // the browser's address, or just its query
+        QString query = t.contains(QLatin1Char('?')) ? t.mid(t.indexOf(QLatin1Char('?')) + 1) : t;
+        query = query.left(query.indexOf(QLatin1Char('#')) < 0 ? query.size() : query.indexOf(QLatin1Char('#')));
+        const QUrlQuery q(query);
+        code = q.queryItemValue(QStringLiteral("code"), QUrl::FullyDecoded);
+        state = q.queryItemValue(QStringLiteral("state"), QUrl::FullyDecoded);
+    } else if (t.contains(QLatin1Char('#'))) {  // "code#state", as Claude's page shows it
+        code = t.left(t.indexOf(QLatin1Char('#')));
+        state = t.mid(t.indexOf(QLatin1Char('#')) + 1);
+    } else {
+        code = t;
+    }
+    if (code.isEmpty()) {
+        Q_EMIT pastedCodeFailed(tr("That has no authorization code in it. Paste the whole address from the browser's address bar."));
+        return;
+    }
+    QUrl target = callback_;
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("code"), code);
+    // without a state omc checks none (a bare code); an empty "state=" would not match its own
+    if (!state.isEmpty()) q.addQueryItem(QStringLiteral("state"), state);
+    target.setQuery(q);
+    const QString url = target.toString(QUrl::FullyEncoded);
+    QPointer<LoginFlow> self(this);
+    const int gen = generation_;
+    // the callback answers at once, then omc exchanges the code; finished() comes from the login's own reply
+    spawnThread([self, gen, url] {
+        QString error;
+        try {
+            const int status = httpGet(url, 10000);
+            if (status != 200) error = tr("The login did not accept it (HTTP %1).").arg(status);
+        } catch (const ToolError& e) {
+            error = tr("The login is no longer waiting for a code (%1).").arg(e.message());
+        }
+        if (error.isEmpty()) return;
+        QMetaObject::invokeMethod(
+            uiAnchor(), [self, gen, error] {
+                if (self && self->generation_ == gen && self->running_) Q_EMIT self->pastedCodeFailed(error);
+            },
+            Qt::QueuedConnection);
+    });
+}
+
 void LoginFlow::cancel() {
     if (!running_) return;
     finish(false, QStringLiteral("cancelled"));
@@ -131,6 +194,7 @@ void LoginFlow::cancel() {
 void LoginFlow::finish(bool ok, const QString& error) {
     running_ = false;
     inputId_.clear();
+    callback_.clear();
     closeSession();
     Q_EMIT finished(ok, error);
 }

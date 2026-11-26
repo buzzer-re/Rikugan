@@ -3,8 +3,12 @@
 // (open_url, progress notes, text inputs) and Rikugan shows them. Each login runs on its own short-lived omc
 // session, because freeing that session is the only way omc stops a login.
 //
-// Not reachable through RPC (omc would need a change): providers whose login waits for a pasted authorization
-// code, secret prompts, and flows that ask a question before showing any URL. Those end with
+// A browser login comes back to a callback server omc runs on this machine. When the browser runs elsewhere (IDA in a
+// VM, a remote desktop) it cannot reach that server; the user then pastes the address the browser ended on (or the
+// code it shows), and submitCode() delivers it to the callback the way the browser would have.
+//
+// Not reachable through RPC (omc would need a change): providers whose login has no callback server and waits for a
+// pasted code, secret prompts, and flows that ask a question before showing any URL. Those end with
 // finished(false, kTerminalOnly) so the UI can offer an API key instead.
 #include <functional>
 #include <memory>
@@ -12,6 +16,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QUrl>
 
 namespace rk {
 
@@ -33,6 +38,11 @@ public:
 
     void start(const QString& providerId);
     void answerInput(const QString& value);  // the pending inputRequested
+    // A login waiting on its callback server on this machine (after openUrl): it takes a pasted address or code.
+    bool acceptsPastedCode() const { return running_ && callback_.isValid(); }
+    // The browser's final address, "code#state" or the bare code. Ignored unless acceptsPastedCode(); a code the
+    // callback cannot take is reported through pastedCodeFailed.
+    void submitCode(const QString& text);
     void cancel();                           // ends the login; finished(false, "cancelled")
     bool running() const { return running_; }
 
@@ -41,6 +51,7 @@ Q_SIGNALS:
     void openUrl(const QString& url, const QString& launchUrl, const QString& instructions);
     void progress(const QString& message);
     void inputRequested(const QString& title, const QString& placeholder);
+    void pastedCodeFailed(const QString& error);
     void finished(bool ok, const QString& error);  // error is user-facing; "cancelled" after cancel()
 
 private:
@@ -52,6 +63,7 @@ private:
     QString inputId_;
     bool running_ = false;
     bool sawUrlWithoutLaunch_ = false;
+    QUrl callback_;  // the authorize URL's redirect_uri when it points at this machine
     int generation_ = 0;  // results of an earlier start() are ignored
 };
 

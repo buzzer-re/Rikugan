@@ -61,4 +61,7 @@ private:
     qint64 nextId_ = 1;
 };
 
+// One plain-http GET (on this machine: a login's callback server). Its status code; failures throw ToolError.
+int httpGet(const QString& url, int timeoutMs);
+
 }  // namespace rk

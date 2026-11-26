@@ -295,6 +295,34 @@ QString McpEndpoint::url() const {
     return QStringLiteral("http://%1:%2%3").arg(h).arg(port).arg(path);
 }
 
+int httpGet(const QString& url, int timeoutMs) {
+    QString error;
+    const std::optional<McpEndpoint> e = McpEndpoint::parse(url, QString(), &error);
+    if (!e) throw ToolError(error);
+    const qint64 deadline = nowMs() + timeoutMs;
+    Socket sock;
+    connectTo(sock, *e, nullptr, deadline);
+    const QByteArray req = "GET " + e->path.toUtf8() + " HTTP/1.1\r\nHost: " + e->host.toUtf8() + ':' +
+                           QByteArray::number(e->port) + "\r\nConnection: close\r\n\r\n";
+    sendAll(sock.fd(), req, nullptr, deadline);
+    QByteArray raw;
+    char buf[4096];
+    while (!raw.contains("\r\n")) {
+        waitFor(sock.fd(), kWaitRead, nullptr, deadline);
+        const auto n = ::recv(sock.fd(), buf, int(sizeof buf), 0);
+        if (n < 0) {
+            if (interrupted(lastError()) || wouldBlock(lastError())) continue;
+            throw ToolError(sysError());
+        }
+        if (n == 0) break;
+        raw.append(buf, n);
+    }
+    const QList<QByteArray> status = raw.left(raw.indexOf("\r\n")).trimmed().split(' ');
+    const int code = status.size() > 1 ? status[1].toInt() : 0;
+    if (code == 0) throw ToolError(QStringLiteral("no HTTP reply from %1").arg(e->url()));
+    return code;
+}
+
 McpClient::Reply McpClient::post(const QByteArray& json, qint64 id, const CancelToken* cancel, qint64 deadline) const {
     Socket sock;
     connectTo(sock, endpoint_, cancel, deadline);

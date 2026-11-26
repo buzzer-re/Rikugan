@@ -70,6 +70,8 @@ private:
     QLabel* inputTitle_ = nullptr;
     QLineEdit* input_ = nullptr;
     QLabel* progress_ = nullptr;
+    QWidget* pasteBox_ = nullptr;  // the browser's final address, when it can't reach the callback here
+    QLineEdit* paste_ = nullptr;
     // result
     QLabel* resultTitle_ = nullptr;
     QLabel* resultText_ = nullptr;

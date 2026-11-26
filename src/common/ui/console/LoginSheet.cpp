@@ -55,8 +55,8 @@ LoginSheet::LoginSheet(QWidget* parent, bool overlay) : QWidget(parent), overlay
     h->setContentsMargins(10, 5, 6, 5);
     heading_ = new QLabel(tr("Connect a provider"), head);
     heading_->setObjectName(QStringLiteral("rk_login_title"));
-    h->addWidget(heading_);
-    h->addStretch(1);
+    heading_->setWordWrap(true);  // a provider's long name in Binary Ninja's narrow sidebar
+    h->addWidget(heading_, 1);
     auto* closeBtn = button(tr("Close"), head);
     h->addWidget(closeBtn);
     v->addWidget(head);
@@ -122,6 +122,24 @@ LoginSheet::LoginSheet(QWidget* parent, bool overlay) : QWidget(parent), overlay
     ib->addLayout(inputRow);
     inputBox_->hide();
     fv->addWidget(inputBox_);
+    // the browser runs on another machine (IDA in a VM) and cannot reach the callback on this one
+    pasteBox_ = new QWidget(flow);
+    auto* pb = new QVBoxLayout(pasteBox_);
+    pb->setContentsMargins(0, 6, 0, 0);
+    pb->setSpacing(6);
+    auto* pasteTitle = label(pasteBox_, true);
+    pasteTitle->setText(tr("Browser on another machine? When it can't come back here, copy the address it ended on "
+                           "(or the code the page shows) and paste it:"));
+    pb->addWidget(pasteTitle);
+    auto* pasteRow = new QHBoxLayout;
+    paste_ = new QLineEdit(pasteBox_);
+    paste_->setPlaceholderText(tr("http://localhost:\u2026/callback?code=\u2026  or the code"));
+    pasteRow->addWidget(paste_, 1);
+    auto* pasteBtn = button(tr("Continue"), pasteBox_);
+    pasteRow->addWidget(pasteBtn);
+    pb->addLayout(pasteRow);
+    pasteBox_->hide();
+    fv->addWidget(pasteBox_);
     progress_ = label(flow, true);
     fv->addWidget(progress_);
     fv->addStretch(1);
@@ -185,6 +203,15 @@ LoginSheet::LoginSheet(QWidget* parent, bool overlay) : QWidget(parent), overlay
     };
     connect(input_, &QLineEdit::returnPressed, this, answer);
     connect(submit, &QPushButton::clicked, this, answer);
+    auto paste = [this] {
+        if (paste_->text().trimmed().isEmpty()) return;
+        onProgress(tr("Handing the code to the login\u2026"));
+        flow_->submitCode(paste_->text());
+        paste_->clear();
+    };
+    connect(paste_, &QLineEdit::returnPressed, this, paste);
+    connect(pasteBtn, &QPushButton::clicked, this, paste);
+    connect(flow_, &LoginFlow::pastedCodeFailed, this, &LoginSheet::onProgress);
     connect(cancel, &QPushButton::clicked, this, [this] {
         if (flow_->running()) flow_->cancel();
         else showList();
@@ -212,6 +239,9 @@ LoginSheet::LoginSheet(QWidget* parent, bool overlay) : QWidget(parent), overlay
 }
 
 LoginSheet::~LoginSheet() {
+    // a login still running ends here; its finished() must not reach this half-destroyed sheet (it would list the
+    // providers again on the service session while the plugin shuts down)
+    disconnect(flow_, nullptr, this, nullptr);
     if (flow_->running()) flow_->cancel();
 }
 
@@ -254,6 +284,7 @@ void LoginSheet::loadProviders() {
         }
         list_->setEntries(entries);
         list_->setQuery(search_->text().trimmed());
+        if (pages_->currentIndex() == FlowPage) heading_->setText(tr("Log in to %1").arg(nameOf(provider_)));
     });
 }
 
@@ -269,9 +300,12 @@ void LoginSheet::startLogin(const QString& providerId) {
     flowTitle_->setText(tr("Starting the login\u2026"));
     urlBox_->hide();
     inputBox_->hide();
+    pasteBox_->hide();
+    paste_->clear();
     progress_->clear();
     openedUrl_.clear();
     pages_->setCurrentIndex(FlowPage);
+    if (providers_.isEmpty()) loadProviders();  // opened from the setup: the providers' names come with the list
     flow_->start(providerId);
 }
 
@@ -292,6 +326,7 @@ void LoginSheet::onOpenUrl(const QString& url, const QString& launchUrl, const Q
                                                       : instructions);
     }
     urlBox_->show();
+    pasteBox_->setVisible(flow_->acceptsPastedCode());
     const QString target = launchUrl.isEmpty() ? url : launchUrl;
     if (openedUrl_ != target) {
         openedUrl_ = target;
