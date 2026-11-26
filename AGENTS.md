@@ -42,7 +42,8 @@ src/common/
                           Databases (every open database; Binary Ninja's tab opener), SessionListener
   mcp/                    McpClient (streamable HTTP, for the host's own MCP server)
   security/               Sanitize (injection markers, IOC redaction)
-  config/                 RikuganConfig (~/.rikugan/config.json), Profile, Paths
+  config/                 RikuganConfig (~/.rikugan/config.json), Profile, Paths, ConnectionTest (a custom connection's
+                          "Test connection")
   update/                 Update (find, download, check and swap in a release package), Updater (daily check, offer)
   ui/                     PanelCore, Theme (colours from the host palette), Syntax, WelcomeView;
                           transcript/ (TranscriptModel reducer, TranscriptView + delegate, Cards);
@@ -50,7 +51,7 @@ src/common/
                           AgentsPanel, LoginSheet, GetStarted, HostMcpBar, ChatManager); tools/ (bulk renamer page);
                           settings/; ChatHub (every live chat, outside the panels)
   util/                   Files, Env (environment shared with libomc, home folder), Log, Embedded, CrashGuard,
-                          ModuleLifetime, ModulePath (the plugin's own file)
+                          ModuleLifetime, ModulePath (the plugin's own file), SystemTool (the OS's curl and tar)
 src/binja/                Plugin.cpp (sidebar, notifications, commands), host/ (BnHost, Python, BnHostMcp), tools/
 src/ida/                  sdk/Plugin.cpp (dock, hooks, actions), host/ (IdaHost, tools), sdk/ (SDK subclasses, -fno-rtti)
 tests/native/             QtTest suite (none tree) against omc's mock model server
@@ -170,8 +171,17 @@ which waits for Binary Ninja's asynchronous `OnAfterOpenFile`).
   refreshed OAuth tokens in step; it never copies Rikugan-only entries back and never deletes.
 - "Use my Claude Code / Codex login" (`ExternalLogins`, config `use_external_logins`, asked once with the providers'
   policy links) shares those tools' subscription logins the same way, writing refreshed tokens back to them.
+- A browser login (`LoginFlow`) comes back to omc's callback server on this machine. When the browser runs elsewhere
+  (a VM, a remote desktop) the login sheet takes the address the browser ended on, or its code, and `submitCode`
+  delivers it to that callback.
 - Custom connections may set `context_window` / `max_tokens` (written to `models.yml` as `contextWindow` /
-  `maxTokens` per model); 0 keeps omc's default.
+  `maxTokens` per model); 0 keeps omc's default. `ca_file` is a PEM certificate to trust for a private server:
+  `AgentHome` joins every connection's certificate with the bundle already named in the environment into
+  `omc/agent/trusted-ca.pem` and points `OMC_EXTRA_CA_CERTS` at it. omc reads it once per process, so a new
+  certificate needs a host restart. Verification stays on. "Test connection" (`ConnectionTest`) asks the server for
+  its model list with the system's curl, the connection's key and its certificate.
+- `smooth_streaming` (off by default) reveals streamed text a few characters per frame, each burst within
+  `smooth_streaming_ms` (default 100); off, text shows as it arrives.
 - `~/.rikugan/sessions/<db id>/` — omc session files, `chats.json` and `database.json` (host and file, so the panel
   can reopen the database's chats while nothing is open); `~/.rikugan/scratch/<db id>/` — the session's working
   directory (artifacts, files the agent writes).
@@ -260,10 +270,12 @@ selecting the chat's view, since the server's active view is global. They also m
 - **Binary Ninja**: the core API is thread-safe, so every tool runs on a tool worker, mutating ones and
   `execute_python` included (exclusive, so in order). Only tools that touch the UI (`jump_to`) run on the main
   thread (`ExecuteOnMainThread`): a tool that waits on analysis or a script there freezes Binary Ninja.
-- **Windows**: platform code stays behind `#ifdef _WIN32` in `util/Env`, `omc/OmcLibrary`, `mcp/McpClient` (Winsock)
-  and `util/Files`. Variables omc reads are set with `rk::setEnv` / `rk::unsetEnv`, never `qputenv`/`setenv` alone
-  (libomc.dll's C runtime keeps its own environment copy); the home folder is `rk::homeDir()` (`$HOME` first, as omc
-  does). Embedded prompts and skills have their CRLF line ends normalized at build time.
+- **Windows**: platform code stays behind `#ifdef _WIN32` in `util/Env`, `omc/OmcLibrary`, `mcp/McpClient` (Winsock),
+  `util/Files`, `util/SystemTool`, `update/Update`, `config/ConnectionTest` (curl's Schannel revocation check),
+  `util/CrashGuard` and `util/ModulePath`. Variables omc reads are set with `rk::setEnv` / `rk::unsetEnv`, never
+  `qputenv`/`setenv` alone (libomc.dll's C runtime keeps its own environment copy); the home folder is
+  `rk::homeDir()` (`$HOME` first, as omc does). Embedded prompts and skills have their CRLF line ends normalized at
+  build time.
 - No stubs, placeholders or `TODO: implement`. Errors are reported, never swallowed.
 
 ## Security
