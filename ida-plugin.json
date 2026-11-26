@@ -17,7 +17,7 @@
       "macos-aarch64",
       "windows-x86_64"
     ],
-    "idaVersions": ">=9.3",
+    "idaVersions": ">=9.2",
     "keywords": [
       "ai",
       "llm",

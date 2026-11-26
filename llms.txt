@@ -1,6 +1,6 @@
 # Rikugan (六眼)
 
-> A reverse-engineering agent that lives inside IDA Pro (9.3 or later) and Binary Ninja as a native C++ plugin (Linux x86_64/arm64, macOS arm64/x86_64, Windows x64). Its agent — turn loop, every model provider and login, sessions, compaction, retries, skills, MCP, file/shell/search tools — is libomc (oh-my-c), linked in-process (on Windows: libomc.dll beside the plugin). Rikugan adds the host analysis tools, the Qt chat panel, per-database chats, undo, plan/explore/modify/research modes, subagents with host tools, the bulk renamer, analysis profiles, and the RE prompts and skills. Rikugan 1.x was a Python plugin. It remains only in the git history.
+> A reverse-engineering agent that lives inside IDA Pro (9.2 or later) and Binary Ninja as a native C++ plugin (Linux x86_64/arm64, macOS arm64/x86_64, Windows x64). Its agent — turn loop, every model provider and login, sessions, compaction, retries, skills, MCP, file/shell/search tools — is libomc (oh-my-c), linked in-process (on Windows: libomc.dll beside the plugin). Rikugan adds the host analysis tools, the Qt chat panel, per-database chats, undo, plan/explore/modify/research modes, subagents with host tools, the bulk renamer, analysis profiles, and the RE prompts and skills. Rikugan 1.x was a Python plugin. It remains only in the git history.
 
 ## Documentation
 

@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — Rikugan Internals
 
-Rikugan 2.x is a native C++20 / Qt Widgets plugin for IDA Pro (9.3 or later) and Binary Ninja (Linux, macOS, Windows). The
+Rikugan 2.x is a native C++20 / Qt Widgets plugin for IDA Pro (9.2 or later) and Binary Ninja (Linux, macOS, Windows). The
 agent — turn loop, providers and logins, session files, compaction, retries, skills, MCP and the file/shell/search
 tools — is **libomc** ([oh-my-c](https://github.com/buzzer-re/Oh-My-C)), linked into the plugin. Rikugan supplies the
 reverse-engineering half: host analysis tools, the chat panel, per-database chats, undo, modes, subagents with host
