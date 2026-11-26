@@ -943,13 +943,8 @@ void PanelCore::Impl::build() {
     pages->addWidget(split);
     tools = new ToolsPanel(pages);
     pages->addWidget(tools);
-    setup = new GetStarted;
-    auto* setupPane = new QScrollArea;
-    setupPane->setWidgetResizable(true);
-    setupPane->setFrameShape(QFrame::NoFrame);
-    setupPane->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    setupPane->setWidget(setup);
-    pages->addWidget(setupPane);  // kSetupPage
+    setup = new GetStarted;  // its pages scroll themselves (a short host pane, Binary Ninja's sidebar)
+    pages->addWidget(setup);  // kSetupPage
     QObject::connect(pages, &QStackedWidget::currentChanged, q, [this](int i) { onPageChanged(i); });
     layout->addWidget(pages, 1);
     layout->addWidget(strip);
@@ -1046,7 +1041,10 @@ void PanelCore::Impl::build() {
     });
     QObject::connect(status, &StatusLine::modelClicked, q, [this] { openModelPicker(); });
 
-    QObject::connect(picker, &ModelPicker::modelChosen, q, [this](const QString& key) { chooseModel(key); });
+    QObject::connect(picker, &ModelPicker::modelChosen, q, [this](const QString& key) {
+        chooseModel(key);
+        if (pages->currentIndex() == kSetupPage) leaveSetup();  // a model is set up now: the chat can start
+    });
     QObject::connect(picker, &ModelPicker::thinkingChosen, q, [this](const QString& level) { chooseThinking(level); });
     QObject::connect(picker, &ModelPicker::connectRequested, q, [this](const QString& id) {
         id.isEmpty() ? login->showList() : login->startLogin(id);

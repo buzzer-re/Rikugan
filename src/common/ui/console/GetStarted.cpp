@@ -9,10 +9,13 @@
 #include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QStackedWidget>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "common/config/ConnectionTest.h"
 #include "common/config/RikuganConfig.h"
 #include "common/omc/AgentHome.h"
 #include "common/omc/AuthSync.h"
@@ -87,6 +90,18 @@ void clearRows(QVBoxLayout* rows) {
     }
 }
 
+// A page's content inside its scroll area: as tall as its height at the area's width. The minimum its wrapped
+// labels report assumes a narrow width; the scroll area would size the page to it and leave blank space around
+// the content. It paints the setup's background: a host's style may fill scroll area contents with its own.
+class PageBody : public QWidget {
+public:
+    PageBody() {
+        setObjectName(QStringLiteral("rk_setup_body"));
+        setAttribute(Qt::WA_StyledBackground);
+    }
+    QSize minimumSizeHint() const override { return {}; }
+};
+
 }  // namespace
 
 GetStarted::GetStarted(QWidget* parent) : QWidget(parent) {
@@ -106,9 +121,15 @@ GetStarted::GetStarted(QWidget* parent) : QWidget(parent) {
     restyle();
 }
 
-// A page: a title, a line of text and the body under them, centred like the welcome.
+// A page: a title, a line of text and the body under them, centred like the welcome. Each page scrolls on its own: a
+// stack around them in one scroll area would be as tall as its longest page, so a short one opened on blank space.
 QWidget* GetStarted::page(const QString& title, const QString& text, QVBoxLayout** body) {
-    auto* w = new QWidget(pages_);
+    auto* area = new QScrollArea(pages_);
+    area->setFrameShape(QFrame::NoFrame);
+    area->setWidgetResizable(true);
+    area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    area->setObjectName(QStringLiteral("rk_setup_page"));
+    auto* w = new PageBody;
     auto* v = new QVBoxLayout(w);
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(6);
@@ -132,7 +153,8 @@ QWidget* GetStarted::page(const QString& title, const QString& text, QVBoxLayout
     (*body)->setSpacing(6);
     v->addLayout(*body);
     v->addStretch(3);
-    pages_->addWidget(w);
+    area->setWidget(w);
+    pages_->addWidget(area);
     return w;
 }
 
@@ -239,6 +261,9 @@ void GetStarted::buildLocal() {
     back->setCursor(Qt::PointingHandCursor);
     row->addWidget(back);
     row->addStretch(1);
+    auto* test = new QPushButton(tr("Test connection"), this);
+    test->setCursor(Qt::PointingHandCursor);
+    row->addWidget(test);
     auto* save = new QPushButton(tr("Save"), this);
     save->setProperty("rkPrimary", true);
     save->setCursor(Qt::PointingHandCursor);
@@ -253,6 +278,23 @@ void GetStarted::buildLocal() {
     preset();
     connect(back, &QPushButton::clicked, this, [this] { show(Choose); });
     connect(save, &QPushButton::clicked, this, &GetStarted::saveLocal);
+    connect(test, &QPushButton::clicked, this, [this, test] {
+        const LocalKind& kind = kLocalKinds[std::max(0, localKind_->currentIndex())];
+        CustomEndpoint e{QString::fromLatin1(kind.id), localUrl_->text().trimmed(), QString::fromLatin1(kind.api), QString(), {}};
+        test->setEnabled(false);
+        localStatus_->setText(tr("Asking %1\u2026").arg(connectionTestUrl(e)));
+        QPointer<GetStarted> self(this);
+        QPointer<QPushButton> btn(test);
+        spawnThread([self, btn, e] {
+            const ConnectionTestResult r = testConnection(e);
+            QMetaObject::invokeMethod(
+                uiAnchor(), [self, btn, r] {
+                    if (btn) btn->setEnabled(true);
+                    if (self) self->localStatus_->setText(r.message);
+                },
+                Qt::QueuedConnection);
+        });
+    });
 }
 
 void GetStarted::buildPickModel() {
@@ -312,6 +354,7 @@ void GetStarted::start() {
 
 void GetStarted::show(Page p) {
     pages_->setCurrentIndex(int(p));
+    if (auto* area = qobject_cast<QScrollArea*>(pages_->currentWidget())) area->verticalScrollBar()->setValue(0);
     if (p == SignIn) fillSignIn();
     if (p == ApiKey) {
         keyStatus_->clear();
@@ -459,7 +502,9 @@ void GetStarted::restyle() {
     if (big.pointSizeF() > 0) big.setPointSizeF(big.pointSizeF() + 3);
     big.setWeight(QFont::Bold);
     for (QLabel* l : findChildren<QLabel*>(QStringLiteral("rk_setup_title"))) l->setFont(big);
-    setStyleSheet(QStringLiteral("#rk_setup { background: %1; }"
+    // a scroll area under a style sheet fills its viewport with the palette's base colour (lighter in Binary Ninja)
+    setStyleSheet(QStringLiteral("#rk_setup, #rk_setup_page, #rk_setup_page > #qt_scrollarea_viewport, #rk_setup_body "
+                                 "{ background: %1; }"
                                  "#rk_setup QLabel { color: %2; background: transparent; }"
                                  "#rk_setup #rk_setup_logo { color: %3; font-size: 22pt; }"
                                  "#rk_setup #rk_setup_text, #rk_setup #rk_suggestion_detail { color: %4; }"
