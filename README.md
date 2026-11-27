@@ -102,13 +102,6 @@ Profiles let you shape the agent around your analysis. A profile decides which d
 
 ![A profile in Settings: hidden metadata, IOC filters, custom rules and denied tools](assets/profile.png)
 
-
-## Requirements
-
-Rikugan needs IDA Pro 9.2 or later (with Hex-Rays for the decompiler tools) or Binary Ninja in UI mode, and at least one model: an account login, an API key or a local server. It runs on Linux x86_64 with glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36 and newer), Linux arm64 with glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40 and newer), macOS on Apple silicon or Intel, and Windows 10 and 11 x64. On Linux arm64, IDA starts at 9.3, the first version Hex-Rays built for it. On Windows the shell tool uses Git Bash when Git for Windows is installed, and PowerShell otherwise.
-
-CI builds and tests every release on all five platforms.
-
 ## What changed in 2.0
 
 Rikugan 2.0 is a native rewrite for IDA Pro and Binary Ninja on Linux, macOS and Windows, with omc as its new backend, and it updates itself from the GitHub releases. Some things went away with the Python version: Rikugan's own provider layer (omc covers far more providers and logins), encrypted API keys (credentials now sit in Rikugan's settings folder, readable only by you on Linux and macOS), importing Claude Code and Codex skills and MCP servers, the research-note reviewer chain, resuming a cancelled mode, the `allowed_tools` skill setting and undoing file writes. Chats and settings from 1.x are not migrated. The [release notes](docs/releases/v2.0.0.md) list everything that is new.
